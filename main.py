@@ -3,22 +3,49 @@ import pika
 import time
 import threading
 import json
+import requests
+import base64
 from fastapi import FastAPI
 import uvicorn
 
-# --- RabbitMQ Bağlantı Bilgileri ---
+# --- Ayarlar ---
 RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "rabbitmq")
 RABBITMQ_USER = os.getenv("RABBITMQ_USER", "sentiric")
 RABBITMQ_PASS = os.getenv("RABBITMQ_PASS", "sentiric_pass")
+MEDIA_SERVICE_URL = os.getenv("MEDIA_SERVICE_URL", "http://media-service:3003")
 QUEUE_NAME = 'call.events'
+WELCOME_MESSAGE_TEXT = "Merhaba, Sentiric platformuna hoş geldiniz."
 
 # --- FastAPI Uygulaması ---
 app = FastAPI(title="Sentiric Agent Service", version="0.1.0")
 
 @app.get("/health")
 def read_health():
-    """Servisin ayakta olup olmadığını kontrol etmek için basit bir endpoint."""
     return {"status": "ok", "service": "Agent Service"}
+
+# --- TTS Fonksiyonu ---
+def text_to_speech_file(text: str) -> str | None:
+    """
+    Verilen metni sese dönüştürür ve base64 formatında döndürür.
+    Bu örnekte basit ve ücretsiz bir TTS API'si kullanıyoruz.
+    """
+    try:
+        print(f"--> TTS API'sine istek gönderiliyor: '{text}'")
+        tts_api_url = f"https://api.streamelements.com/kappa/v2/speech?voice=Brian&text={requests.utils.quote(text)}"
+        response = requests.get(tts_api_url, timeout=10)
+        
+        # DÜZELTME: Hem "audio/mpeg" hem de "audio/mp3" formatlarını kabul et.
+        content_type = response.headers.get("Content-Type", "").lower()
+        if response.status_code == 200 and ("audio/mpeg" in content_type or "audio/mp3" in content_type):
+            audio_base64 = base64.b64encode(response.content).decode('utf-8')
+            print(f"✅ TTS API'sinden ses verisi başarıyla alındı (Content-Type: {content_type}, Base64 boyutu: {len(audio_base64)}).")
+            return audio_base64
+        else:
+            print(f"❌ TTS API hatası: Status {response.status_code}, Content-Type: {content_type}")
+            return None
+    except Exception as e:
+        print(f"❌ TTS API'sine bağlanırken hata oluştu: {e}")
+        return None
 
 # --- RabbitMQ Tüketici Fonksiyonu ---
 def consume_events():
@@ -45,12 +72,30 @@ def consume_events():
                 try:
                     message_data = json.loads(body.decode())
                     print("\n--- 🧠 Yeni Olay Alındı! ---")
-                    print(f"  Olay Tipi: {message_data.get('eventType')}")
-                    print(f"  Çağrı ID: {message_data.get('callId')}")
-                    print("  --> AI şimdi bu olaya göre bir aksiyon almalı (örn: karşılama mesajı üret).")
-                    print("--------------------------")
-                except json.JSONDecodeError:
-                    print(f"⚠️ Alınan mesaj JSON formatında değil: {body.decode()}")
+                    
+                    if message_data.get('eventType') == 'call.started':
+                        print("--> 'call.started' olayı tespit edildi. Karşılama süreci başlıyor...")
+                        
+                        # 1. Adım: TTS API'sini kullanarak karşılama sesini üret.
+                        audio_data_base64 = text_to_speech_file(WELCOME_MESSAGE_TEXT)
+                        
+                        if audio_data_base64:
+                            # 2. Adım: Media Service'e sesi dinletmesi için komut gönder.
+                            media_info = message_data.get('media', {})
+                            rtp_port = media_info.get('port')
+                            
+                            if rtp_port:
+                                play_audio_payload = {
+                                    "rtp_port": rtp_port,
+                                    "audio_data_base64": audio_data_base64,
+                                    "format": "mp3_base64"
+                                }
+                                try:
+                                    print(f"--> 🔊 Media Service'e {rtp_port} portundan sesi çalması için komut gönderiliyor...")
+                                    requests.post(f"{MEDIA_SERVICE_URL}/play-audio", json=play_audio_payload, timeout=5)
+                                except Exception as e:
+                                    print(f"❌ Media Service'e komut gönderilirken hata: {e}")
+                    
                 except Exception as e:
                     print(f"HATA: Mesaj işlenirken bir sorun oluştu: {e}")
                 
