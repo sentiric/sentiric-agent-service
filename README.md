@@ -14,6 +14,7 @@
 *   Python (or Node.js)
 *   Flask/FastAPI (for REST API)
 *   Libraries for NLP, LLM orchestration, dialogue management.
+* we can use Rasa + DistilBERT (ONNX quantized)
 
 **API Interactions (As an API Provider & Client):**
 *   **As a Client:** Calls `sentiric-stt-service`, `sentiric-tts-service`, `sentiric-knowledge-service`, `sentiric-connectors`.

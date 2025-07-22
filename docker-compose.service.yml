@@ -1,0 +1,25 @@
+# sentiric-agent-service/docker-compose.service.yml
+
+services:
+  agent-service:
+    # Üretimde kullanılacak imaj adı. Ortam değişkenleriyle özelleştirilebilir.
+    image: ${DOCKER_REGISTRY:-ghcr.io/sentiric}/sentiric-agent-service:${TAG:-latest}
+    # Yerel geliştirmede, 'docker compose build' ile bu Dockerfile'dan imaj oluşturulur.
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sentiric_agent_service
+    # Bu servisin kendi .env dosyasını kullanmasını sağlar.
+    env_file:
+      - ./.env
+    restart: unless-stopped
+    # Tüm servislerin birbirleriyle konuşabilmesi için bu ağa katılır.
+    networks:
+      - sentiric-net
+
+# Eğer bu dosya tek başına çalıştırılırsa, 'sentiric-net' adında bir ağ oluşturur.
+# Ana orkestratör tarafından çağrıldığında, bu tanım göz ardı edilir.
+networks:
+  sentiric-net:
+    name: ${NETWORK_NAME:-sentiric-net}
+    driver: bridge
