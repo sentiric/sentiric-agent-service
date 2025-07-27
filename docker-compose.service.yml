@@ -5,18 +5,21 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: sentiric_agent_service
-    # Bu servisin kendi .env dosyasını ve/veya ana .env dosyasını kullanmasını sağlar
     env_file:
       - ./.env
+    # YENİ EKLENEN/GÜNCELLENEN BÖLÜM:
+    # Bu, ana docker-compose dosyasındaki değişkenlerin bu konteynere
+    # aktarılmasını sağlar.
+    environment:
+      - RABBITMQ_URL=${RABBITMQ_URL}
+      - MEDIA_SERVICE_GRPC_URL=${MEDIA_SERVICE_GRPC_URL}
+      # - TTS_SERVICE_GRPC_URL=${TTS_SERVICE_GRPC_URL} # Gelecekte
     networks:
       - sentiric-net
     restart: always
-    # RabbitMQ servisi sağlıklı bir şekilde çalışmaya başlamadan bu servisi başlatma
-    # depends_on:
-    #   rabbitmq:
-    #     condition: service_healthy
+    # depends_on bloğunu kaldırıyoruz, çünkü dayanıklılık kodda.
 
 networks:
   sentiric-net:
     name: ${NETWORK_NAME:-sentiric-net}
-    # external: true
+    external: true
