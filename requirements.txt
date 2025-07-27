@@ -1,2 +1,12 @@
-pika==1.3.2
-structlog==24.1.0
+# Temel Kütüphaneler
+pika
+structlog
+
+# gRPC İletişimi
+grpcio
+grpcio-tools
+protobuf
+
+# Merkezi API Kontratları
+# 'PlayAudio' RPC'sini içeren son versiyonu kullanıyoruz.
+sentiric-contracts @ git+https://github.com/sentiric/sentiric-contracts.git@v0.4.4

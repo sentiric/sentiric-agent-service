@@ -12,11 +12,11 @@ services:
       - sentiric-net
     restart: always
     # RabbitMQ servisi sağlıklı bir şekilde çalışmaya başlamadan bu servisi başlatma
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
+    # depends_on:
+    #   rabbitmq:
+    #     condition: service_healthy
 
 networks:
   sentiric-net:
     name: ${NETWORK_NAME:-sentiric-net}
-    driver: bridge
+    # external: true
