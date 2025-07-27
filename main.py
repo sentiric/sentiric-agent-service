@@ -16,9 +16,12 @@ QUEUE_NAME = 'call.events'
 def play_welcome_message(call_id: str, media_info: dict):
     log.info("welcome_message_flow_started", call_id=call_id)
     
+    # --- DEĞİŞİKLİK: Hem arayanın adresini HEM DE bizim portumuzu alıyoruz ---
     caller_rtp_addr = media_info.get("caller_rtp_addr")
-    if not caller_rtp_addr:
-        log.error("caller_rtp_addr_missing_in_event", media_info=media_info)
+    server_rtp_port = media_info.get("server_rtp_port") # Bu değişkeni okuyoruz
+    
+    if not caller_rtp_addr or server_rtp_port is None:
+        log.error("caller_rtp_addr_or_server_rtp_port_missing_in_event", media_info=media_info)
         return
 
     if not MEDIA_SERVICE_GRPC_URL:
@@ -33,12 +36,14 @@ def play_welcome_message(call_id: str, media_info: dict):
         with grpc.insecure_channel(grpc_target) as channel:
             stub = media_pb2_grpc.MediaServiceStub(channel)
             
+            # --- DEĞİŞİKLİK: gRPC isteğine server_rtp_port'u ekliyoruz ---
             request = media_pb2.PlayAudioRequest(
                 rtp_target_addr=caller_rtp_addr,
-                audio_id=welcome_audio_id
+                audio_id=welcome_audio_id,
+                server_rtp_port=server_rtp_port # Bu alanı ekliyoruz
             )
             
-            log.info("sending_play_audio_request", target_addr=caller_rtp_addr)
+            log.info("sending_play_audio_request", target_addr=caller_rtp_addr, server_port=server_rtp_port)
             response = stub.PlayAudio(request, timeout=10)
             
             if response.success:
@@ -63,10 +68,10 @@ def callback(ch, method, properties, body):
         
         if message_data.get('eventType') == 'call.started':
             media_info = message_data.get("media")
-            if media_info and media_info.get("caller_rtp_addr"):
+            if media_info:
                 play_welcome_message(message_data.get('callId'), media_info)
             else:
-                log.warn("media_info_or_caller_rtp_addr_missing", event_data=message_data)
+                log.warn("media_info_missing", event_data=message_data)
     except Exception as e:
         log.error("message_processing_error", error=str(e), exc_info=True)
     

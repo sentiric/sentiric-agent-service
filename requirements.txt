@@ -3,4 +3,4 @@ structlog
 grpcio
 grpcio-tools
 protobuf
-sentiric-contracts @ git+https://github.com/sentiric/sentiric-contracts.git@v0.5.0
+sentiric-contracts @ git+https://github.com/sentiric/sentiric-contracts.git@v0.5.2
