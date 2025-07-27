@@ -16,9 +16,9 @@ QUEUE_NAME = 'call.events'
 def play_welcome_message(call_id: str, media_info: dict):
     log.info("welcome_message_flow_started", call_id=call_id)
     
-    # --- DEĞİŞİKLİK: Hem arayanın adresini HEM DE bizim portumuzu alıyoruz ---
+    # Hem arayanın adresini HEM DE bizim portumuzu event'ten alıyoruz
     caller_rtp_addr = media_info.get("caller_rtp_addr")
-    server_rtp_port = media_info.get("server_rtp_port") # Bu değişkeni okuyoruz
+    server_rtp_port = media_info.get("server_rtp_port")
     
     if not caller_rtp_addr or server_rtp_port is None:
         log.error("caller_rtp_addr_or_server_rtp_port_missing_in_event", media_info=media_info)
@@ -36,11 +36,11 @@ def play_welcome_message(call_id: str, media_info: dict):
         with grpc.insecure_channel(grpc_target) as channel:
             stub = media_pb2_grpc.MediaServiceStub(channel)
             
-            # --- DEĞİŞİKLİK: gRPC isteğine server_rtp_port'u ekliyoruz ---
+            # gRPC isteğine `server_rtp_port`'u da ekliyoruz
             request = media_pb2.PlayAudioRequest(
                 rtp_target_addr=caller_rtp_addr,
                 audio_id=welcome_audio_id,
-                server_rtp_port=server_rtp_port # Bu alanı ekliyoruz
+                server_rtp_port=int(server_rtp_port) # Port numarasını integer'a çeviriyoruz
             )
             
             log.info("sending_play_audio_request", target_addr=caller_rtp_addr, server_port=server_rtp_port)
@@ -78,7 +78,7 @@ def callback(ch, method, properties, body):
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
 def main():
-    log.info("service_starting", service_name="agent-service")
+    log.info("agent-service", service_name="agent-service")
     if not RABBITMQ_URL:
         log.critical("rabbitmq_url_not_configured_exiting")
         return
