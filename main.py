@@ -54,19 +54,22 @@ def play_audio(call_id: str, media_info: dict, audio_path: str):
 def process_call_event(message_data: dict):
     call_id = message_data.get("callId")
     media_info = message_data.get("media")
+    # DİKKAT: Gelen JSON'daki "dialplan_id" anahtarı, proto'daki "dialplanId"den farklı olabilir.
+    # Esnek olmak için ikisini de kontrol edelim.
     dialplan = message_data.get("dialplan", {})
-    action_type = dialplan.get("action")
-    action_data = dialplan.get("action_data", {})
+    action_type = dialplan.get("action", {}).get("action")
+    action_data_map = dialplan.get("action", {}).get("actionData", {}).get("data", {})
 
-    structlog.contextvars.bind_contextvars(dialplan_id=dialplan.get("id"), action=action_type)
-    log.info("processing_dialplan_action", data=action_data)
+    structlog.contextvars.bind_contextvars(
+        dialplan_id=dialplan.get("dialplanId") or dialplan.get("dialplan_id"),
+        action=action_type
+    )
+    log.info("processing_dialplan_action", data=action_data_map)
 
     if not media_info:
         log.warn("media_info_missing_in_event")
         return
 
-    # Bu bilgiler normalde veritabanından veya bir config servisinden gelir.
-    # Şimdilik, Genesis mimarisine uygun olarak burada tanımlıyoruz.
     announcement_map = {
         "ANNOUNCE_SYSTEM_MAINTENANCE_TR": "assets/audio/tr/maintenance.wav",
         "ANNOUNCE_GUEST_WELCOME_TR": "assets/audio/tr/welcome_guest.wav",
@@ -75,20 +78,21 @@ def process_call_event(message_data: dict):
     }
     fallback_audio = announcement_map["ANNOUNCE_SYSTEM_ERROR_TR"]
 
+    # --- KRİTİK DÜZELTME BURADA ---
     if action_type == "PLAY_ANNOUNCEMENT":
-        announcement_id = action_data.get("announcement_id")
+        announcement_id = action_data_map.get("announcement_id")
         audio_path = announcement_map.get(announcement_id, fallback_audio)
         play_audio(call_id, media_info, audio_path)
 
     elif action_type == "START_AI_CONVERSATION":
-        announcement_id = action_data.get("welcome_announcement_id", "ANNOUNCE_DEFAULT_WELCOME_TR")
+        announcement_id = action_data_map.get("welcome_announcement_id", "ANNOUNCE_DEFAULT_WELCOME_TR")
         audio_path = announcement_map.get(announcement_id, fallback_audio)
         play_audio(call_id, media_info, audio_path)
         log.info("ai_conversation_flow_started")
         # TODO: STT dinlemesini başlat ve LLM döngüsüne gir.
 
     elif action_type == "PROCESS_GUEST_CALL":
-        announcement_id = action_data.get("welcome_announcement_id", "ANNOUNCE_GUEST_WELCOME_TR")
+        announcement_id = action_data_map.get("welcome_announcement_id", "ANNOUNCE_GUEST_WELCOME_TR")
         audio_path = announcement_map.get(announcement_id, fallback_audio)
         play_audio(call_id, media_info, audio_path)
         log.info("processing_new_guest_caller")
@@ -96,7 +100,7 @@ def process_call_event(message_data: dict):
         # Sonra AI döngüsünü başlat.
 
     else:
-        log.error("unknown_dialplan_action", action=action_type)
+        log.error("unknown_dialplan_action", received_action=action_type)
         play_audio(call_id, media_info, fallback_audio)
 
 
