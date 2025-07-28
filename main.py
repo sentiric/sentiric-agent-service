@@ -1,3 +1,4 @@
+# DOSYA: sentiric-agent-service/main.py (Genesis Mimarisi Uyumlu - NİHAİ VERSİYON)
 import os
 import pika
 import time
@@ -7,21 +8,23 @@ import grpc
 
 from logger_config import setup_logging
 from sentiric.media.v1 import media_pb2, media_pb2_grpc
+# TODO: Gelecekte user_service'i de buradan çağıracağız.
+# from sentiric.user.v1 import user_pb2, user_pb2_grpc 
 
 log = setup_logging()
 RABBITMQ_URL = os.getenv("RABBITMQ_URL")
 MEDIA_SERVICE_GRPC_URL = os.getenv("MEDIA_SERVICE_GRPC_URL")
+# USER_SERVICE_GRPC_URL = os.getenv("USER_SERVICE_GRPC_URL") # Gelecekte
 QUEUE_NAME = 'call.events'
 
-def play_welcome_message(call_id: str, media_info: dict):
-    log.info("welcome_message_flow_started", call_id=call_id)
+def play_audio(call_id: str, media_info: dict, audio_path: str):
+    log.info("play_audio_triggered", call_id=call_id, audio_path=audio_path)
     
-    # Hem arayanın adresini HEM DE bizim portumuzu event'ten alıyoruz
     caller_rtp_addr = media_info.get("caller_rtp_addr")
     server_rtp_port = media_info.get("server_rtp_port")
     
-    if not caller_rtp_addr or server_rtp_port is None:
-        log.error("caller_rtp_addr_or_server_rtp_port_missing_in_event", media_info=media_info)
+    if not all([caller_rtp_addr, server_rtp_port is not None]):
+        log.error("media_info_missing_for_play_audio", media_info=media_info)
         return
 
     if not MEDIA_SERVICE_GRPC_URL:
@@ -29,32 +32,73 @@ def play_welcome_message(call_id: str, media_info: dict):
         return
 
     try:
-        welcome_audio_id = "assets/welcome_tr.wav" 
-        log.info("preparing_to_play_audio", audio_id=welcome_audio_id)
-
         grpc_target = MEDIA_SERVICE_GRPC_URL.replace("http://", "")
         with grpc.insecure_channel(grpc_target) as channel:
             stub = media_pb2_grpc.MediaServiceStub(channel)
-            
-            # gRPC isteğine `server_rtp_port`'u da ekliyoruz
             request = media_pb2.PlayAudioRequest(
                 rtp_target_addr=caller_rtp_addr,
-                audio_id=welcome_audio_id,
-                server_rtp_port=int(server_rtp_port) # Port numarasını integer'a çeviriyoruz
+                audio_id=audio_path,
+                server_rtp_port=int(server_rtp_port)
             )
-            
-            log.info("sending_play_audio_request", target_addr=caller_rtp_addr, server_port=server_rtp_port)
             response = stub.PlayAudio(request, timeout=10)
-            
             if response.success:
                 log.info("play_audio_request_successful", message=response.message)
             else:
                 log.warn("play_audio_request_failed_on_server", message=response.message)
-
     except grpc.RpcError as e:
         log.error("grpc_error_media_service", error=str(e), code=e.code().name, details=e.details())
     except Exception as e:
-        log.error("play_welcome_message_failed", error=str(e), exc_info=True)
+        log.error("play_audio_failed", error=str(e), exc_info=True)
+
+
+def process_call_event(message_data: dict):
+    call_id = message_data.get("callId")
+    media_info = message_data.get("media")
+    dialplan = message_data.get("dialplan", {})
+    action_type = dialplan.get("action")
+    action_data = dialplan.get("action_data", {})
+
+    structlog.contextvars.bind_contextvars(dialplan_id=dialplan.get("id"), action=action_type)
+    log.info("processing_dialplan_action", data=action_data)
+
+    if not media_info:
+        log.warn("media_info_missing_in_event")
+        return
+
+    # Bu bilgiler normalde veritabanından veya bir config servisinden gelir.
+    # Şimdilik, Genesis mimarisine uygun olarak burada tanımlıyoruz.
+    announcement_map = {
+        "ANNOUNCE_SYSTEM_MAINTENANCE_TR": "assets/audio/tr/maintenance.wav",
+        "ANNOUNCE_GUEST_WELCOME_TR": "assets/audio/tr/welcome_guest.wav",
+        "ANNOUNCE_SYSTEM_ERROR_TR": "assets/audio/tr/system_error.wav",
+        "ANNOUNCE_DEFAULT_WELCOME_TR": "assets/audio/tr/welcome.wav",
+    }
+    fallback_audio = announcement_map["ANNOUNCE_SYSTEM_ERROR_TR"]
+
+    if action_type == "PLAY_ANNOUNCEMENT":
+        announcement_id = action_data.get("announcement_id")
+        audio_path = announcement_map.get(announcement_id, fallback_audio)
+        play_audio(call_id, media_info, audio_path)
+
+    elif action_type == "START_AI_CONVERSATION":
+        announcement_id = action_data.get("welcome_announcement_id", "ANNOUNCE_DEFAULT_WELCOME_TR")
+        audio_path = announcement_map.get(announcement_id, fallback_audio)
+        play_audio(call_id, media_info, audio_path)
+        log.info("ai_conversation_flow_started")
+        # TODO: STT dinlemesini başlat ve LLM döngüsüne gir.
+
+    elif action_type == "PROCESS_GUEST_CALL":
+        announcement_id = action_data.get("welcome_announcement_id", "ANNOUNCE_GUEST_WELCOME_TR")
+        audio_path = announcement_map.get(announcement_id, fallback_audio)
+        play_audio(call_id, media_info, audio_path)
+        log.info("processing_new_guest_caller")
+        # TODO: user-service'e gRPC ile CreateUser çağrısı yaparak bu kullanıcıyı kaydet.
+        # Sonra AI döngüsünü başlat.
+
+    else:
+        log.error("unknown_dialplan_action", action=action_type)
+        play_audio(call_id, media_info, fallback_audio)
+
 
 def callback(ch, method, properties, body):
     structlog.contextvars.clear_contextvars()
@@ -67,18 +111,16 @@ def callback(ch, method, properties, body):
         log.info("event_received", event_data=message_data)
         
         if message_data.get('eventType') == 'call.started':
-            media_info = message_data.get("media")
-            if media_info:
-                play_welcome_message(message_data.get('callId'), media_info)
-            else:
-                log.warn("media_info_missing", event_data=message_data)
+            process_call_event(message_data)
+            
     except Exception as e:
         log.error("message_processing_error", error=str(e), exc_info=True)
     
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
+
 def main():
-    log.info("agent-service", service_name="agent-service")
+    log.info("agent-service_starting", service_name="agent-service")
     if not RABBITMQ_URL:
         log.critical("rabbitmq_url_not_configured_exiting")
         return
