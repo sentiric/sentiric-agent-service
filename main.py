@@ -71,10 +71,10 @@ def process_call_event(message_data: dict):
         return
 
     announcement_map = {
-        "ANNOUNCE_SYSTEM_MAINTENANCE_TR": "assets/audio/tr/maintenance.wav",
-        "ANNOUNCE_GUEST_WELCOME_TR": "assets/audio/tr/welcome_guest.wav",
-        "ANNOUNCE_SYSTEM_ERROR_TR": "assets/audio/tr/system_error.wav",
-        "ANNOUNCE_DEFAULT_WELCOME_TR": "assets/audio/tr/welcome.wav",
+        "ANNOUNCE_SYSTEM_MAINTENANCE_TR": "audio/tr/maintenance.wav",
+        "ANNOUNCE_GUEST_WELCOME_TR": "audio/tr/welcome_anonymous.wav",
+        "ANNOUNCE_SYSTEM_ERROR_TR": "audio/tr/system_error.wav",
+        "ANNOUNCE_DEFAULT_WELCOME_TR": "audio/tr/welcome.wav",
     }
     fallback_audio = announcement_map["ANNOUNCE_SYSTEM_ERROR_TR"]
 
