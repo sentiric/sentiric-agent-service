@@ -1,20 +1,37 @@
-FROM python:3.10-slim
+# Dockerfile (Python Multi-Stage & Alpine)
+
+# --- STAGE 1: Builder ---
+# Builder olarak alpine tabanlı python imajını kullanıyoruz.
+# 'build-base' paketi, C tabanlı kütüphaneleri derlemek için gerekli araçları içerir.
+FROM python:3.10-alpine AS builder
+
+# Gerekli build araçlarını kur
+RUN apk add --no-cache git build-base
 
 WORKDIR /app
 
+# Bağımlılıkları kur
 COPY requirements.txt .
-
-# YENİ EKLENEN ADIM:
-# 'pip'in git repolarını klonlayabilmesi için önce 'git'i kuruyoruz.
-# '--no-install-recommends' ve 'rm -rf' komutları, imaj boyutunu
-# küçük tutmak için gereksiz dosyaları temizler.
-RUN apt-get update && \
-    apt-get install -y git --no-install-recommends && \
-    rm -rf /var/lib/apt/lists/*
-
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
 
-# python'u "-u" (unbuffered) modunda çalıştırıyoruz.
+# --- STAGE 2: Final (Minimal & Secure) Image ---
+# Final imajımız da alpine tabanlı olacak.
+FROM python:3.10-alpine
+
+# Güvenlik için 'root' olmayan bir kullanıcı oluştur ve kullan
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+USER appuser
+WORKDIR /home/appuser
+
+# Builder'dan SADECE kurulu paketleri kopyala
+COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
+
+# SADECE gerekli uygulama dosyalarını kopyala
+COPY main.py .
+COPY logger_config.py .
+# Eğer başka dosyalar/klasörler varsa onları da ekle:
+# COPY ./src ./src
+
+# Python'u unbuffered modda çalıştır
 CMD ["python", "-u", "main.py"]
