@@ -142,9 +142,7 @@ def process_call_event(message_data: dict):
     if not media_info:
         log.warn("media_info_missing_in_event")
         return
-
-    # ARTIK STATİK MAP YOK! HER ŞEY VERİTABANINDAN GELECEK.
-
+        
     if action_type == "PLAY_ANNOUNCEMENT":
         announcement_id = action_data_map.get("announcement_id")
         audio_path = get_announcement_path(announcement_id)
@@ -158,9 +156,11 @@ def process_call_event(message_data: dict):
         # TODO: STT dinlemesini başlat ve LLM döngüsüne gir.
 
     elif action_type == "PROCESS_GUEST_CALL":
-        tenant_id = dialplan.get("tenantId")
+        # --- İYİLEŞTİRME BURADA ---
+        # Hem 'tenantId' (proto'dan gelen) hem de 'tenant_id' (belki başka bir yerden) anahtarlarını kontrol et
+        tenant_id = dialplan.get("tenantId") or dialplan.get("tenant_id")
+        
         from_uri = message_data.get("from", "")
-        # Arayan numarayı SIP URI'sinden çıkarmak için basit bir regex veya split
         caller_id_match = from_uri.split('<sip:')[1].split('@')[0] if '<sip:' in from_uri else None
         
         if caller_id_match and tenant_id:
