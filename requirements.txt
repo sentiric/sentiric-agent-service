@@ -1,6 +1,8 @@
+# requirements.txt dosyasının GÜNCEL içeriği
 pika
 structlog
 grpcio
 grpcio-tools
 protobuf
+psycopg2-binary
 sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@v1.2.0

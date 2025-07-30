@@ -1,25 +1,21 @@
+# docker-compose.service.yml dosyasının GÜNCEL içeriği
 services:
   agent-service:
-    image: ${DOCKER_REGISTRY:-ghcr.io/sentiric}/sentiric-agent-service:${TAG:-latest}
+    image: ${DOCKR_REGISTRY:-ghcr.io/sentiric}/sentiric-agent-service:${TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile
     container_name: sentiric_agent_service
     env_file:
       - ./.env
-    # YENİ EKLENEN/GÜNCELLENEN BÖLÜM:
-    # Bu, ana docker-compose dosyasındaki değişkenlerin bu konteynere
-    # aktarılmasını sağlar.
     environment:
       - RABBITMQ_URL=${RABBITMQ_URL}
       - MEDIA_SERVICE_GRPC_URL=${MEDIA_SERVICE_GRPC_URL}
-      # - TTS_SERVICE_GRPC_URL=${TTS_SERVICE_GRPC_URL} # Gelecekte
+      - DATABASE_URL=${POSTGRES_URL} # <-- YENİ EKLENEN SATIR
     networks:
       - sentiric-net
     restart: always
-    # depends_on bloğunu kaldırıyoruz, çünkü dayanıklılık kodda.
 
 networks:
   sentiric-net:
     name: ${NETWORK_NAME:-sentiric-net}
-    # external: true
