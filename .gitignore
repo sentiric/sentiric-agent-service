@@ -1,4 +1,20 @@
-__pycache__/
-*.pyc
-.venv/
+# Üretilmiş kodlar ve bağımlılıklar
+/gen
+/vendor
+/bin
+
+# Go derleme çıktıları
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test çıktıları
+*.test
+
+# OS tarafından üretilen dosyalar
+.DS_Store
+Thumbs.db
+
 .env

@@ -1,17 +1,20 @@
-# docker-compose.service.yml dosyasının GÜNCEL içeriği
+# docker-compose.service.yml
 services:
   agent-service:
-    image: ${DOCKR_REGISTRY:-ghcr.io/sentiric}/sentiric-agent-service:${TAG:-latest}
+    image: ${DOCKER_REGISTRY:-ghcr.io/sentiric}/sentiric-agent-service:${TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile
     container_name: sentiric_agent_service
-    env_file:
-      - ./.env
+    # Bu servis için gerekli tüm ortam değişkenleri ana docker-compose tarafından sağlanır.
+    # docker-compose.prod.yml dosyasındaki environment bloğu burayı geçersiz kılar ve doldurur.
     environment:
       - RABBITMQ_URL=${RABBITMQ_URL}
+      - DATABASE_URL=${POSTGRES_URL}
       - MEDIA_SERVICE_GRPC_URL=${MEDIA_SERVICE_GRPC_URL}
-      - DATABASE_URL=${POSTGRES_URL} # <-- YENİ EKLENEN SATIR
+      - USER_SERVICE_GRPC_URL=${USER_SERVICE_GRPC_URL}
+      - DIALPLAN_SERVICE_GRPC_URL=${DIALPLAN_SERVICE_GRPC_URL}
+      - LLM_SERVICE_URL=${LLM_SERVICE_URL}
     networks:
       - sentiric-net
     restart: always

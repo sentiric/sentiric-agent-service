@@ -1,77 +1,69 @@
 # 🧠 Sentiric Agent Service
 
-**Description:** This service is the **central brain** of the Sentiric platform. Written in **Python**, it is responsible for managing the entire asynchronous dialogue flow of a call, orchestrating various AI services, and executing business logic.
+**Açıklama:** Bu servis, Sentiric platformunun **merkezi orkestrasyon beynidir.** Yüksek performans, eşzamanlılık ve sağlamlık için **Go** ile yazılmıştır. Görevi, `RabbitMQ` üzerinden gelen olayları dinlemek ve bu olaylara göre platformdaki diğer uzman servisleri (`media`, `user`, `llm` vb.) yöneterek iş akışlarını hayata geçirmektir.
 
-**Core Responsibilities:**
-*   **Event Consumption:** Listens to the `call.events` queue on **RabbitMQ** for new events, such as `call.started`.
-*   **Dialogue Management:** Manages the state of each conversation using the `CallContext` model (SMCP).
-*   **AI Orchestration:** Acts as a client to other specialized services to perform tasks:
-    *   Calls `sentiric-stt-service` to transcribe user speech.
-    *   Calls an LLM (e.g., Gemini, GPT) to understand user intent and generate responses.
-    *   Calls `sentiric-tts-service` to synthesize speech from text.
-    *   Calls `sentiric-media-service` to play audio to the user.
-*   **Business Logic Execution:** Triggers business workflows by calling services like `sentiric-connectors-service` (e.g., to book an appointment in a CRM).
+Bu servis, platformun asenkron iş mantığını yürüten ana işçisidir (worker).
 
-**Technology Stack:**
-*   **Language:** Python
-*   **Framework (Future):** FastAPI (for potential internal API endpoints)
-*   **Inter-Service Communication:**
-    *   **AMQP (with Pika):** Consumes events from RabbitMQ.
-    *   **REST/gRPC (Future):** Will act as a client to other AI and core services.
-*   **Logging:** `structlog` for structured JSON logging.
+## 🎯 Temel Sorumluluklar
 
-**API Interactions:**
-This service primarily acts as an **event consumer** and an **API client**. It is the main orchestrator that calls upon all other AI and business logic services.
+*   **Olay Tüketimi:** `call.events` gibi RabbitMQ kuyruklarını dinleyerek `call.started` gibi olayları tüketir.
+*   **İş Akışı Orkestrasyonu:** Gelen olayın içerdiği `dialplan` kararına göre bir dizi eylemi yönetir. Örneğin:
+    *   Bir kullanıcıyı `user-service`'e kaydeder.
+    *   Bir anonsu `media-service`'e çaldırır.
+    *   Bir yapay zeka diyaloğu başlatmak için `llm-service`'e istek gönderir.
+*   **Servis İstemcisi:** Platformdaki diğer tüm uzman mikroservisler için birincil istemci (client) olarak görev yapar. İletişim için gRPC (iç servisler) ve HTTP/REST (AI servisleri) kullanır.
+*   **Durum Yönetimi (Gelecek):** Uzun süren diyalogların durumunu yönetmek için Redis veya benzeri bir in-memory veritabanı ile entegre olacaktır.
 
-## Getting Started
+## 🛠️ Teknoloji Yığını
 
-### Prerequisites
-- Docker and Docker Compose
-- Git
-- All Sentiric repositories cloned into a single workspace directory.
+*   **Dil:** Go
+*   **Asenkron İletişim:** RabbitMQ (`amqp091-go` kütüphanesi)
+*   **Servisler Arası İletişim:**
+    *   **gRPC:** İç, yüksek performanslı servislere (`media`, `user`, `dialplan`) bağlanmak için.
+    *   **HTTP/REST:** Dış veya bağımlılıkları izole edilmiş AI servislerine (`llm-service`) bağlanmak için.
+*   **Veritabanı Erişimi:** PostgreSQL (`pgx` kütüphanesi)
 
-### Local Development & Platform Setup
-This service is not designed to run standalone. It is an integral part of the Sentiric platform and must be run via the central orchestrator in the `sentiric-infrastructure` repository.
+## 🔌 API Etkileşimleri
 
-1.  **Clone all repositories:**
+Bu servis bir sunucu değil, bir **istemci ve tüketicidir.** Dışarıya bir port açmaz.
+
+*   **Gelen (Consumer Of):**
+    *   `RabbitMQ`: Ana iş akışını tetikleyen olayları alır.
+*   **Giden (Client Of):**
+    *   `sentiric-media-service` (gRPC): Medya işlemlerini yönetmek için.
+    *   `sentiric-user-service` (gRPC): Kullanıcı işlemlerini yönetmek için.
+    *   `sentiric-llm-service` (HTTP/REST): Yapay zeka metin üretimi için.
+    *   `PostgreSQL`: Anons yolları gibi konfigürasyon verilerini okumak için.
+
+## 🚀 Yerel Geliştirme (Local Development)
+
+### Önkoşullar
+*   Go (versiyon 1.22+)
+*   Docker & Docker Compose (bağımlı servisleri çalıştırmak için)
+
+### Kurulum ve Çalıştırma
+1.  **Bağımlılıkları Yükleyin:**
+    Projenin ana dizininde `go mod tidy` komutunu çalıştırarak gerekli tüm Go modüllerini indirin.
     ```bash
-    # In your workspace directory
-    git clone https://github.com/sentiric/sentiric-infrastructure.git
-    git clone https://github.com/sentiric/sentiric-agent-service.git
-    # ... clone other required services
+    go mod tidy
     ```
 
-2.  **Configure Environment:**
+2.  **Ortam Değişkenlerini Ayarlayın:**
+    `.env.example` dosyasını `.env` olarak kopyalayın. Platformun diğer tüm servisleri (`sentiric-infrastructure` ile) Docker üzerinde çalışıyorsa, `localhost` adresleri doğru olacaktır.
     ```bash
-    cd sentiric-infrastructure
-    cp .env.local.example .env
-    # Ensure RABBITMQ_URL is correctly set in the .env file
+    cp .env.example .env
     ```
 
-3.  **Run the entire platform:** The central Docker Compose file will automatically build and run this service.
+3.  **Servisi Çalıştırın:**
+    Platformun geri kalanı Docker'da çalışırken, `agent-service`'i doğrudan yerel makinenizde çalıştırarak hızlıca test edebilirsiniz:
     ```bash
-    # From the sentiric-infrastructure directory
-    docker compose up --build -d
+    go run .
     ```
 
-4.  **View Logs:** To see the structured JSON logs from this service:
-    ```bash
-    docker compose logs -f agent-service
-    ```
+## 🐳 Docker ile Çalıştırma
 
-## Configuration
+Bu servis, `sentiric-infrastructure` reposundaki merkezi `docker-compose.yml` dosyası aracılığıyla platformun bir parçası olarak çalıştırılmak üzere tasarlanmıştır. `Dockerfile`, üretim için optimize edilmiş, minimal bir `scratch` imajı oluşturur.
 
-All configuration is managed via environment variables passed from the `sentiric-infrastructure` repository's `.env` file. The primary variable for this service is `RABBITMQ_URL`.
+## 🤝 Katkıda Bulunma
 
-## Deployment
-
-This service is designed for containerized deployment. The `Dockerfile` creates a minimal image based on `python-slim`. The CI/CD pipeline in `.github/workflows/docker-ci.yml` automatically builds and pushes the image to the GitHub Container Registry (`ghcr.io`).
-
-## Contributing
-
-We welcome contributions! Please refer to the [Sentiric Governance](https://github.com/sentiric/sentiric-governance) repository for detailed coding standards, contribution guidelines, and the overall project vision.
-
-## License
-
-This project is licensed under the [License](LICENSE).
-
+Katkılarınızı bekliyoruz! Lütfen projenin ana [Sentiric Governance](https://github.com/sentiric/sentiric-governance) reposundaki kodlama standartlarına ve katkıda bulunma rehberine göz atın.
