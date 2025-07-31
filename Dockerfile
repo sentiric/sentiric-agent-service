@@ -1,11 +1,13 @@
-FROM golang:1.22-alpine AS builder
+FROM golang:1.24.5-alpine AS builder
 
 RUN apk add --no-cache git
 
 WORKDIR /app
 
 COPY go.mod go.sum ./
-# Kontratları çek
+# YENİ EKLENEN SATIR: Go'ya proxy'yi atlayıp doğrudan git'ten çekmesini söylüyoruz.
+# Bu, önbellek gecikmelerini ortadan kaldırır.
+RUN go env -w GOPROXY=direct
 RUN go mod download
 
 COPY . .
