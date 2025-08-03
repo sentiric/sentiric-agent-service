@@ -1,12 +1,17 @@
+// DOSYA: sentiric-agent-service/main.go (NİHAİ v4.3)
+
 package main
 
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net/http"
 	"os"
 	"regexp"
@@ -19,7 +24,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/credentials"
 
 	dialplanv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/dialplan/v1"
 	mediav1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/media/v1"
@@ -28,8 +33,7 @@ import (
 
 const queueName = "call.events"
 
-// --- Veri Yapıları ---
-
+// ... (Veri yapıları aynı kalacak) ...
 type CallEvent struct {
 	EventType string                             `json:"eventType"`
 	CallID    string                             `json:"callId"`
@@ -46,8 +50,6 @@ type LlmResponse struct {
 	Text string `json:"text"`
 }
 
-// --- Ana Yapı ---
-
 type AgentService struct {
 	db            *sql.DB
 	mediaClient   mediav1.MediaServiceClient
@@ -57,18 +59,16 @@ type AgentService struct {
 }
 
 func main() {
-	// Zerolog'u standart loglama formatımıza uygun şekilde yapılandır
 	zerolog.TimeFieldFormat = time.RFC3339
 	log.Logger = log.Output(os.Stderr).With().Timestamp().Str("service", "agent-service-go").Logger()
 
-	err := godotenv.Load()
-	if err != nil {
-		log.Warn().Msg("Uyarı: .env dosyası bulunamadı. Ortam değişkenlerinin sistem tarafından sağlandığı varsayılıyor.")
-	}
+	// .env dosyasını yüklemeye çalış, hata olursa sadece uyar ve devam et
+	// Docker ortamında değişkenler zaten enjekte edildiği için bu hata vermemeli.
+	godotenv.Load()
 
 	log.Info().Msg("Sentiric Agent Service (Go) başlatılıyor...")
 
-	db := connectToDBWithRetry(getEnv("DATABASE_URL"))
+	db := connectToDBWithRetry(getEnv("POSTGRES_URL"))
 	defer db.Close()
 
 	rabbitCh := connectToRabbitMQWithRetry(getEnv("RABBITMQ_URL"))
@@ -82,6 +82,7 @@ func main() {
 		llmServiceURL: getEnv("LLM_SERVICE_URL"),
 	}
 
+	// ... (main fonksiyonunun geri kalanı aynı) ...
 	msgs, err := rabbitCh.Consume(queueName, "", true, false, false, false, nil)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Mesajlar tüketilemedi")
@@ -101,8 +102,7 @@ func main() {
 	<-forever
 }
 
-// --- Olay İşleyicileri ---
-
+// ... (handle... fonksiyonları ve yardımcı fonksiyonlar aynı kalacak) ...
 func (agent *AgentService) handleRabbitMQMessage(body []byte) {
 	var event CallEvent
 	if err := json.Unmarshal(body, &event); err != nil {
@@ -110,7 +110,6 @@ func (agent *AgentService) handleRabbitMQMessage(body []byte) {
 		return
 	}
 
-	// Her log'a otomatik olarak call_id ve eventType ekleyen bir alt-loglayıcı oluştur
 	l := log.With().Str("call_id", event.CallID).Str("event_type", event.EventType).Logger()
 	l.Info().RawJSON("event_data", body).Msg("Olay alındı")
 
@@ -141,8 +140,6 @@ func (agent *AgentService) handleCallStarted(l zerolog.Logger, event *CallEvent)
 		agent.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR_TR")
 	}
 }
-
-// --- Eylem Fonksiyonları ---
 
 func (agent *AgentService) handlePlayAnnouncement(l zerolog.Logger, event *CallEvent) {
 	announcementID := event.Dialplan.Action.ActionData.Data["announcement_id"]
@@ -181,8 +178,6 @@ func (agent *AgentService) startDialogLoop(l zerolog.Logger, event *CallEvent) {
 	}
 	l.Info().Str("llm_response", respText).Msg("LLM yanıtı alındı")
 }
-
-// --- Yardımcı Fonksiyonlar ---
 
 func (agent *AgentService) playAnnouncement(l zerolog.Logger, event *CallEvent, announcementID string) {
 	audioPath, err := agent.getAnnouncementPathFromDB(l, announcementID)
@@ -281,7 +276,6 @@ func (agent *AgentService) generateLlmResponse(l zerolog.Logger, prompt string) 
 }
 
 // --- Kurulum ve Bağlantı Fonksiyonları ---
-
 func getEnv(key string) string {
 	val := os.Getenv(key)
 	if val == "" {
@@ -296,16 +290,17 @@ func connectToDBWithRetry(url string) *sql.DB {
 	for i := 0; i < 10; i++ {
 		db, err = sql.Open("pgx", url)
 		if err == nil {
-			err = db.Ping()
-			if err == nil {
+			if err = db.Ping(); err == nil {
 				log.Info().Msg("Veritabanı bağlantısı başarılı.")
 				return db
 			}
 		}
+		if i == 9 {
+			log.Fatal().Err(err).Msg("Maksimum deneme sonrası veritabanına bağlanılamadı")
+		}
 		log.Warn().Err(err).Int("attempt", i+1).Int("max_attempts", 10).Msg("Veritabanına bağlanılamadı, 5 saniye sonra tekrar denenecek...")
 		time.Sleep(5 * time.Second)
 	}
-	log.Fatal().Err(err).Msg("Maksimum deneme sonrası veritabanına bağlanılamadı")
 	return nil
 }
 
@@ -326,41 +321,64 @@ func connectToRabbitMQWithRetry(url string) *amqp091.Channel {
 			}
 			return ch
 		}
+		if i == 9 {
+			log.Fatal().Err(err).Msg("Maksimum deneme sonrası RabbitMQ'ya bağlanılamadı")
+		}
 		log.Warn().Err(err).Int("attempt", i+1).Int("max_attempts", 10).Msg("RabbitMQ'ya bağlanılamadı, 5 saniye sonra tekrar denenecek...")
 		time.Sleep(5 * time.Second)
 	}
-	log.Fatal().Err(err).Msg("Maksimum deneme sonrası RabbitMQ'ya bağlanılamadı")
 	return nil
 }
 
-func createGrpcClient(addrEnvVar string) *grpc.ClientConn {
+func createGrpcClient(addrEnvVar, certEnvVar, keyEnvVar string) *grpc.ClientConn {
 	addr := getEnv(addrEnvVar)
-	addr = strings.TrimPrefix(addr, "http://")
+	certPath := getEnv(certEnvVar)
+	keyPath := getEnv(keyEnvVar)
+	caPath := getEnv("GRPC_TLS_CA_PATH")
+
+	clientCert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		log.Fatal().Err(err).Str("path", certPath).Msg("İstemci sertifikası yüklenemedi")
+	}
+
+	caCert, err := ioutil.ReadFile(caPath)
+	if err != nil {
+		log.Fatal().Err(err).Str("path", caPath).Msg("CA sertifikası okunamadı")
+	}
+	caCertPool := x509.NewCertPool()
+	caCertPool.AppendCertsFromPEM(caCert)
+
+	creds := credentials.NewTLS(&tls.Config{
+		Certificates: []tls.Certificate{clientCert},
+		RootCAs:      caCertPool,
+		ServerName:   strings.Split(addr, ":")[0],
+	})
 
 	var conn *grpc.ClientConn
-	var err error
 	for i := 0; i < 10; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		conn, err = grpc.DialContext(ctx, addr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
+		conn, err = grpc.DialContext(ctx, addr, grpc.WithTransportCredentials(creds), grpc.WithBlock())
 		if err == nil {
-			log.Info().Str("address", addr).Msg("gRPC bağlantısı başarılı.")
+			log.Info().Str("address", addr).Msg("Güvenli gRPC bağlantısı başarılı.")
 			return conn
+		}
+		if i == 9 {
+			log.Fatal().Err(err).Str("address", addr).Msg("Maksimum deneme sonrası gRPC sunucusuna bağlanılamadı")
 		}
 		log.Warn().Err(err).Str("address", addr).Int("attempt", i+1).Int("max_attempts", 10).Msg("gRPC sunucusuna bağlanılamadı, 5 saniye sonra tekrar...")
 		time.Sleep(5 * time.Second)
 	}
-	log.Fatal().Err(err).Str("address", addr).Msg("Maksimum deneme sonrası gRPC sunucusuna bağlanılamadı")
 	return nil
 }
 
 func createMediaServiceClient() mediav1.MediaServiceClient {
-	conn := createGrpcClient("MEDIA_SERVICE_GRPC_URL")
+	conn := createGrpcClient("MEDIA_SERVICE_GRPC_URL", "AGENT_SERVICE_CERT_PATH", "AGENT_SERVICE_KEY_PATH")
 	return mediav1.NewMediaServiceClient(conn)
 }
 
 func createUserServiceClient() userv1.UserServiceClient {
-	conn := createGrpcClient("USER_SERVICE_GRPC_URL")
+	conn := createGrpcClient("USER_SERVICE_GRPC_URL", "AGENT_SERVICE_CERT_PATH", "AGENT_SERVICE_KEY_PATH")
 	return userv1.NewUserServiceClient(conn)
 }
 
