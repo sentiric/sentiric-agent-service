@@ -107,3 +107,17 @@ services:
       - app
 
     restart: always
+
+  builder:
+    image: golang:1.24.5-alpine
+    working_dir: /app
+    env_file: 
+      - ./.env    
+    volumes:
+      - ../sentiric-agent-service:/app
+      - ../sentiric-infrastructure/tls/certs:/etc/sentiric/tls:ro      
+    command: sh -c "while true; do sleep 1000; done"
+    profiles:
+      - dev
+    networks:
+      - sentiric-net
