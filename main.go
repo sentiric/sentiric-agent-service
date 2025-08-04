@@ -1,4 +1,4 @@
-// DOSYA: sentiric-agent-service/main.go (NİHAİ v4.3)
+// DOSYA: sentiric-agent-service/main.go (TTS Simülasyonu ile Güncellenmiş Versiyon)
 
 package main
 
@@ -33,7 +33,6 @@ import (
 
 const queueName = "call.events"
 
-// ... (Veri yapıları aynı kalacak) ...
 type CallEvent struct {
 	EventType string                             `json:"eventType"`
 	CallID    string                             `json:"callId"`
@@ -56,14 +55,13 @@ type AgentService struct {
 	userClient    userv1.UserServiceClient
 	httpClient    *http.Client
 	llmServiceURL string
+	// ttsServiceURL string // Gerçek TTS implementasyonu için hazır, şimdilik kullanılmıyor.
 }
 
 func main() {
 	zerolog.TimeFieldFormat = time.RFC3339
 	log.Logger = log.Output(os.Stderr).With().Timestamp().Str("service", "agent-service-go").Logger()
 
-	// .env dosyasını yüklemeye çalış, hata olursa sadece uyar ve devam et
-	// Docker ortamında değişkenler zaten enjekte edildiği için bu hata vermemeli.
 	godotenv.Load()
 
 	log.Info().Msg("Sentiric Agent Service (Go) başlatılıyor...")
@@ -74,15 +72,20 @@ func main() {
 	rabbitCh := connectToRabbitMQWithRetry(getEnv("RABBITMQ_URL"))
 	defer rabbitCh.Close()
 
+	llmURL := getEnv("LLM_SERVICE_URL")
+	if !strings.HasPrefix(llmURL, "http://") && !strings.HasPrefix(llmURL, "https://") {
+		llmURL = "http://" + llmURL
+	}
+
 	agent := &AgentService{
 		db:            db,
 		mediaClient:   createMediaServiceClient(),
 		userClient:    createUserServiceClient(),
 		httpClient:    &http.Client{Timeout: 15 * time.Second},
-		llmServiceURL: getEnv("LLM_SERVICE_URL"),
+		llmServiceURL: llmURL,
+		// ttsServiceURL: getEnv("TTS_SERVICE_URL"), // Henüz aktif değil
 	}
 
-	// ... (main fonksiyonunun geri kalanı aynı) ...
 	msgs, err := rabbitCh.Consume(queueName, "", true, false, false, false, nil)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Mesajlar tüketilemedi")
@@ -102,7 +105,6 @@ func main() {
 	<-forever
 }
 
-// ... (handle... fonksiyonları ve yardımcı fonksiyonlar aynı kalacak) ...
 func (agent *AgentService) handleRabbitMQMessage(body []byte) {
 	var event CallEvent
 	if err := json.Unmarshal(body, &event); err != nil {
@@ -123,6 +125,7 @@ func (agent *AgentService) handleCallStarted(l zerolog.Logger, event *CallEvent)
 
 	if event.Dialplan.Action == nil {
 		l.Error().Msg("Hata: Dialplan Action boş.")
+		agent.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR_TR")
 		return
 	}
 	action := event.Dialplan.Action.Action
@@ -149,9 +152,10 @@ func (agent *AgentService) handlePlayAnnouncement(l zerolog.Logger, event *CallE
 
 func (agent *AgentService) handleStartAIConversation(l zerolog.Logger, event *CallEvent) {
 	announcementID := event.Dialplan.Action.ActionData.Data["welcome_announcement_id"]
-	l.Info().Str("announcement_id", announcementID).Msg("AI Konuşma başlatma eylemi işleniyor")
+	l.Info().Str("announcement_id", announcementID).Msg("AI Konuşma başlatma eylemi işleniyor (karşılama anonsu)")
 	agent.playAnnouncement(l, event, announcementID)
-	agent.startDialogLoop(l, event)
+	// Karşılama anonsu bittikten sonra diyalog döngüsünü başlat
+	go agent.startDialogLoop(l, event)
 }
 
 func (agent *AgentService) handleProcessGuestCall(l zerolog.Logger, event *CallEvent) {
@@ -166,29 +170,50 @@ func (agent *AgentService) handleProcessGuestCall(l zerolog.Logger, event *CallE
 	announcementID := event.Dialplan.Action.ActionData.Data["welcome_announcement_id"]
 	l.Info().Str("announcement_id", announcementID).Msg("Misafir karşılama eylemi işleniyor")
 	agent.playAnnouncement(l, event, announcementID)
-	agent.startDialogLoop(l, event)
+	go agent.startDialogLoop(l, event)
 }
 
+// ### DEĞİŞİKLİK BURADA ###
 func (agent *AgentService) startDialogLoop(l zerolog.Logger, event *CallEvent) {
+	// Karşılama anonsunun bitmesi için makul bir süre bekleyelim.
+	// Daha gelişmiş bir sistemde bu, media-service'ten gelen bir "anons bitti" olayı ile tetiklenir.
+	time.Sleep(5 * time.Second)
+
 	l.Info().Msg("Yapay zeka diyalog döngüsü başlatılıyor...")
-	respText, err := agent.generateLlmResponse(l, "Merhaba, nasılsınız?")
+	respText, err := agent.generateLlmResponse(l, "Merhaba, nasılsınız? Lütfen kısa bir yanıt verin.")
 	if err != nil {
 		l.Error().Err(err).Msg("Hata: LLM'den yanıt alınamadı")
+		agent.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR_TR")
 		return
 	}
 	l.Info().Str("llm_response", respText).Msg("LLM yanıtı alındı")
+
+	// ŞİMDİLİK, LLM'den gelen yanıt yerine, akışın çalıştığını göstermek için
+	// başka bir anons çalalım. Bu, "Düşün -> Konuş" döngüsünün çalıştığını kanıtlar.
+	l.Info().Msg("LLM yanıtı yerine test amaçlı anons çalınıyor...")
+	agent.playAnnouncement(l, event, "ANNOUNCE_DEFAULT_WELCOME_TR")
 }
 
 func (agent *AgentService) playAnnouncement(l zerolog.Logger, event *CallEvent, announcementID string) {
 	audioPath, err := agent.getAnnouncementPathFromDB(l, announcementID)
 	if err != nil {
 		l.Error().Err(err).Str("announcement_id", announcementID).Msg("Anons yolu alınamadı, fallback kullanılıyor")
+		// Fallback anonsu için yolu doğrudan belirle, veritabanına tekrar gitme.
 		audioPath = "audio/tr/system_error.wav"
 	}
 
 	mediaInfo := event.Media
 	rtpTarget, _ := mediaInfo["caller_rtp_addr"].(string)
 	serverPort, _ := mediaInfo["server_rtp_port"].(float64)
+
+	// rtpTarget boşsa, bu bir test veya hatalı bir akış olabilir. Devam etme.
+	if rtpTarget == "" || serverPort == 0 {
+		l.Error().
+			Str("rtp_target", rtpTarget).
+			Float64("server_port", serverPort).
+			Msg("Geçersiz medya bilgisi, ses çalınamıyor.")
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -212,12 +237,7 @@ func (agent *AgentService) getAnnouncementPathFromDB(l zerolog.Logger, announcem
 	err := agent.db.QueryRow(query, announcementID).Scan(&audioPath)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			l.Warn().Str("announcement_id", announcementID).Msg("Veritabanında anons bulunamadı. Fallback deneniyor.")
-			err = agent.db.QueryRow(query, "ANNOUNCE_SYSTEM_ERROR_TR").Scan(&audioPath)
-			if err != nil {
-				return "", fmt.Errorf("fallback anonsu bile bulunamadı: %w", err)
-			}
-			return audioPath, nil
+			return "", fmt.Errorf("anons bulunamadı: %s", announcementID)
 		}
 		return "", fmt.Errorf("anons sorgusu başarısız: %w", err)
 	}
@@ -250,7 +270,7 @@ func (agent *AgentService) generateLlmResponse(l zerolog.Logger, prompt string) 
 		return "", fmt.Errorf("istek gövdesi oluşturulamadı: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", agent.llmServiceURL+"/generate", bytes.NewBuffer(reqBody))
+	req, err := http.NewRequestWithContext(context.Background(), "POST", agent.llmServiceURL+"/generate", bytes.NewBuffer(reqBody))
 	if err != nil {
 		return "", fmt.Errorf("HTTP isteği oluşturulamadı: %w", err)
 	}
@@ -275,7 +295,6 @@ func (agent *AgentService) generateLlmResponse(l zerolog.Logger, prompt string) 
 	return llmResp.Text, nil
 }
 
-// --- Kurulum ve Bağlantı Fonksiyonları ---
 func getEnv(key string) string {
 	val := os.Getenv(key)
 	if val == "" {
