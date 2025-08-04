@@ -26,6 +26,12 @@ services:
       - data
     restart: always
 
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5    
+
   rabbitmq:
     image: rabbitmq:4.1.0-management-alpine
     env_file:
@@ -40,7 +46,13 @@ services:
     profiles:
       - default
       - data
-    restart: always   
+    restart: always
+
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   media-service:
     build:
@@ -79,7 +91,11 @@ services:
     profiles:
       - default
       - app
-    restart: always    
+    restart: always
+
+    depends_on:
+      postgres:
+        condition: service_healthy        
 
   # UYGULAMA SERVİSLERİ
   agent-service: 
@@ -107,6 +123,12 @@ services:
       - app
 
     restart: always
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy    
 
   builder:
     image: golang:1.24.5-alpine
