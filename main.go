@@ -1,4 +1,4 @@
-// DOSYA: sentiric-agent-service/main.go (TTS Simülasyonu ile Güncellenmiş Versiyon)
+// DOSYA: sentiric-agent-service/main.go (GERÇEK TTS ENTEGRASYONU AKTİF)
 
 package main
 
@@ -49,13 +49,22 @@ type LlmResponse struct {
 	Text string `json:"text"`
 }
 
+// TTS servisi için istek ve yanıt yapıları
+type TtsRequest struct {
+	Text string `json:"text"`
+}
+
+type TtsResponse struct {
+	AudioPath string `json:"audio_path"`
+}
+
 type AgentService struct {
 	db            *sql.DB
 	mediaClient   mediav1.MediaServiceClient
 	userClient    userv1.UserServiceClient
 	httpClient    *http.Client
 	llmServiceURL string
-	// ttsServiceURL string // Gerçek TTS implementasyonu için hazır, şimdilik kullanılmıyor.
+	ttsServiceURL string // <-- YENİ ALAN
 }
 
 func main() {
@@ -77,13 +86,18 @@ func main() {
 		llmURL = "http://" + llmURL
 	}
 
+	ttsURL := getEnv("TTS_SERVICE_URL")
+	if !strings.HasPrefix(ttsURL, "http://") && !strings.HasPrefix(ttsURL, "https://") {
+		ttsURL = "http://" + ttsURL
+	}
+
 	agent := &AgentService{
 		db:            db,
 		mediaClient:   createMediaServiceClient(),
 		userClient:    createUserServiceClient(),
 		httpClient:    &http.Client{Timeout: 15 * time.Second},
 		llmServiceURL: llmURL,
-		// ttsServiceURL: getEnv("TTS_SERVICE_URL"), // Henüz aktif değil
+		ttsServiceURL: ttsURL, // <-- YENİ ALAN
 	}
 
 	msgs, err := rabbitCh.Consume(queueName, "", true, false, false, false, nil)
@@ -154,7 +168,6 @@ func (agent *AgentService) handleStartAIConversation(l zerolog.Logger, event *Ca
 	announcementID := event.Dialplan.Action.ActionData.Data["welcome_announcement_id"]
 	l.Info().Str("announcement_id", announcementID).Msg("AI Konuşma başlatma eylemi işleniyor (karşılama anonsu)")
 	agent.playAnnouncement(l, event, announcementID)
-	// Karşılama anonsu bittikten sonra diyalog döngüsünü başlat
 	go agent.startDialogLoop(l, event)
 }
 
@@ -173,10 +186,7 @@ func (agent *AgentService) handleProcessGuestCall(l zerolog.Logger, event *CallE
 	go agent.startDialogLoop(l, event)
 }
 
-// ### DEĞİŞİKLİK BURADA ###
 func (agent *AgentService) startDialogLoop(l zerolog.Logger, event *CallEvent) {
-	// Karşılama anonsunun bitmesi için makul bir süre bekleyelim.
-	// Daha gelişmiş bir sistemde bu, media-service'ten gelen bir "anons bitti" olayı ile tetiklenir.
 	time.Sleep(5 * time.Second)
 
 	l.Info().Msg("Yapay zeka diyalog döngüsü başlatılıyor...")
@@ -188,17 +198,86 @@ func (agent *AgentService) startDialogLoop(l zerolog.Logger, event *CallEvent) {
 	}
 	l.Info().Str("llm_response", respText).Msg("LLM yanıtı alındı")
 
-	// ŞİMDİLİK, LLM'den gelen yanıt yerine, akışın çalıştığını göstermek için
-	// başka bir anons çalalım. Bu, "Düşün -> Konuş" döngüsünün çalıştığını kanıtlar.
-	l.Info().Msg("LLM yanıtı yerine test amaçlı anons çalınıyor...")
-	agent.playAnnouncement(l, event, "ANNOUNCE_DEFAULT_WELCOME_TR")
+	agent.playText(l, event, respText)
+}
+
+func (agent *AgentService) playText(l zerolog.Logger, event *CallEvent, textToPlay string) {
+	l.Info().Str("text", textToPlay).Msg("Metin sese dönüştürülüyor...")
+
+	reqBody, err := json.Marshal(TtsRequest{Text: textToPlay})
+	if err != nil {
+		l.Error().Err(err).Msg("TTS istek gövdesi oluşturulamadı.")
+		agent.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR_TR")
+		return
+	}
+
+	req, err := http.NewRequest("POST", agent.ttsServiceURL+"/synthesize", bytes.NewBuffer(reqBody))
+	if err != nil {
+		l.Error().Err(err).Msg("TTS HTTP isteği oluşturulamadı.")
+		agent.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR_TR")
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := agent.httpClient.Do(req)
+	if err != nil {
+		l.Error().Err(err).Msg("TTS servisine istek başarısız.")
+		agent.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR_TR")
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		l.Error().Str("status", resp.Status).Str("body", string(bodyBytes)).Msg("TTS servisi hata döndü.")
+		agent.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR_TR")
+		return
+	}
+
+	var ttsResp TtsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&ttsResp); err != nil {
+		l.Error().Err(err).Msg("TTS yanıtı çözümlenemedi.")
+		agent.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR_TR")
+		return
+	}
+
+	l.Info().Str("audio_path", ttsResp.AudioPath).Msg("Dinamik ses dosyası çalınacak.")
+	agent.playDynamicAudio(l, event, ttsResp.AudioPath)
+}
+
+func (agent *AgentService) playDynamicAudio(l zerolog.Logger, event *CallEvent, audioPath string) {
+	mediaInfo := event.Media
+	rtpTarget, _ := mediaInfo["caller_rtp_addr"].(string)
+	serverPort, _ := mediaInfo["server_rtp_port"].(float64)
+
+	if rtpTarget == "" || serverPort == 0 {
+		l.Error().
+			Str("rtp_target", rtpTarget).
+			Float64("server_port", serverPort).
+			Msg("Geçersiz medya bilgisi, dinamik ses çalınamıyor.")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err := agent.mediaClient.PlayAudio(ctx, &mediav1.PlayAudioRequest{
+		RtpTargetAddr: rtpTarget,
+		AudioId:       audioPath,
+		ServerRtpPort: uint32(serverPort),
+	})
+
+	if err != nil {
+		l.Error().Err(err).Str("audio_path", audioPath).Msg("Hata: Dinamik ses çalınamadı")
+	} else {
+		l.Info().Str("audio_path", audioPath).Msg("Dinamik ses çalma komutu gönderildi")
+	}
 }
 
 func (agent *AgentService) playAnnouncement(l zerolog.Logger, event *CallEvent, announcementID string) {
 	audioPath, err := agent.getAnnouncementPathFromDB(l, announcementID)
 	if err != nil {
 		l.Error().Err(err).Str("announcement_id", announcementID).Msg("Anons yolu alınamadı, fallback kullanılıyor")
-		// Fallback anonsu için yolu doğrudan belirle, veritabanına tekrar gitme.
 		audioPath = "audio/tr/system_error.wav"
 	}
 
@@ -206,7 +285,6 @@ func (agent *AgentService) playAnnouncement(l zerolog.Logger, event *CallEvent, 
 	rtpTarget, _ := mediaInfo["caller_rtp_addr"].(string)
 	serverPort, _ := mediaInfo["server_rtp_port"].(float64)
 
-	// rtpTarget boşsa, bu bir test veya hatalı bir akış olabilir. Devam etme.
 	if rtpTarget == "" || serverPort == 0 {
 		l.Error().
 			Str("rtp_target", rtpTarget).
@@ -371,6 +449,7 @@ func createGrpcClient(addrEnvVar, certEnvVar, keyEnvVar string) *grpc.ClientConn
 		Certificates: []tls.Certificate{clientCert},
 		RootCAs:      caCertPool,
 		ServerName:   strings.Split(addr, ":")[0],
+		MinVersion:   tls.VersionTLS12,
 	})
 
 	var conn *grpc.ClientConn
