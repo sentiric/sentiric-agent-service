@@ -121,3 +121,49 @@ services:
       - dev
     networks:
       - sentiric-net
+
+  # AI SERVİSLERİ
+  llm-service:
+    build:
+      context: ../sentiric-llm-service
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: sentiric-llm-service
+    env_file:
+      - ./.env
+    # volumes:
+    #   - ../sentiric-infrastructure/tls/certs:/etc/sentiric/tls:ro
+    # ports:
+    #   - "${LLM_SERVICE_PORT}:${LLM_SERVICE_PORT}"
+    networks:
+      - sentiric-net
+    profiles:
+      - default
+      - ai
+    restart: always
+    # YENİ EKLENEN KISIM (LLM'in bir bağımlılığı yok, ama en son başlaması mantıklı)
+    depends_on:
+      agent-service:
+        condition: service_started      
+
+  tts-service: # <-- YENİ EKLENEN SERVİS
+    build:
+      context: ../sentiric-tts-service
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: sentiric-tts-service
+    env_file:
+      - ./.env
+    # volumes:
+    #   - ../sentiric-infrastructure/tls/certs:/etc/sentiric/tls:ro
+    # ports:
+    #   - "${TTS_SERVICE_PORT}:${TTS_SERVICE_PORT}"
+    networks:
+      - sentiric-net
+    profiles:
+      - default
+      - ai
+    restart: always
+    depends_on:
+      agent-service: # agent-service TTS'i kullandığı için onun başlamasını bekleyelim
+        condition: service_started       

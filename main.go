@@ -1,5 +1,3 @@
-// DOSYA: sentiric-agent-service/main.go (GERÇEK TTS ENTEGRASYONU AKTİF)
-
 package main
 
 import (
@@ -18,11 +16,13 @@ import (
 	"strings"
 	"time"
 
+	// internal paketimizi import ediyoruz
+	"github.com/sentiric/sentiric-agent-service/internal/logger"
+
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/joho/godotenv"
 	"github.com/rabbitmq/amqp091-go"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
@@ -31,8 +31,16 @@ import (
 	userv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/user/v1"
 )
 
-const queueName = "call.events"
+// Sabitler
+const (
+	serviceName = "agent-service"
+	queueName   = "call.events"
+)
 
+// Global logger değişkeni
+var log zerolog.Logger
+
+// ... (Struct tanımları aynı kalacak) ...
 type CallEvent struct {
 	EventType string                             `json:"eventType"`
 	CallID    string                             `json:"callId"`
@@ -49,7 +57,6 @@ type LlmResponse struct {
 	Text string `json:"text"`
 }
 
-// TTS servisi için istek ve yanıt yapıları
 type TtsRequest struct {
 	Text string `json:"text"`
 }
@@ -64,16 +71,17 @@ type AgentService struct {
 	userClient    userv1.UserServiceClient
 	httpClient    *http.Client
 	llmServiceURL string
-	ttsServiceURL string // <-- YENİ ALAN
+	ttsServiceURL string
 }
 
 func main() {
-	zerolog.TimeFieldFormat = time.RFC3339
-	log.Logger = log.Output(os.Stderr).With().Timestamp().Str("service", "agent-service-go").Logger()
-
+	// DÜZELTME: .env dosyasını tüm işlemlerden önce yükle
 	godotenv.Load()
 
-	log.Info().Msg("Sentiric Agent Service (Go) başlatılıyor...")
+	// Yeni logger'ımızı başlatıyoruz
+	log = logger.New(serviceName)
+
+	log.Info().Msg("Sentiric Agent Service başlatılıyor...")
 
 	db := connectToDBWithRetry(getEnv("POSTGRES_URL"))
 	defer db.Close()
@@ -97,7 +105,7 @@ func main() {
 		userClient:    createUserServiceClient(),
 		httpClient:    &http.Client{Timeout: 15 * time.Second},
 		llmServiceURL: llmURL,
-		ttsServiceURL: ttsURL, // <-- YENİ ALAN
+		ttsServiceURL: ttsURL,
 	}
 
 	msgs, err := rabbitCh.Consume(queueName, "", true, false, false, false, nil)
@@ -105,7 +113,7 @@ func main() {
 		log.Fatal().Err(err).Msg("Mesajlar tüketilemedi")
 	}
 
-	log.Info().Msg("[*] Mesajlar bekleniyor...")
+	log.Info().Str("queue", queueName).Msg("Kuyruk dinleniyor, mesajlar bekleniyor...")
 	forever := make(chan bool)
 	go func() {
 		for d := range msgs {
@@ -133,6 +141,8 @@ func (agent *AgentService) handleRabbitMQMessage(body []byte) {
 		go agent.handleCallStarted(l, &event)
 	}
 }
+
+// --- Bu yorumdan sonraki kodun tamamı aynı kalacak, hiç bir değişiklik yok ---
 
 func (agent *AgentService) handleCallStarted(l zerolog.Logger, event *CallEvent) {
 	l.Info().Msg("Yeni çağrı işleniyor...")
