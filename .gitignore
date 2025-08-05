@@ -17,4 +17,5 @@
 .DS_Store
 Thumbs.db
 
+# Yerel ve hassas ortam değişkenleri
 .env

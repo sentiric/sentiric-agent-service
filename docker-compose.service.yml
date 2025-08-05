@@ -8,24 +8,19 @@ volumes:
   rabbitmq_data:    
 
 services:
-
-  # VERİ KATMANI
   postgres:
     image: postgres:16-alpine
-    env_file:
-      - ./.env
+    env_file: 
+      - ./.env.docker
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ../sentiric-infrastructure/postgres-init:/docker-entrypoint-initdb.d
-    # ports:
-    #   - "${POSTGRES_DB_PORT}:${POSTGRES_DB_PORT}"
     networks:
       - sentiric-net
     profiles:
       - default
       - data
     restart: always
-
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
@@ -34,20 +29,19 @@ services:
 
   rabbitmq:
     image: rabbitmq:4.1.0-management-alpine
-    env_file:
-      - ./.env
+    env_file: 
+      - ./.env.docker
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq/
     # ports:
     #   - "${RABBITMQ_PORT}:${RABBITMQ_PORT}"
-    #   - "15672:15672"
+    #   - "15672:15672"      
     networks:
       - sentiric-net
     profiles:
       - default
       - data
     restart: always
-
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "ping"]
       interval: 30s
@@ -60,8 +54,8 @@ services:
       dockerfile: Dockerfile
       args:
         SERVICE_NAME: sentiric-media-service
-    env_file:
-      - ./.env
+    env_file: 
+      - ./.env.docker
     volumes:
       - ../sentiric-infrastructure/tls/certs:/etc/sentiric/tls:ro
     ports:
@@ -80,8 +74,8 @@ services:
       dockerfile: Dockerfile
       args:
         SERVICE_NAME: sentiric-user-service
-    env_file:
-      - ./.env
+    env_file: 
+      - ./.env.docker
     volumes:
       - ../sentiric-infrastructure/tls/certs:/etc/sentiric/tls:ro
     # ports:
@@ -95,25 +89,26 @@ services:
 
     depends_on:
       postgres:
-        condition: service_healthy        
+        condition: service_healthy     
 
-  # UYGULAMA SERVİSLERİ
   agent-service: 
-
     build:
+
       context: .
       dockerfile: Dockerfile         
       args:
         SERVICE_NAME: sentiric-agent-service
 
     env_file: 
-      - ./.env
+      - ./.env.docker
 
     volumes:
       - ../sentiric-infrastructure/tls/certs:/etc/sentiric/tls:ro
 
-    # ports:
-    #   - "${AGENT_SERVICE_GRPC_PORT}:${AGENT_SERVICE_GRPC_PORT}"
+    ports:
+      # - "${AGENT_SERVICE_GRPC_PORT}:${AGENT_SERVICE_GRPC_PORT}"
+      # Metriklerin Prometheus tarafından scrape edilebilmesi için portu aç
+      - "${METRICS_PORT:-9091}:${METRICS_PORT:-9091}"
 
     networks:
       - sentiric-net
@@ -134,7 +129,7 @@ services:
     image: golang:1.24.5-alpine
     working_dir: /app
     env_file: 
-      - ./.env    
+      - ./.env.docker 
     volumes:
       - ../sentiric-agent-service:/app
       - ../sentiric-infrastructure/tls/certs:/etc/sentiric/tls:ro      
@@ -151,8 +146,8 @@ services:
       dockerfile: Dockerfile
       args:
         SERVICE_NAME: sentiric-llm-service
-    env_file:
-      - ./.env
+    env_file: 
+      - ./.env.docker
     # volumes:
     #   - ../sentiric-infrastructure/tls/certs:/etc/sentiric/tls:ro
     # ports:
@@ -174,8 +169,8 @@ services:
       dockerfile: Dockerfile
       args:
         SERVICE_NAME: sentiric-tts-service
-    env_file:
-      - ./.env
+    env_file: 
+      - ./.env.docker
     # volumes:
     #   - ../sentiric-infrastructure/tls/certs:/etc/sentiric/tls:ro
     # ports:
@@ -188,4 +183,4 @@ services:
     restart: always
     depends_on:
       agent-service: # agent-service TTS'i kullandığı için onun başlamasını bekleyelim
-        condition: service_started       
+        condition: service_started   

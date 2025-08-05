@@ -57,7 +57,11 @@ Bu servis bir sunucu değil, bir **istemci ve tüketicidir.** Dışarıya bir po
 3.  **Servisi Çalıştırın:**
     Platformun geri kalanı Docker'da çalışırken, `agent-service`'i doğrudan yerel makinenizde çalıştırarak hızlıca test edebilirsiniz:
     ```bash
-    go run .
+    go run ./cmd/agent-service
+    ```
+
+    ```bash
+    go run ./cmd/testclient
     ```
 
 ## 🐳 Docker ile Çalıştırma
