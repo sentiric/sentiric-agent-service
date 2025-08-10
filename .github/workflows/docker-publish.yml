@@ -1,10 +1,11 @@
 # =================================================================
-#    SENTIRIC PLATFORM - STANDART CI/CD DOCKER YAYINLAMA (v3.0)
+#    SENTIRIC PLATFORM - STANDART CI/CD DOCKER YAYINLAMA (v3.1 - Düzeltilmiş)
 # =================================================================
 # Bu CI/CD dosyası:
 # 1. Submodule'leri (örn: sentiric-contracts) otomatik olarak çeker.
 # 2. Dockerfile'a SERVICE_NAME argümanını dinamik olarak gönderir.
 # 3. Docker build'lerini cache ile hızlandırır.
+# 4. GitHub Actions ifade sözdizimi hatasını düzeltir.
 # =================================================================
 name: Docker Image CI
 
@@ -39,10 +40,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       
-      # Adım 4: Repo adından servis adını çıkar
+      # Adım 4: Repo adından servis adını çıkar (DÜZELTİLMİŞ YÖNTEM)
       - name: Extract service name from repository name
         id: get_service_name
-        run: echo "SERVICE_NAME=${{ github.repository#*/ }}" >> $GITHUB_ENV
+        # Önce tam repo adını bir shell değişkenine alıyoruz,
+        # sonra shell'in kendi özelliğini kullanarak kesiyoruz.
+        run: |
+          REPO_NAME="${{ github.repository }}"
+          echo "SERVICE_NAME=${REPO_NAME#*/}" >> $GITHUB_ENV
 
       # Adım 5: Docker imajını oluştur, cache'le ve yayınla
       - name: Build and push Docker image
