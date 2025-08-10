@@ -14,7 +14,7 @@ services:
       - ./.env.docker
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ../sentiric-infrastructure/postgres-init:/docker-entrypoint-initdb.d
+      - ../sentiric-config/postgres-init:/docker-entrypoint-initdb.d
     networks:
       - sentiric-net
     profiles:
@@ -57,7 +57,7 @@ services:
     env_file: 
       - ./.env.docker
     volumes:
-      - ../sentiric-infrastructure/tls/certs:/etc/sentiric/tls:ro
+      - ../sentiric-config/tls/certs:/etc/sentiric/tls:ro
     ports:
       - "${RTP_SERVICE_PORT_MIN:-10000}-${RTP_SERVICE_PORT_MAX:-10100}:${RTP_SERVICE_PORT_MIN:-10000}-${RTP_SERVICE_PORT_MAX:-10100}/udp"
       # - "${MEDIA_SERVICE_GRPC_PORT}:${MEDIA_SERVICE_GRPC_PORT}"
@@ -77,7 +77,7 @@ services:
     env_file: 
       - ./.env.docker
     volumes:
-      - ../sentiric-infrastructure/tls/certs:/etc/sentiric/tls:ro
+      - ../sentiric-config/tls/certs:/etc/sentiric/tls:ro
     # ports:
     #   - "${USER_SERVICE_GRPC_PORT}:${USER_SERVICE_GRPC_PORT}"
     networks:
@@ -103,7 +103,7 @@ services:
       - ./.env.docker
 
     volumes:
-      - ../sentiric-infrastructure/tls/certs:/etc/sentiric/tls:ro
+      - ../sentiric-config/tls/certs:/etc/sentiric/tls:ro
 
     ports:
       # - "${AGENT_SERVICE_GRPC_PORT}:${AGENT_SERVICE_GRPC_PORT}"
@@ -132,7 +132,7 @@ services:
       - ./.env.docker 
     volumes:
       - ../sentiric-agent-service:/app
-      - ../sentiric-infrastructure/tls/certs:/etc/sentiric/tls:ro      
+      - ../sentiric-config/tls/certs:/etc/sentiric/tls:ro      
     command: sh -c "while true; do sleep 1000; done"
     profiles:
       - dev
@@ -149,7 +149,7 @@ services:
     env_file: 
       - ./.env.docker
     # volumes:
-    #   - ../sentiric-infrastructure/tls/certs:/etc/sentiric/tls:ro
+    #   - ../sentiric-config/tls/certs:/etc/sentiric/tls:ro
     # ports:
     #   - "${LLM_SERVICE_PORT}:${LLM_SERVICE_PORT}"
     networks:
@@ -172,7 +172,7 @@ services:
     env_file: 
       - ./.env.docker
     # volumes:
-    #   - ../sentiric-infrastructure/tls/certs:/etc/sentiric/tls:ro
+    #   - ../sentiric-config/tls/certs:/etc/sentiric/tls:ro
     # ports:
     #   - "${TTS_SERVICE_PORT}:${TTS_SERVICE_PORT}"
     networks:
