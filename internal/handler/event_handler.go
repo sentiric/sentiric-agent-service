@@ -36,8 +36,10 @@ type LlmResponse struct {
 	Text string `json:"text"`
 }
 
+// DÜZELTME: speaker_wav_url alanını TtsRequest'e ekliyoruz.
 type TtsRequest struct {
-	Text string `json:"text"`
+	Text          string  `json:"text"`
+	SpeakerWavUrl *string `json:"speaker_wav_url,omitempty"` // Pointer ve omitempty ile opsiyonel hale getiriyoruz
 }
 
 type TtsResponse struct {
@@ -52,11 +54,10 @@ type EventHandler struct {
 	llmServiceURL   string
 	ttsServiceURL   string
 	log             zerolog.Logger
-	eventsProcessed *prometheus.CounterVec // DÜZELTME: Pointer tipinde
-	eventsFailed    *prometheus.CounterVec // DÜZELTME: Pointer tipinde
+	eventsProcessed *prometheus.CounterVec
+	eventsFailed    *prometheus.CounterVec
 }
 
-// DÜZELTME: Fonksiyon imzası da pointer alacak şekilde güncellendi.
 func NewEventHandler(db *sql.DB, mc mediav1.MediaServiceClient, uc userv1.UserServiceClient, llmURL, ttsURL string, log zerolog.Logger, processed, failed *prometheus.CounterVec) *EventHandler {
 	return &EventHandler{
 		db:              db,
@@ -71,8 +72,7 @@ func NewEventHandler(db *sql.DB, mc mediav1.MediaServiceClient, uc userv1.UserSe
 	}
 }
 
-// ... (dosyanın geri kalanı önceki cevapla aynı, değişiklik yok) ...
-// HandleRabbitMQMessage ve diğer fonksiyonlar olduğu gibi kalabilir.
+//
 
 func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 	var event CallEvent
@@ -162,10 +162,23 @@ func (h *EventHandler) startDialogLoop(l zerolog.Logger, event *CallEvent) {
 	h.playText(l, event, respText)
 }
 
+// DÜZELTME: playText fonksiyonu artık dialplan'den gelen speaker_wav_url'i kullanacak.
 func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay string) {
 	l.Info().Str("text", textToPlay).Msg("Metin sese dönüştürülüyor...")
 
-	reqBody, err := json.Marshal(TtsRequest{Text: textToPlay})
+	// Dialplan'den speaker_wav_url'i al
+	speakerURL, ok := event.Dialplan.Action.ActionData.Data["speaker_wav_url"]
+
+	ttsReq := TtsRequest{Text: textToPlay}
+	// Sadece URL varsa request'e ekle
+	if ok && speakerURL != "" {
+		l.Info().Str("speaker_url", speakerURL).Msg("Dinamik referans sesi kullanılacak.")
+		ttsReq.SpeakerWavUrl = &speakerURL
+	} else {
+		l.Info().Msg("Varsayılan referans sesi kullanılacak.")
+	}
+
+	reqBody, err := json.Marshal(ttsReq)
 	if err != nil {
 		l.Error().Err(err).Msg("TTS istek gövdesi oluşturulamadı.")
 		h.eventsFailed.WithLabelValues(event.EventType, "tts_request_marshal_failed").Inc()
@@ -173,7 +186,6 @@ func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay s
 		return
 	}
 
-	// refactor gerekli : Yapılandırma Merkezileştir ve tls desteği sağla ve kodu soyutla ve esnekliğini arttır
 	req, err := http.NewRequest("POST", h.ttsServiceURL+"/api/v1/synthesize", bytes.NewBuffer(reqBody))
 	if err != nil {
 		l.Error().Err(err).Msg("TTS HTTP isteği oluşturulamadı.")
