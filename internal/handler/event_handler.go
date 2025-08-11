@@ -173,7 +173,8 @@ func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay s
 		return
 	}
 
-	req, err := http.NewRequest("POST", h.ttsServiceURL+"/synthesize", bytes.NewBuffer(reqBody))
+	// refactor gerekli : Yapılandırma Merkezileştir ve tls desteği sağla ve kodu soyutla ve esnekliğini arttır
+	req, err := http.NewRequest("POST", h.ttsServiceURL+"/api/v1/synthesize", bytes.NewBuffer(reqBody))
 	if err != nil {
 		l.Error().Err(err).Msg("TTS HTTP isteği oluşturulamadı.")
 		h.eventsFailed.WithLabelValues(event.EventType, "tts_http_request_failed").Inc()
