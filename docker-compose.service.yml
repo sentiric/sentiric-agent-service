@@ -5,12 +5,12 @@ networks:
 
 volumes:
   postgres_data:
-  rabbitmq_data:    
+  rabbitmq_data:
 
 services:
   postgres:
     image: postgres:16-alpine
-    env_file: 
+    env_file:
       - ./.env.docker
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -25,17 +25,14 @@ services:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
-      retries: 5    
+      retries: 5
 
   rabbitmq:
     image: rabbitmq:4.1.0-management-alpine
-    env_file: 
+    env_file:
       - ./.env.docker
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq/
-    # ports:
-    #   - "${RABBITMQ_PORT}:${RABBITMQ_PORT}"
-    #   - "15672:15672"      
     networks:
       - sentiric-net
     profiles:
@@ -54,13 +51,12 @@ services:
       dockerfile: Dockerfile
       args:
         SERVICE_NAME: sentiric-media-service
-    env_file: 
+    env_file:
       - ./.env.docker
     volumes:
       - ../sentiric-config/tls/certs:/etc/sentiric/tls:ro
     ports:
       - "${RTP_SERVICE_PORT_MIN:-10000}-${RTP_SERVICE_PORT_MAX:-10100}:${RTP_SERVICE_PORT_MIN:-10000}-${RTP_SERVICE_PORT_MAX:-10100}/udp"
-      # - "${MEDIA_SERVICE_GRPC_PORT}:${MEDIA_SERVICE_GRPC_PORT}"
     networks:
       - sentiric-net
     profiles:
@@ -74,113 +70,112 @@ services:
       dockerfile: Dockerfile
       args:
         SERVICE_NAME: sentiric-user-service
-    env_file: 
+    env_file:
       - ./.env.docker
     volumes:
       - ../sentiric-config/tls/certs:/etc/sentiric/tls:ro
-    # ports:
-    #   - "${USER_SERVICE_GRPC_PORT}:${USER_SERVICE_GRPC_PORT}"
     networks:
       - sentiric-net
     profiles:
       - default
       - app
     restart: always
-
     depends_on:
       postgres:
-        condition: service_healthy     
+        condition: service_healthy
 
-  agent-service: 
+  agent-service:
     build:
-
       context: .
-      dockerfile: Dockerfile         
+      dockerfile: Dockerfile
       args:
         SERVICE_NAME: sentiric-agent-service
-
-    env_file: 
+    env_file:
       - ./.env.docker
-
     volumes:
       - ../sentiric-config/tls/certs:/etc/sentiric/tls:ro
-
     ports:
-      # - "${AGENT_SERVICE_GRPC_PORT}:${AGENT_SERVICE_GRPC_PORT}"
-      # Metriklerin Prometheus tarafından scrape edilebilmesi için portu aç
       - "${METRICS_PORT:-9091}:${METRICS_PORT:-9091}"
-
     networks:
       - sentiric-net
-    
     profiles:
       - default
       - app
-
     restart: always
-
     depends_on:
       postgres:
         condition: service_healthy
       rabbitmq:
-        condition: service_healthy    
+        condition: service_healthy
 
   builder:
     image: golang:1.24.5-alpine
     working_dir: /app
-    env_file: 
-      - ./.env.docker 
+    env_file:
+      - ./.env.docker
     volumes:
       - ../sentiric-agent-service:/app
-      - ../sentiric-config/tls/certs:/etc/sentiric/tls:ro      
+      - ../sentiric-config/tls/certs:/etc/sentiric/tls:ro
     command: sh -c "while true; do sleep 1000; done"
     profiles:
       - dev
     networks:
       - sentiric-net
 
-  # AI SERVİSLERİ
+  # --- YENİ SES ORKESTRASYON KATMANI --- [ Dockerfile hazır değil ]
+  # tts-gateway:
+  #   build: { context: ../sentiric-tts-gateway-service }
+  #   container_name: sentiric-tts-gateway-1
+  #   environment:
+  #     - ENV=${ENV}
+  #     - LOG_LEVEL=${LOG_LEVEL}
+  #     - RUST_LOG=${RUST_LOG}
+  #     - REDIS_URL=${REDIS_URL}
+  #     - EDGE_TTS_URL=http://edge-tts-service:5002
+  #     - COQUI_TTS_URL=http://coqui-tts-service:5002
+  #     - ELEVENLABS_TTS_URL=http://elevenlabs-tts-service:5002
+  #   ports: ["${TTS_GATEWAY_PORT:-50051}:50051"]
+  #   networks: [sentiric-net]
+  #   restart: always
+  #   depends_on: { redis: { condition: service_healthy } }
+
+  # edge-tts-service:
+  #   build: { context: ../sentiric-edge-tts-service }
+  #   container_name: sentiric-edge-tts-1
+  #   env_file: ../sentiric-config/environments/${ENV}.env
+  #   networks: [sentiric-net]
+  #   restart: always
+  
+  # coqui-tts-service:
+  #   build: { context: ../sentiric-coqui-tts-service }
+  #   container_name: sentiric-coqui-tts-1
+  #   env_file: ../sentiric-config/environments/${ENV}.env
+  #   networks: [sentiric-net]
+  #   restart: always
+
+  # --- DEĞİŞİKLİK BURADA: tts-service'i yorum satırı yapıyoruz ---
+  # tts-service:
+  #   build: { context: ../sentiric-tts-service }
+  #   container_name: sentiric-tts-service-1
+  #   env_file: ../sentiric-config/environments/${ENV}.env
+  #   networks: [sentiric-net]
+  #   restart: always
+  #   depends_on: [agent-service]
+  
   llm-service:
     build:
       context: ../sentiric-llm-service
       dockerfile: Dockerfile
       args:
         SERVICE_NAME: sentiric-llm-service
-    env_file: 
+    env_file:
       - ./.env.docker
-    # volumes:
-    #   - ../sentiric-config/tls/certs:/etc/sentiric/tls:ro
-    # ports:
-    #   - "${LLM_SERVICE_PORT}:${LLM_SERVICE_PORT}"
     networks:
       - sentiric-net
     profiles:
       - default
       - ai
     restart: always
-    # YENİ EKLENEN KISIM (LLM'in bir bağımlılığı yok, ama en son başlaması mantıklı)
     depends_on:
       agent-service:
-        condition: service_started      
-
-  tts-service: # <-- YENİ EKLENEN SERVİS
-    build:
-      context: ../sentiric-tts-service
-      dockerfile: Dockerfile
-      args:
-        SERVICE_NAME: sentiric-tts-service
-    env_file: 
-      - ./.env.docker
-    # volumes:
-    #   - ../sentiric-config/tls/certs:/etc/sentiric/tls:ro
-    # ports:
-    #   - "${TTS_SERVICE_PORT}:${TTS_SERVICE_PORT}"
-    networks:
-      - sentiric-net
-    profiles:
-      - default
-      - ai
-    restart: always
-    depends_on:
-      agent-service: # agent-service TTS'i kullandığı için onun başlamasını bekleyelim
-        condition: service_started   
+        condition: service_started
