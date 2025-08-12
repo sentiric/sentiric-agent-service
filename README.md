@@ -1,6 +1,10 @@
 # 🧠 Sentiric Agent Service
 
-**Açıklama:** Bu servis, Sentiric platformunun **merkezi orkestrasyon beynidir.** Yüksek performans, eşzamanlılık ve sağlamlık için **Go** ile yazılmıştır. Görevi, `RabbitMQ` üzerinden gelen olayları dinlemek ve bu olaylara göre platformdaki diğer uzman servisleri (`media`, `user`, `llm` vb.) yöneterek iş akışlarını hayata geçirmektir.
+[![Status](https://img.shields.io/badge/status-active-success.svg)]()
+[![Language](https://img.shields.io/badge/language-Go-blue.svg)]()
+[![Protocol](https://img.shields.io/badge/protocol-gRPC_&_RabbitMQ-green.svg)]()
+
+**Sentiric Agent Service**, Sentiric platformunun **merkezi asenkron beynidir.** Yüksek performans, eşzamanlılık ve sağlamlık için **Go** ile yazılmıştır. Görevi, `RabbitMQ` üzerinden gelen olayları dinlemek ve bu olaylara göre platformdaki diğer uzman servisleri (`media`, `user`, `llm` vb.) yöneterek iş akışlarını hayata geçirmektir.
 
 Bu servis, platformun asenkron iş mantığını yürüten ana işçisidir (worker).
 
@@ -20,54 +24,34 @@ Bu servis, platformun asenkron iş mantığını yürüten ana işçisidir (work
 *   **Asenkron İletişim:** RabbitMQ (`amqp091-go` kütüphanesi)
 *   **Servisler Arası İletişim:**
     *   **gRPC:** İç, yüksek performanslı servislere (`media`, `user`, `dialplan`) bağlanmak için.
-    *   **HTTP/REST:** Dış veya bağımlılıkları izole edilmiş AI servislerine (`llm-service`) bağlanmak için.
+    *   **HTTP/REST:** Dış veya bağımlılıkları izole edilmiş AI servislerine (`llm-service`, `tts-service`) bağlanmak için.
 *   **Veritabanı Erişimi:** PostgreSQL (`pgx` kütüphanesi)
+*   **Gözlemlenebilirlik:** Prometheus metrikleri ve `zerolog` ile yapılandırılmış loglama.
 
 ## 🔌 API Etkileşimleri
 
 Bu servis bir sunucu değil, bir **istemci ve tüketicidir.** Dışarıya bir port açmaz.
 
-*   **Gelen (Consumer Of):**
+*   **Gelen (Tüketici):**
     *   `RabbitMQ`: Ana iş akışını tetikleyen olayları alır.
-*   **Giden (Client Of):**
+*   **Giden (İstemci):**
     *   `sentiric-media-service` (gRPC): Medya işlemlerini yönetmek için.
     *   `sentiric-user-service` (gRPC): Kullanıcı işlemlerini yönetmek için.
     *   `sentiric-llm-service` (HTTP/REST): Yapay zeka metin üretimi için.
+    *   `sentiric-tts-service` (HTTP/REST): Metni sese çevirmek için.
     *   `PostgreSQL`: Anons yolları gibi konfigürasyon verilerini okumak için.
 
-## 🚀 Yerel Geliştirme (Local Development)
+## 🚀 Yerel Geliştirme
 
-### Önkoşullar
-*   Go (versiyon 1.22+)
-*   Docker & Docker Compose (bağımlı servisleri çalıştırmak için)
-
-### Kurulum ve Çalıştırma
-1.  **Bağımlılıkları Yükleyin:**
-    Projenin ana dizininde `go mod tidy` komutunu çalıştırarak gerekli tüm Go modüllerini indirin.
-    ```bash
-    go mod tidy
-    ```
-
-2.  **Ortam Değişkenlerini Ayarlayın:**
-    `.env.example` dosyasını `.env` olarak kopyalayın. Platformun diğer tüm servisleri (`sentiric-infrastructure` ile) Docker üzerinde çalışıyorsa, `localhost` adresleri doğru olacaktır.
-    ```bash
-    cp .env.example .env
-    ```
-
-3.  **Servisi Çalıştırın:**
-    Platformun geri kalanı Docker'da çalışırken, `agent-service`'i doğrudan yerel makinenizde çalıştırarak hızlıca test edebilirsiniz:
-    ```bash
-    go run ./cmd/agent-service
-    ```
-
-    ```bash
-    go run ./cmd/testclient
-    ```
-
-## 🐳 Docker ile Çalıştırma
-
-Bu servis, `sentiric-infrastructure` reposundaki merkezi `docker-compose.yml` dosyası aracılığıyla platformun bir parçası olarak çalıştırılmak üzere tasarlanmıştır. `Dockerfile`, üretim için optimize edilmiş, minimal bir `scratch` imajı oluşturur.
+1.  **Bağımlılıkları Yükleyin:** `go mod tidy`
+2.  **Ortam Değişkenlerini Ayarlayın:** `.env.docker` dosyasını `.env` olarak kopyalayın. Platformun diğer tüm servisleri Docker üzerinde çalışıyorsa, adresler doğru olacaktır.
+3.  **Servisi Çalıştırın:** `go run ./cmd/agent-service`
 
 ## 🤝 Katkıda Bulunma
 
 Katkılarınızı bekliyoruz! Lütfen projenin ana [Sentiric Governance](https://github.com/sentiric/sentiric-governance) reposundaki kodlama standartlarına ve katkıda bulunma rehberine göz atın.
+
+---
+## 🏛️ Anayasal Konum
+
+Bu servis, [Sentiric Anayasası'nın (v11.0)](https://github.com/sentiric/sentiric-governance/blob/main/docs/blueprint/Architecture-Overview.md) **Zeka & Orkestrasyon Katmanı**'nda yer alan merkezi bir bileşendir.
