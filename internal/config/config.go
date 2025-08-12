@@ -1,3 +1,4 @@
+// ========== FILE: sentiric-agent-service/internal/config/config.go ==========
 package config
 
 import (
@@ -8,27 +9,20 @@ import (
 	"github.com/joho/godotenv"
 )
 
-// Config struct'ı, ham ve türetilmiş yapılandırma değerlerini tutar.
 type Config struct {
-	Env         string
-	PostgresURL string
-	RabbitMQURL string
-	QueueName   string
-	MetricsPort string
-
-	// Ham HTTP servis yapılandırması
+	Env                  string
+	PostgresURL          string
+	RabbitMQURL          string
+	QueueName            string
+	MetricsPort          string
 	LlmServiceHost       string
 	LlmServicePort       string
 	LlmServiceTlsEnabled bool
 	TtsServiceHost       string
 	TtsServicePort       string
 	TtsServiceTlsEnabled bool
-
-	// Kod içinde dinamik olarak oluşturulan tam URL'ler
-	LlmServiceURL string
-	TtsServiceURL string
-
-	// gRPC ve mTLS ayarları
+	LlmServiceURL        string
+	TtsServiceURL        string
 	MediaServiceGrpcURL  string
 	UserServiceGrpcURL   string
 	AgentServiceCertPath string
@@ -36,20 +30,20 @@ type Config struct {
 	GrpcTlsCaPath        string
 }
 
-// buildURL, host, port ve tls ayarlarından tam bir URL oluşturur.
 func buildURL(host, port string, tlsEnabled bool) string {
+	if host == "" { // Eğer host tanımlı değilse, boş URL döndür.
+		return ""
+	}
 	scheme := "http"
 	if tlsEnabled {
 		scheme = "https"
 	}
-	// Port boşsa, URL'e ekleme. Bu, 80/443 gibi varsayılan portları destekler.
 	if port != "" {
 		return fmt.Sprintf("%s://%s:%s", scheme, host, port)
 	}
 	return fmt.Sprintf("%s://%s", scheme, host)
 }
 
-// Load, tüm yapılandırmayı ortamdan yükler ve işler.
 func Load() (*Config, error) {
 	godotenv.Load()
 
@@ -78,16 +72,16 @@ func Load() (*Config, error) {
 		GrpcTlsCaPath:        getEnv("GRPC_TLS_CA_PATH"),
 	}
 
-	// Akıllı URL'leri oluştur
 	cfg.LlmServiceURL = buildURL(cfg.LlmServiceHost, cfg.LlmServicePort, cfg.LlmServiceTlsEnabled)
 	cfg.TtsServiceURL = buildURL(cfg.TtsServiceHost, cfg.TtsServicePort, cfg.TtsServiceTlsEnabled)
 
-	// Kritik değişkenlerin varlığını kontrol et
+	// DÜZELTME: Kritik kontrolü daha esnek hale getiriyoruz.
+	// Sadece gerçekten vazgeçilmez olanları kontrol et.
 	if cfg.PostgresURL == "" || cfg.RabbitMQURL == "" || cfg.MediaServiceGrpcURL == "" || cfg.UserServiceGrpcURL == "" {
 		return nil, fmt.Errorf("kritik altyapı URL'leri eksik (Postgres, RabbitMQ, Media, User)")
 	}
-	if cfg.LlmServiceHost == "" || cfg.TtsServiceHost == "" {
-		return nil, fmt.Errorf("kritik AI servis HOST tanımlamaları eksik (LLM, TTS)")
+	if cfg.LlmServiceHost == "" {
+		return nil, fmt.Errorf("kritik AI servis HOST tanımlaması eksik (LLM)")
 	}
 
 	return cfg, nil
