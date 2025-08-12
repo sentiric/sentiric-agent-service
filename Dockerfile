@@ -1,8 +1,8 @@
-# --- İNŞA AŞAMASI ---
-FROM golang:1.24.5-alpine AS builder
+# --- İNŞA AŞAMASI (DEBIAN TABANLI) ---
+FROM golang:1.24-bullseye AS builder
 
 # Git, CGO ve diğer bağımlılıklar için
-RUN apk add --no-cache git build-base
+RUN apt-get update && apt-get install -y --no-install-recommends git build-essential
 
 WORKDIR /app
 
@@ -15,24 +15,27 @@ RUN go mod verify
 COPY . .
 
 # Çıktı binary'sinin adını dinamik olarak almak için ARG kullanıyoruz.
-ARG SERVICE_NAME=sentiric-agent-service
-
-# DÜZELTME: Derlenecek paket yolu sabit (`./cmd/agent-service`),
-# çıktı dosyasının adı ise dinamiktir (`-o /app/bin/${SERVICE_NAME}`).
+ARG SERVICE_NAME
+# NOT: Derlenecek paket yolu servise göre değişebilir. Bu agent-service için doğru.
+# Diğerleri için gerekirse ./ olarak değiştirilebilir.
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /app/bin/${SERVICE_NAME} ./cmd/agent-service
 
-# --- ÇALIŞTIRMA AŞAMASI ---
+# --- ÇALIŞTIRMA AŞAMASI (ALPINE) ---
+# Çalışma zamanı için hala küçük ve güvenli alpine'ı kullanabiliriz.
 FROM alpine:latest
 
-# Healthcheck için netcat ve TLS doğrulaması için ca-certificates kuruyoruz
-RUN apk add --no-cache netcat-openbsd ca-certificates
+# TLS doğrulaması için ca-certificates gerekli
+RUN apk add --no-cache ca-certificates
 
-# Servis adını builder'dan alıyoruz
-ARG SERVICE_NAME=sentiric-agent-service
+ARG SERVICE_NAME
 WORKDIR /app
 
 # Sadece derlenmiş binary'yi kopyala
 COPY --from=builder /app/bin/${SERVICE_NAME} .
 
-# Derlenmiş binary'yi çalıştır
+# Güvenlik için root olmayan bir kullanıcıyla çalıştır
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+USER appuser
+
+# Her servis kendi adıyla çağrılmalı
 ENTRYPOINT ["./sentiric-agent-service"]
