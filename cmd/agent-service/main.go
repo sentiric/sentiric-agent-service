@@ -52,9 +52,14 @@ func main() {
 	if err != nil {
 		appLog.Fatal().Err(err).Msg("User Service gRPC istemcisi oluşturulamadı")
 	}
+	ttsClient, err := client.NewTTSServiceClient(cfg)
+	if err != nil {
+		appLog.Fatal().Err(err).Msg("TTS Gateway gRPC istemcisi oluşturulamadı")
+	}
 
 	// 6. Olay işleyiciyi oluştur
-	eventHandler := handler.NewEventHandler(db, mediaClient, userClient, cfg.LlmServiceURL, cfg.TtsServiceURL, appLog, metrics.EventsProcessed, metrics.EventsFailed)
+	// DÜZELTME: Eski URL'ler yerine yeni ttsClient'ı veriyoruz
+	eventHandler := handler.NewEventHandler(db, mediaClient, userClient, ttsClient, appLog, metrics.EventsProcessed, metrics.EventsFailed)
 
 	// 7. RabbitMQ bağlantısını kur
 	rabbitCh, closeChan := queue.Connect(cfg.RabbitMQURL, appLog)

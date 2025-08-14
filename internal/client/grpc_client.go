@@ -11,8 +11,11 @@ import (
 	"time"
 
 	"github.com/sentiric/sentiric-agent-service/internal/config"
+
 	mediav1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/media/v1"
+	ttsv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/tts/v1"
 	userv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/user/v1"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
@@ -33,6 +36,20 @@ func NewUserServiceClient(cfg *config.Config) (userv1.UserServiceClient, error) 
 		return nil, fmt.Errorf("user service istemcisi için bağlantı oluşturulamadı: %w", err)
 	}
 	return userv1.NewUserServiceClient(conn), nil
+}
+
+// NewTTSServiceClient, TTS Gateway servisi için bir gRPC istemcisi oluşturur.
+func NewTTSServiceClient(cfg *config.Config) (ttsv1.TextToSpeechServiceClient, error) {
+	// Şimdilik mTLS olmadan, güvensiz bir bağlantı kuruyoruz.
+	// Sonraki adımda bunu da mTLS'e çevireceğiz.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	conn, err := grpc.DialContext(ctx, cfg.TtsServiceGrpcURL, grpc.WithInsecure(), grpc.WithBlock())
+	if err != nil {
+		return nil, fmt.Errorf("tts gateway istemcisi için bağlantı oluşturulamadı: %w", err)
+	}
+	return ttsv1.NewTextToSpeechServiceClient(conn), nil
 }
 
 // createGrpcClient, verilen adrese güvenli bir gRPC istemci bağlantısı kurar.

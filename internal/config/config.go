@@ -23,6 +23,7 @@ type Config struct {
 	TtsServiceTlsEnabled bool
 	LlmServiceURL        string
 	TtsServiceURL        string
+	TtsServiceGrpcURL    string // YENİ
 	MediaServiceGrpcURL  string
 	UserServiceGrpcURL   string
 	AgentServiceCertPath string
@@ -64,6 +65,7 @@ func Load() (*Config, error) {
 		TtsServiceHost:       getEnv("TTS_SERVICE_HOST"),
 		TtsServicePort:       getEnv("TTS_SERVICE_PORT"),
 		TtsServiceTlsEnabled: ttsTls,
+		TtsServiceGrpcURL:    getEnv("TTS_SERVICE_GRPC_URL"), // YENİ
 
 		MediaServiceGrpcURL:  getEnv("MEDIA_SERVICE_GRPC_URL"),
 		UserServiceGrpcURL:   getEnv("USER_SERVICE_GRPC_URL"),
