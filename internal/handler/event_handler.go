@@ -68,8 +68,8 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 
 func (h *EventHandler) handleCallStarted(l zerolog.Logger, event *CallEvent) {
 	l.Info().Msg("Yeni çağrı işleniyor...")
-	if event.Dialplan.Action == nil {
-		l.Error().Msg("Hata: Dialplan Action boş.")
+	if event.Dialplan.Action == nil || event.Dialplan.Action.ActionData == nil {
+		l.Error().Msg("Hata: Dialplan Action veya ActionData boş.")
 		h.eventsFailed.WithLabelValues(event.EventType, "nil_dialplan_action").Inc()
 		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR_TR")
 		return
@@ -92,15 +92,25 @@ func (h *EventHandler) handleCallStarted(l zerolog.Logger, event *CallEvent) {
 }
 
 func (h *EventHandler) handlePlayAnnouncement(l zerolog.Logger, event *CallEvent) {
-	// DÜZELTME: Gereksiz olan ", _" kaldırıldı.
-	announcementID := event.Dialplan.Action.ActionData.Data["announcement_id"]
+	announcementID, ok := event.Dialplan.Action.ActionData.Data["announcement_id"]
+	if !ok {
+		l.Error().Msg("Dialplan action_data içinde 'announcement_id' bulunamadı.")
+		h.eventsFailed.WithLabelValues(event.EventType, "missing_parameter").Inc()
+		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR_TR")
+		return
+	}
 	l.Info().Str("announcement_id", announcementID).Msg("Anons çalma eylemi işleniyor")
 	h.playAnnouncement(l, event, announcementID)
 }
 
 func (h *EventHandler) handleStartAIConversation(l zerolog.Logger, event *CallEvent) {
-	// DÜZELTME: Gereksiz olan ", _" kaldırıldı.
-	announcementID := event.Dialplan.Action.ActionData.Data["welcome_announcement_id"]
+	announcementID, ok := event.Dialplan.Action.ActionData.Data["welcome_announcement_id"]
+	if !ok {
+		l.Error().Msg("Dialplan action_data içinde 'welcome_announcement_id' bulunamadı.")
+		h.eventsFailed.WithLabelValues(event.EventType, "missing_parameter").Inc()
+		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR_TR")
+		return
+	}
 	l.Info().Str("announcement_id", announcementID).Msg("AI Konuşma başlatma eylemi işleniyor (karşılama anonsu)")
 	h.playAnnouncement(l, event, announcementID)
 	go h.startDialogLoop(l, event)
@@ -115,8 +125,14 @@ func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *CallEvent
 		l.Error().Str("caller_id", callerID).Str("tenant_id", tenantID).Msg("Misafir kullanıcı oluşturulamadı, bilgi eksik.")
 		h.eventsFailed.WithLabelValues(event.EventType, "missing_guest_info").Inc()
 	}
-	// DÜZELTME: Gereksiz olan ", _" kaldırıldı.
-	announcementID := event.Dialplan.Action.ActionData.Data["welcome_announcement_id"]
+
+	announcementID, ok := event.Dialplan.Action.ActionData.Data["welcome_announcement_id"]
+	if !ok {
+		l.Error().Msg("Dialplan action_data içinde 'welcome_announcement_id' bulunamadı.")
+		h.eventsFailed.WithLabelValues(event.EventType, "missing_parameter").Inc()
+		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR_TR")
+		return
+	}
 	l.Info().Str("announcement_id", announcementID).Msg("Misafir karşılama eylemi işleniyor")
 	h.playAnnouncement(l, event, announcementID)
 	go h.startDialogLoop(l, event)
@@ -133,17 +149,23 @@ func (h *EventHandler) startDialogLoop(l zerolog.Logger, event *CallEvent) {
 func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay string) {
 	l.Info().Str("text", textToPlay).Msg("Metin sese dönüştürülüyor...")
 
-	// DÜZELTME: Gereksiz olan ", _" kaldırıldı.
-	speakerURL := event.Dialplan.Action.ActionData.Data["speaker_wav_url"]
+	speakerURL, ok := event.Dialplan.Action.ActionData.Data["speaker_wav_url"]
+	if !ok {
+		l.Warn().Msg("Dialplan action_data içinde 'speaker_wav_url' bulunamadı. Klonlama yapılmayacak.")
+		// speaker_wav_url opsiyonel olduğu için hata vermek yerine devam ediyoruz.
+	}
 
 	ctx := metadata.AppendToOutgoingContext(context.Background(), "x-trace-id", event.TraceID)
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
 	ttsReq := &ttsv1.SynthesizeRequest{
-		Text:          textToPlay,
-		LanguageCode:  "tr",
-		SpeakerWavUrl: &speakerURL,
+		Text:         textToPlay,
+		LanguageCode: "tr",
+	}
+
+	if ok && speakerURL != "" {
+		ttsReq.SpeakerWavUrl = &speakerURL
 	}
 
 	ttsResp, err := h.ttsClient.Synthesize(ctx, ttsReq)
@@ -160,9 +182,6 @@ func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay s
 		Msg("TTS Gateway'den ses başarıyla alındı.")
 }
 
-// DÜZELTME: Kullanılmayan bu fonksiyonu şimdilik siliyoruz.
-// func (h *EventHandler) playDynamicAudio(...) { ... }
-
 func (h *EventHandler) playAnnouncement(l zerolog.Logger, event *CallEvent, announcementID string) {
 	audioPath, err := database.GetAnnouncementPathFromDB(h.db, announcementID)
 	if err != nil {
@@ -171,21 +190,24 @@ func (h *EventHandler) playAnnouncement(l zerolog.Logger, event *CallEvent, anno
 		audioPath = "audio/tr/system_error.wav"
 	}
 	mediaInfo := event.Media
-	// DÜZELTME: Gereksiz olan ", _" kaldırıldı.
-	rtpTarget, _ := mediaInfo["caller_rtp_addr"].(string)
-	serverPort, _ := mediaInfo["server_rtp_port"].(float64)
-	if rtpTarget == "" || serverPort == 0 {
-		l.Error().Str("rtp_target", rtpTarget).Float64("server_port", serverPort).Msg("Geçersiz medya bilgisi, ses çalınamıyor.")
+
+	rtpTarget, ok1 := mediaInfo["caller_rtp_addr"].(string)
+	serverPortFloat, ok2 := mediaInfo["server_rtp_port"].(float64)
+
+	if !ok1 || !ok2 || rtpTarget == "" || serverPortFloat == 0 {
+		l.Error().Interface("media_info", mediaInfo).Msg("Geçersiz veya eksik medya bilgisi, ses çalınamıyor.")
 		h.eventsFailed.WithLabelValues(event.EventType, "invalid_media_info").Inc()
 		return
 	}
+	serverPort := uint32(serverPortFloat)
+
 	ctx := metadata.AppendToOutgoingContext(context.Background(), "x-trace-id", event.TraceID)
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	_, err = h.mediaClient.PlayAudio(ctx, &mediav1.PlayAudioRequest{
 		RtpTargetAddr: rtpTarget,
 		AudioId:       audioPath,
-		ServerRtpPort: uint32(serverPort),
+		ServerRtpPort: serverPort,
 	})
 	if err != nil {
 		l.Error().Err(err).Str("audio_path", audioPath).Msg("Hata: Ses çalınamadı")

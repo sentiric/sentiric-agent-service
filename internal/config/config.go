@@ -18,12 +18,12 @@ type Config struct {
 	LlmServiceHost       string
 	LlmServicePort       string
 	LlmServiceTlsEnabled bool
-	TtsServiceHost       string
-	TtsServicePort       string
-	TtsServiceTlsEnabled bool
+	TtsServiceHost       string // Bu alan artık kullanılmıyor ama uyumluluk için kalabilir
+	TtsServicePort       string // Bu alan artık kullanılmıyor ama uyumluluk için kalabilir
+	TtsServiceTlsEnabled bool   // Bu alan artık kullanılmıyor ama uyumluluk için kalabilir
 	LlmServiceURL        string
-	TtsServiceURL        string
-	TtsServiceGrpcURL    string // YENİ
+	TtsServiceURL        string // Bu alan artık kullanılmıyor ama uyumluluk için kalabilir
+	TtsServiceGrpcURL    string // DEĞİŞİKLİK: Bu alan artık TTS_GATEWAY_URL'den okunacak
 	MediaServiceGrpcURL  string
 	UserServiceGrpcURL   string
 	AgentServiceCertPath string
@@ -56,7 +56,7 @@ func Load() (*Config, error) {
 		PostgresURL: getEnv("POSTGRES_URL"),
 		RabbitMQURL: getEnv("RABBITMQ_URL"),
 		QueueName:   getEnvWithDefault("AGENT_QUEUE_NAME", "call.events"),
-		MetricsPort: getEnvWithDefault("METRICS_PORT", "9091"),
+		MetricsPort: getEnvWithDefault("METRICS_PORT_AGENT", "9091"), // METRICS_PORT -> METRICS_PORT_AGENT
 
 		LlmServiceHost:       getEnv("LLM_SERVICE_HOST"),
 		LlmServicePort:       getEnv("LLM_SERVICE_PORT"),
@@ -65,7 +65,9 @@ func Load() (*Config, error) {
 		TtsServiceHost:       getEnv("TTS_SERVICE_HOST"),
 		TtsServicePort:       getEnv("TTS_SERVICE_PORT"),
 		TtsServiceTlsEnabled: ttsTls,
-		TtsServiceGrpcURL:    getEnv("TTS_SERVICE_GRPC_URL"), // YENİ
+		// DÜZELTME: Artık merkezi config'deki TTS_GATEWAY_URL'yi okuyoruz.
+		// Bu, eski TTS_SERVICE_GRPC_URL değişkenini gereksiz kılıyor.
+		TtsServiceGrpcURL: getEnv("TTS_GATEWAY_URL"),
 
 		MediaServiceGrpcURL:  getEnv("MEDIA_SERVICE_GRPC_URL"),
 		UserServiceGrpcURL:   getEnv("USER_SERVICE_GRPC_URL"),
@@ -77,10 +79,9 @@ func Load() (*Config, error) {
 	cfg.LlmServiceURL = buildURL(cfg.LlmServiceHost, cfg.LlmServicePort, cfg.LlmServiceTlsEnabled)
 	cfg.TtsServiceURL = buildURL(cfg.TtsServiceHost, cfg.TtsServicePort, cfg.TtsServiceTlsEnabled)
 
-	// DÜZELTME: Kritik kontrolü daha esnek hale getiriyoruz.
-	// Sadece gerçekten vazgeçilmez olanları kontrol et.
-	if cfg.PostgresURL == "" || cfg.RabbitMQURL == "" || cfg.MediaServiceGrpcURL == "" || cfg.UserServiceGrpcURL == "" {
-		return nil, fmt.Errorf("kritik altyapı URL'leri eksik (Postgres, RabbitMQ, Media, User)")
+	// Kritik kontrolü güncelliyoruz. Artık TtsServiceGrpcURL'nin varlığını kontrol etmeliyiz.
+	if cfg.PostgresURL == "" || cfg.RabbitMQURL == "" || cfg.MediaServiceGrpcURL == "" || cfg.UserServiceGrpcURL == "" || cfg.TtsServiceGrpcURL == "" {
+		return nil, fmt.Errorf("kritik altyapı URL'leri eksik (Postgres, RabbitMQ, Media, User, TTS Gateway)")
 	}
 	if cfg.LlmServiceHost == "" {
 		return nil, fmt.Errorf("kritik AI servis HOST tanımlaması eksik (LLM)")
