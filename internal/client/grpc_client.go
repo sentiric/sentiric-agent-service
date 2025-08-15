@@ -18,7 +18,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure" // Güvensiz bağlantı için import
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 // NewMediaServiceClient, Media servisi için bir gRPC istemcisi oluşturur.
@@ -41,12 +41,9 @@ func NewUserServiceClient(cfg *config.Config) (userv1.UserServiceClient, error) 
 
 // NewTTSServiceClient, TTS Gateway servisi için bir gRPC istemcisi oluşturur.
 func NewTTSServiceClient(cfg *config.Config) (ttsv1.TextToSpeechServiceClient, error) {
-	// Şimdilik mTLS olmadan, güvensiz bir bağlantı kuruyoruz.
-	// Sonraki adımda bunu da mTLS'e çevireceğiz.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// DÜZELTME: "passthrough" şemasını ekleyerek adres çözümleme sorununu gideriyoruz.
 	target := fmt.Sprintf("passthrough:///%s", cfg.TtsServiceGrpcURL)
 
 	conn, err := grpc.DialContext(ctx, target, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
@@ -82,7 +79,6 @@ func createSecureGrpcClient(cfg *config.Config, addr string) (*grpc.ClientConn, 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// DÜZELTME: "passthrough" şemasını burada da ekliyoruz.
 	target := fmt.Sprintf("passthrough:///%s", addr)
 
 	conn, err := grpc.DialContext(ctx, target, grpc.WithTransportCredentials(creds), grpc.WithBlock())

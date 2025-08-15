@@ -152,7 +152,6 @@ func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay s
 	speakerURL, ok := event.Dialplan.Action.ActionData.Data["speaker_wav_url"]
 	if !ok {
 		l.Warn().Msg("Dialplan action_data içinde 'speaker_wav_url' bulunamadı. Klonlama yapılmayacak.")
-		// speaker_wav_url opsiyonel olduğu için hata vermek yerine devam ediyoruz.
 	}
 
 	ctx := metadata.AppendToOutgoingContext(context.Background(), "x-trace-id", event.TraceID)
