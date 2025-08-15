@@ -18,11 +18,12 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure" // Güvensiz bağlantı için import
 )
 
 // NewMediaServiceClient, Media servisi için bir gRPC istemcisi oluşturur.
 func NewMediaServiceClient(cfg *config.Config) (mediav1.MediaServiceClient, error) {
-	conn, err := createGrpcClient(cfg, cfg.MediaServiceGrpcURL)
+	conn, err := createSecureGrpcClient(cfg, cfg.MediaServiceGrpcURL)
 	if err != nil {
 		return nil, fmt.Errorf("media service istemcisi için bağlantı oluşturulamadı: %w", err)
 	}
@@ -31,7 +32,7 @@ func NewMediaServiceClient(cfg *config.Config) (mediav1.MediaServiceClient, erro
 
 // NewUserServiceClient, User servisi için bir gRPC istemcisi oluşturur.
 func NewUserServiceClient(cfg *config.Config) (userv1.UserServiceClient, error) {
-	conn, err := createGrpcClient(cfg, cfg.UserServiceGrpcURL)
+	conn, err := createSecureGrpcClient(cfg, cfg.UserServiceGrpcURL)
 	if err != nil {
 		return nil, fmt.Errorf("user service istemcisi için bağlantı oluşturulamadı: %w", err)
 	}
@@ -45,15 +46,18 @@ func NewTTSServiceClient(cfg *config.Config) (ttsv1.TextToSpeechServiceClient, e
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	conn, err := grpc.DialContext(ctx, cfg.TtsServiceGrpcURL, grpc.WithInsecure(), grpc.WithBlock())
+	// DÜZELTME: "passthrough" şemasını ekleyerek adres çözümleme sorununu gideriyoruz.
+	target := fmt.Sprintf("passthrough:///%s", cfg.TtsServiceGrpcURL)
+
+	conn, err := grpc.DialContext(ctx, target, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
 	if err != nil {
 		return nil, fmt.Errorf("tts gateway istemcisi için bağlantı oluşturulamadı: %w", err)
 	}
 	return ttsv1.NewTextToSpeechServiceClient(conn), nil
 }
 
-// createGrpcClient, verilen adrese güvenli bir gRPC istemci bağlantısı kurar.
-func createGrpcClient(cfg *config.Config, addr string) (*grpc.ClientConn, error) {
+// createSecureGrpcClient, verilen adrese güvenli (mTLS) bir gRPC istemci bağlantısı kurar.
+func createSecureGrpcClient(cfg *config.Config, addr string) (*grpc.ClientConn, error) {
 	clientCert, err := tls.LoadX509KeyPair(cfg.AgentServiceCertPath, cfg.AgentServiceKeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("istemci sertifikası yüklenemedi: %w", err)
@@ -78,7 +82,10 @@ func createGrpcClient(cfg *config.Config, addr string) (*grpc.ClientConn, error)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	conn, err := grpc.DialContext(ctx, addr, grpc.WithTransportCredentials(creds), grpc.WithBlock())
+	// DÜZELTME: "passthrough" şemasını burada da ekliyoruz.
+	target := fmt.Sprintf("passthrough:///%s", addr)
+
+	conn, err := grpc.DialContext(ctx, target, grpc.WithTransportCredentials(creds), grpc.WithBlock())
 	if err != nil {
 		return nil, fmt.Errorf("gRPC sunucusuna (%s) bağlanılamadı: %w", addr, err)
 	}
