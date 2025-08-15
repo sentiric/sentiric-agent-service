@@ -41,3 +41,17 @@ func GetAnnouncementPathFromDB(db *sql.DB, announcementID string) (string, error
 	}
 	return audioPath, nil
 }
+
+// YENİ FONKSİYON: Veritabanından bir prompt veya metin şablonu alır.
+func GetTemplateFromDB(db *sql.DB, templateID string) (string, error) {
+	var content string
+	query := "SELECT content FROM templates WHERE id = $1"
+	err := db.QueryRow(query, templateID).Scan(&content)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", fmt.Errorf("şablon bulunamadı: %s", templateID)
+		}
+		return "", fmt.Errorf("şablon sorgusu başarısız: %w", err)
+	}
+	return content, nil
+}

@@ -13,8 +13,8 @@ type Config struct {
 	PostgresURL          string
 	RabbitMQURL          string
 	MetricsPort          string
-	LlmServiceURL        string
-	TtsServiceGrpcURL    string // Bu, TTS Gateway'in gRPC adresidir.
+	LlmServiceURL        string // <-- BU SATIR EKLENDİ
+	TtsServiceGrpcURL    string
 	MediaServiceGrpcURL  string
 	UserServiceGrpcURL   string
 	AgentServiceCertPath string
@@ -30,8 +30,8 @@ func Load() (*Config, error) {
 		PostgresURL:          getEnv("POSTGRES_URL"),
 		RabbitMQURL:          getEnv("RABBITMQ_URL"),
 		MetricsPort:          getEnvWithDefault("METRICS_PORT_AGENT", "9091"),
-		LlmServiceURL:        getEnv("LLM_SERVICE_URL"),
-		TtsServiceGrpcURL:    getEnv("TTS_GATEWAY_URL"), // Yeni TTS Gateway URL'si
+		LlmServiceURL:        getEnv("LLM_SERVICE_URL"), // <-- BU SATIR EKLENDİ
+		TtsServiceGrpcURL:    getEnv("TTS_GATEWAY_URL"),
 		MediaServiceGrpcURL:  getEnv("MEDIA_SERVICE_GRPC_URL"),
 		UserServiceGrpcURL:   getEnv("USER_SERVICE_GRPC_URL"),
 		AgentServiceCertPath: getEnv("AGENT_SERVICE_CERT_PATH"),

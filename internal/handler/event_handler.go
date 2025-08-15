@@ -2,12 +2,15 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
-	"fmt" // fmt'yi ekliyoruz
+	"fmt"
+	"net/http"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -29,6 +32,13 @@ type CallEvent struct {
 	From      string                             `json:"from"`
 }
 
+type LlmGenerateRequest struct {
+	Prompt string `json:"prompt"`
+}
+type LlmGenerateResponse struct {
+	Text string `json:"text"`
+}
+
 type EventHandler struct {
 	db              *sql.DB
 	mediaClient     mediav1.MediaServiceClient
@@ -37,14 +47,16 @@ type EventHandler struct {
 	log             zerolog.Logger
 	eventsProcessed *prometheus.CounterVec
 	eventsFailed    *prometheus.CounterVec
+	llmServiceURL   string
 }
 
-func NewEventHandler(db *sql.DB, mc mediav1.MediaServiceClient, uc userv1.UserServiceClient, tc ttsv1.TextToSpeechServiceClient, log zerolog.Logger, processed, failed *prometheus.CounterVec) *EventHandler {
+func NewEventHandler(db *sql.DB, mc mediav1.MediaServiceClient, uc userv1.UserServiceClient, tc ttsv1.TextToSpeechServiceClient, llmURL string, log zerolog.Logger, processed, failed *prometheus.CounterVec) *EventHandler {
 	return &EventHandler{
 		db:              db,
 		mediaClient:     mc,
 		userClient:      uc,
 		ttsClient:       tc,
+		llmServiceURL:   llmURL,
 		log:             log,
 		eventsProcessed: processed,
 		eventsFailed:    failed,
@@ -106,16 +118,72 @@ func (h *EventHandler) handlePlayAnnouncement(l zerolog.Logger, event *CallEvent
 }
 
 func (h *EventHandler) handleStartAIConversation(l zerolog.Logger, event *CallEvent) {
-	announcementID, ok := event.Dialplan.Action.ActionData.Data["welcome_announcement_id"]
-	if !ok {
-		l.Error().Msg("Dialplan action_data içinde 'welcome_announcement_id' bulunamadı.")
-		h.eventsFailed.WithLabelValues(event.EventType, "missing_parameter").Inc()
-		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR_TR")
+	l.Info().Msg("AI Konuşma başlatılıyor (Dinamik Karşılama)...")
+
+	// Adım 1: Duruma göre doğru prompt ID'sini belirle
+	var promptID string
+	if event.Dialplan.MatchedUser != nil && event.Dialplan.MatchedUser.Name != nil {
+		promptID = "PROMPT_WELCOME_KNOWN_USER_TR"
+	} else {
+		promptID = "PROMPT_WELCOME_GUEST_TR"
+	}
+
+	// Adım 2: Prompt şablonunu veritabanından çek
+	promptTemplate, err := database.GetTemplateFromDB(h.db, promptID)
+	if err != nil {
+		l.Error().Err(err).Str("prompt_id", promptID).Msg("Prompt şablonu veritabanından alınamadı.")
+		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR_TR") // Fallback
 		return
 	}
-	l.Info().Str("announcement_id", announcementID).Msg("AI Konuşma başlatma eylemi işleniyor (karşılama anonsu)")
-	h.playAnnouncement(l, event, announcementID)
-	go h.startDialogLoop(l, event)
+
+	// Adım 3: Prompt'u gerçek verilerle doldur
+	prompt := promptTemplate
+	if event.Dialplan.MatchedUser != nil && event.Dialplan.MatchedUser.Name != nil {
+		prompt = strings.Replace(prompt, "{user_name}", *event.Dialplan.MatchedUser.Name, -1)
+	}
+
+	// Adım 4: LLM Service'e istek gönder
+	llmReqPayload := LlmGenerateRequest{Prompt: prompt}
+	payloadBytes, _ := json.Marshal(llmReqPayload)
+
+	fullLlmUrl := fmt.Sprintf("%s/generate", h.llmServiceURL)
+
+	req, err := http.NewRequestWithContext(context.Background(), "POST", fullLlmUrl, bytes.NewBuffer(payloadBytes))
+	if err != nil {
+		l.Error().Err(err).Msg("LLM isteği oluşturulamadı.")
+		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR_TR") // Fallback
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Trace-ID", event.TraceID)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		l.Error().Err(err).Msg("LLM servisinden yanıt alınamadı.")
+		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR_TR") // Fallback
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		l.Error().Int("status_code", resp.StatusCode).Msg("LLM servisi hata döndürdü.")
+		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR_TR") // Fallback
+		return
+	}
+
+	var llmResp LlmGenerateResponse
+	if err := json.NewDecoder(resp.Body).Decode(&llmResp); err != nil {
+		l.Error().Err(err).Msg("LLM yanıtı parse edilemedi.")
+		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR_TR") // Fallback
+		return
+	}
+
+	welcomeText := strings.Trim(llmResp.Text, "\"")
+	l.Info().Str("llm_response", welcomeText).Msg("LLM'den dinamik karşılama metni alındı.")
+
+	// Adım 5: LLM'den gelen metni playText fonksiyonu ile sese çevirip çal.
+	h.playText(l, event, welcomeText)
 }
 
 func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *CallEvent) {
@@ -127,34 +195,14 @@ func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *CallEvent
 		l.Error().Str("caller_id", callerID).Str("tenant_id", tenantID).Msg("Misafir kullanıcı oluşturulamadı, bilgi eksik.")
 		h.eventsFailed.WithLabelValues(event.EventType, "missing_guest_info").Inc()
 	}
-
-	announcementID, ok := event.Dialplan.Action.ActionData.Data["welcome_announcement_id"]
-	if !ok {
-		l.Error().Msg("Dialplan action_data içinde 'welcome_announcement_id' bulunamadı.")
-		h.eventsFailed.WithLabelValues(event.EventType, "missing_parameter").Inc()
-		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR_TR")
-		return
-	}
-	l.Info().Str("announcement_id", announcementID).Msg("Misafir karşılama eylemi işleniyor")
-	h.playAnnouncement(l, event, announcementID)
-	go h.startDialogLoop(l, event)
-}
-
-func (h *EventHandler) startDialogLoop(l zerolog.Logger, event *CallEvent) {
-	time.Sleep(5 * time.Second)
-	l.Info().Msg("Yapay zeka diyalog döngüsü başlatılıyor...")
-	respText := "TTS Gateway bağlantısı test ediliyor."
-	l.Info().Str("llm_response", respText).Msg("LLM yanıtı alındı (mock)")
-	h.playText(l, event, respText)
+	h.handleStartAIConversation(l, event)
 }
 
 func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay string) {
 	l.Info().Str("text", textToPlay).Msg("Metin sese dönüştürülüyor...")
 
-	speakerURL, ok := event.Dialplan.Action.ActionData.Data["speaker_wav_url"]
-	if !ok {
-		l.Warn().Msg("Dialplan action_data içinde 'speaker_wav_url' bulunamadı. Klonlama yapılmayacak.")
-	}
+	speakerURL, useCloning := event.Dialplan.Action.ActionData.Data["speaker_wav_url"]
+	voiceSelector, useVoiceSelector := event.Dialplan.Action.ActionData.Data["voice_selector"]
 
 	ctx := metadata.AppendToOutgoingContext(context.Background(), "x-trace-id", event.TraceID)
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -164,11 +212,17 @@ func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay s
 		Text:         textToPlay,
 		LanguageCode: "tr",
 	}
-	if ok && speakerURL != "" {
+
+	if useCloning && speakerURL != "" {
 		ttsReq.SpeakerWavUrl = &speakerURL
+		l.Info().Str("speaker_url", speakerURL).Msg("Ses klonlama isteği hazırlanıyor.")
+	} else if useVoiceSelector && voiceSelector != "" {
+		ttsReq.VoiceSelector = &voiceSelector
+		l.Info().Str("voice_selector", voiceSelector).Msg("Özel ses seçici isteği hazırlanıyor.")
+	} else {
+		l.Info().Msg("Varsayılan ses sentezleme isteği hazırlanıyor.")
 	}
 
-	// 1. TTS Gateway'den ses verisini byte olarak al
 	ttsResp, err := h.ttsClient.Synthesize(ctx, ttsReq)
 	if err != nil {
 		l.Error().Err(err).Msg("TTS Gateway'den yanıt alınamadı.")
@@ -182,17 +236,21 @@ func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay s
 		Int("audio_size_bytes", len(audioBytes)).
 		Msg("TTS Gateway'den ses başarıyla alındı.")
 
-	// 2. Ses verisini Base64'e kodla ve bir data URI oluştur
-	// Not: Gelen sesin formatına göre media type değişebilir. Şimdilik 'audio/wav' varsayıyoruz.
-	encodedAudio := base64.StdEncoding.EncodeToString(audioBytes)
-	audioURI := fmt.Sprintf("data:audio/wav;base64,%s", encodedAudio)
+	var mediaType string
+	if ttsResp.GetEngineUsed() == "sentiric-tts-edge-service" {
+		mediaType = "audio/mpeg"
+	} else {
+		mediaType = "audio/wav"
+	}
 
-	// 3. Media Service'e bu URI'yi gönder
+	encodedAudio := base64.StdEncoding.EncodeToString(audioBytes)
+	audioURI := fmt.Sprintf("data:%s;base64,%s", mediaType, encodedAudio)
+
 	mediaInfo := event.Media
 	rtpTarget, ok1 := mediaInfo["caller_rtp_addr"].(string)
 	serverPortFloat, ok2 := mediaInfo["server_rtp_port"].(float64)
 
-	if !ok1 || !ok2 {
+	if !ok1 || !ok2 || rtpTarget == "" || serverPortFloat == 0 {
 		l.Error().Interface("media_info", mediaInfo).Msg("Geçersiz veya eksik medya bilgisi, dinamik ses çalınamıyor.")
 		h.eventsFailed.WithLabelValues(event.EventType, "invalid_media_info_for_tts").Inc()
 		return
@@ -221,10 +279,9 @@ func (h *EventHandler) playAnnouncement(l zerolog.Logger, event *CallEvent, anno
 	if err != nil {
 		l.Error().Err(err).Str("announcement_id", announcementID).Msg("Anons yolu alınamadı, fallback kullanılıyor")
 		h.eventsFailed.WithLabelValues(event.EventType, "get_announcement_failed").Inc()
-		audioPath = "audio/tr/system_error.wav" // Fallback path
+		audioPath = "audio/tr/system_error.wav"
 	}
 
-	// URI formatına çeviriyoruz
 	audioURI := fmt.Sprintf("file:///%s", audioPath)
 
 	mediaInfo := event.Media
@@ -242,7 +299,6 @@ func (h *EventHandler) playAnnouncement(l zerolog.Logger, event *CallEvent, anno
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	// DÜZELTME: PlayAudioRequest'i yeni kontrata göre güncelliyoruz
 	_, err = h.mediaClient.PlayAudio(ctx, &mediav1.PlayAudioRequest{
 		RtpTargetAddr: rtpTarget,
 		ServerRtpPort: serverPort,
