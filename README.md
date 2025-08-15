@@ -23,8 +23,8 @@ Bu servis, platformun asenkron iş mantığını yürüten ana işçisidir (work
 *   **Dil:** Go
 *   **Asenkron İletişim:** RabbitMQ (`amqp091-go` kütüphanesi)
 *   **Servisler Arası İletişim:**
-    *   **gRPC:** İç, yüksek performanslı servislere (`media`, `user`, `dialplan`) bağlanmak için.
-    *   **HTTP/REST:** Dış veya bağımlılıkları izole edilmiş AI servislerine (`llm-service`, `tts-service`) bağlanmak için.
+    *   **gRPC:** İç, yüksek performanslı servislere (`media`, `user`, `tts-gateway`) bağlanmak için.
+    *   **HTTP/REST:** Dış veya bağımlılıkları izole edilmiş AI servislerine (`llm-service`) bağlanmak için.
 *   **Veritabanı Erişimi:** PostgreSQL (`pgx` kütüphanesi)
 *   **Gözlemlenebilirlik:** Prometheus metrikleri ve `zerolog` ile yapılandırılmış loglama.
 
@@ -38,7 +38,7 @@ Bu servis bir sunucu değil, bir **istemci ve tüketicidir.** Dışarıya bir po
     *   `sentiric-media-service` (gRPC): Medya işlemlerini yönetmek için.
     *   `sentiric-user-service` (gRPC): Kullanıcı işlemlerini yönetmek için.
     *   `sentiric-llm-service` (HTTP/REST): Yapay zeka metin üretimi için.
-    *   `sentiric-tts-service` (HTTP/REST): Metni sese çevirmek için.
+    *   `sentiric-tts-gateway-service` (gRPC): Metni sese çevirmek için akıllı ses santraline bağlanmak.
     *   `PostgreSQL`: Anons yolları gibi konfigürasyon verilerini okumak için.
 
 ## 🚀 Yerel Geliştirme
@@ -49,7 +49,7 @@ Bu servis bir sunucu değil, bir **istemci ve tüketicidir.** Dışarıya bir po
 
 ## 🤝 Katkıda Bulunma
 
-Katkılarınızı bekliyoruz! Lütfen projenin ana [Sentiric Governance](https://github.com/sentiric/sentiric-governance) reposundaki kodlama standartlarına ve katkıda bulunma rehberine göz atın.
+Katkılarınızı bekliyorsunuz! Lütfen projenin ana [Sentiric Governance](https://github.com/sentiric/sentiric-governance) reposundaki kodlama standartlarına ve katkıda bulunma rehberine göz atın.
 
 ---
 ## 🏛️ Anayasal Konum

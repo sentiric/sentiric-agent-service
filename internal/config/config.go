@@ -4,26 +4,20 @@ package config
 import (
 	"fmt"
 	"os"
-	"strconv"
 
 	"github.com/joho/godotenv"
 )
 
+// Config struct'ı, uygulamanın ihtiyaç duyduğu tüm yapılandırma değerlerini içerir.
+// Eski ve kullanılmayan alanlar temizlenmiştir.
 type Config struct {
 	Env                  string
 	PostgresURL          string
 	RabbitMQURL          string
 	QueueName            string
 	MetricsPort          string
-	LlmServiceHost       string
-	LlmServicePort       string
-	LlmServiceTlsEnabled bool
-	TtsServiceHost       string // Bu alan artık kullanılmıyor ama uyumluluk için kalabilir
-	TtsServicePort       string // Bu alan artık kullanılmıyor ama uyumluluk için kalabilir
-	TtsServiceTlsEnabled bool   // Bu alan artık kullanılmıyor ama uyumluluk için kalabilir
 	LlmServiceURL        string
-	TtsServiceURL        string // Bu alan artık kullanılmıyor ama uyumluluk için kalabilir
-	TtsServiceGrpcURL    string // DEĞİŞİKLİK: Bu alan artık TTS_GATEWAY_URL'den okunacak
+	TtsServiceGrpcURL    string // Bu, TTS Gateway'in gRPC adresidir.
 	MediaServiceGrpcURL  string
 	UserServiceGrpcURL   string
 	AgentServiceCertPath string
@@ -31,44 +25,18 @@ type Config struct {
 	GrpcTlsCaPath        string
 }
 
-func buildURL(host, port string, tlsEnabled bool) string {
-	if host == "" { // Eğer host tanımlı değilse, boş URL döndür.
-		return ""
-	}
-	scheme := "http"
-	if tlsEnabled {
-		scheme = "https"
-	}
-	if port != "" {
-		return fmt.Sprintf("%s://%s:%s", scheme, host, port)
-	}
-	return fmt.Sprintf("%s://%s", scheme, host)
-}
-
+// Load, .env dosyasından ve ortam değişkenlerinden yapılandırmayı yükler.
 func Load() (*Config, error) {
 	godotenv.Load()
 
-	llmTls, _ := strconv.ParseBool(getEnv("LLM_SERVICE_TLS_ENABLED"))
-	ttsTls, _ := strconv.ParseBool(getEnv("TTS_SERVICE_TLS_ENABLED"))
-
 	cfg := &Config{
-		Env:         getEnvWithDefault("ENV", "production"),
-		PostgresURL: getEnv("POSTGRES_URL"),
-		RabbitMQURL: getEnv("RABBITMQ_URL"),
-		QueueName:   getEnvWithDefault("AGENT_QUEUE_NAME", "call.events"),
-		MetricsPort: getEnvWithDefault("METRICS_PORT_AGENT", "9091"), // METRICS_PORT -> METRICS_PORT_AGENT
-
-		LlmServiceHost:       getEnv("LLM_SERVICE_HOST"),
-		LlmServicePort:       getEnv("LLM_SERVICE_PORT"),
-		LlmServiceTlsEnabled: llmTls,
-
-		TtsServiceHost:       getEnv("TTS_SERVICE_HOST"),
-		TtsServicePort:       getEnv("TTS_SERVICE_PORT"),
-		TtsServiceTlsEnabled: ttsTls,
-		// DÜZELTME: Artık merkezi config'deki TTS_GATEWAY_URL'yi okuyoruz.
-		// Bu, eski TTS_SERVICE_GRPC_URL değişkenini gereksiz kılıyor.
-		TtsServiceGrpcURL: getEnv("TTS_GATEWAY_URL"),
-
+		Env:                  getEnvWithDefault("ENV", "production"),
+		PostgresURL:          getEnv("POSTGRES_URL"),
+		RabbitMQURL:          getEnv("RABBITMQ_URL"),
+		QueueName:            getEnvWithDefault("AGENT_QUEUE_NAME", "call.events"),
+		MetricsPort:          getEnvWithDefault("METRICS_PORT_AGENT", "9091"),
+		LlmServiceURL:        getEnv("LLM_SERVICE_URL"), // Bu direkt tam URL olarak alınabilir.
+		TtsServiceGrpcURL:    getEnv("TTS_GATEWAY_URL"), // Yeni TTS Gateway URL'si
 		MediaServiceGrpcURL:  getEnv("MEDIA_SERVICE_GRPC_URL"),
 		UserServiceGrpcURL:   getEnv("USER_SERVICE_GRPC_URL"),
 		AgentServiceCertPath: getEnv("AGENT_SERVICE_CERT_PATH"),
@@ -76,15 +44,9 @@ func Load() (*Config, error) {
 		GrpcTlsCaPath:        getEnv("GRPC_TLS_CA_PATH"),
 	}
 
-	cfg.LlmServiceURL = buildURL(cfg.LlmServiceHost, cfg.LlmServicePort, cfg.LlmServiceTlsEnabled)
-	cfg.TtsServiceURL = buildURL(cfg.TtsServiceHost, cfg.TtsServicePort, cfg.TtsServiceTlsEnabled)
-
-	// Kritik kontrolü güncelliyoruz. Artık TtsServiceGrpcURL'nin varlığını kontrol etmeliyiz.
-	if cfg.PostgresURL == "" || cfg.RabbitMQURL == "" || cfg.MediaServiceGrpcURL == "" || cfg.UserServiceGrpcURL == "" || cfg.TtsServiceGrpcURL == "" {
-		return nil, fmt.Errorf("kritik altyapı URL'leri eksik (Postgres, RabbitMQ, Media, User, TTS Gateway)")
-	}
-	if cfg.LlmServiceHost == "" {
-		return nil, fmt.Errorf("kritik AI servis HOST tanımlaması eksik (LLM)")
+	// Kritik yapılandırma değerlerinin varlığını kontrol et
+	if cfg.PostgresURL == "" || cfg.RabbitMQURL == "" || cfg.MediaServiceGrpcURL == "" || cfg.UserServiceGrpcURL == "" || cfg.TtsServiceGrpcURL == "" || cfg.LlmServiceURL == "" {
+		return nil, fmt.Errorf("kritik altyapı URL'leri eksik (Postgres, RabbitMQ, Media, User, TTS Gateway, LLM)")
 	}
 
 	return cfg, nil
