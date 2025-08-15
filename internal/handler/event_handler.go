@@ -4,7 +4,9 @@ package handler
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
+	"fmt" // fmt'yi ekliyoruz
 	"regexp"
 	"time"
 
@@ -162,11 +164,11 @@ func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay s
 		Text:         textToPlay,
 		LanguageCode: "tr",
 	}
-
 	if ok && speakerURL != "" {
 		ttsReq.SpeakerWavUrl = &speakerURL
 	}
 
+	// 1. TTS Gateway'den ses verisini byte olarak al
 	ttsResp, err := h.ttsClient.Synthesize(ctx, ttsReq)
 	if err != nil {
 		l.Error().Err(err).Msg("TTS Gateway'den yanıt alınamadı.")
@@ -174,11 +176,44 @@ func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay s
 		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR_TR")
 		return
 	}
-
+	audioBytes := ttsResp.GetAudioContent()
 	l.Info().
 		Str("engine_used", ttsResp.GetEngineUsed()).
-		Int("audio_size_bytes", len(ttsResp.GetAudioContent())).
+		Int("audio_size_bytes", len(audioBytes)).
 		Msg("TTS Gateway'den ses başarıyla alındı.")
+
+	// 2. Ses verisini Base64'e kodla ve bir data URI oluştur
+	// Not: Gelen sesin formatına göre media type değişebilir. Şimdilik 'audio/wav' varsayıyoruz.
+	encodedAudio := base64.StdEncoding.EncodeToString(audioBytes)
+	audioURI := fmt.Sprintf("data:audio/wav;base64,%s", encodedAudio)
+
+	// 3. Media Service'e bu URI'yi gönder
+	mediaInfo := event.Media
+	rtpTarget, ok1 := mediaInfo["caller_rtp_addr"].(string)
+	serverPortFloat, ok2 := mediaInfo["server_rtp_port"].(float64)
+
+	if !ok1 || !ok2 {
+		l.Error().Interface("media_info", mediaInfo).Msg("Geçersiz veya eksik medya bilgisi, dinamik ses çalınamıyor.")
+		h.eventsFailed.WithLabelValues(event.EventType, "invalid_media_info_for_tts").Inc()
+		return
+	}
+	serverPort := uint32(serverPortFloat)
+
+	mediaCtx, mediaCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer mediaCancel()
+
+	_, err = h.mediaClient.PlayAudio(mediaCtx, &mediav1.PlayAudioRequest{
+		RtpTargetAddr: rtpTarget,
+		ServerRtpPort: serverPort,
+		AudioUri:      audioURI,
+	})
+
+	if err != nil {
+		l.Error().Err(err).Msg("Hata: Dinamik ses (TTS) çalınamadı")
+		h.eventsFailed.WithLabelValues(event.EventType, "play_tts_audio_failed").Inc()
+	} else {
+		l.Info().Msg("Dinamik ses (TTS) çalma komutu media-service'e gönderildi.")
+	}
 }
 
 func (h *EventHandler) playAnnouncement(l zerolog.Logger, event *CallEvent, announcementID string) {
@@ -186,10 +221,13 @@ func (h *EventHandler) playAnnouncement(l zerolog.Logger, event *CallEvent, anno
 	if err != nil {
 		l.Error().Err(err).Str("announcement_id", announcementID).Msg("Anons yolu alınamadı, fallback kullanılıyor")
 		h.eventsFailed.WithLabelValues(event.EventType, "get_announcement_failed").Inc()
-		audioPath = "audio/tr/system_error.wav"
+		audioPath = "audio/tr/system_error.wav" // Fallback path
 	}
-	mediaInfo := event.Media
 
+	// URI formatına çeviriyoruz
+	audioURI := fmt.Sprintf("file:///%s", audioPath)
+
+	mediaInfo := event.Media
 	rtpTarget, ok1 := mediaInfo["caller_rtp_addr"].(string)
 	serverPortFloat, ok2 := mediaInfo["server_rtp_port"].(float64)
 
@@ -203,16 +241,19 @@ func (h *EventHandler) playAnnouncement(l zerolog.Logger, event *CallEvent, anno
 	ctx := metadata.AppendToOutgoingContext(context.Background(), "x-trace-id", event.TraceID)
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+
+	// DÜZELTME: PlayAudioRequest'i yeni kontrata göre güncelliyoruz
 	_, err = h.mediaClient.PlayAudio(ctx, &mediav1.PlayAudioRequest{
 		RtpTargetAddr: rtpTarget,
-		AudioId:       audioPath,
 		ServerRtpPort: serverPort,
+		AudioUri:      audioURI,
 	})
+
 	if err != nil {
-		l.Error().Err(err).Str("audio_path", audioPath).Msg("Hata: Ses çalınamadı")
+		l.Error().Err(err).Str("audio_uri", audioURI).Msg("Hata: Ses çalınamadı")
 		h.eventsFailed.WithLabelValues(event.EventType, "play_announcement_failed").Inc()
 	} else {
-		l.Info().Str("audio_path", audioPath).Msg("Ses çalma komutu gönderildi")
+		l.Info().Str("audio_uri", audioURI).Msg("Ses çalma komutu gönderildi")
 	}
 }
 

@@ -8,13 +8,10 @@ import (
 	"github.com/joho/godotenv"
 )
 
-// Config struct'ı, uygulamanın ihtiyaç duyduğu tüm yapılandırma değerlerini içerir.
-// Eski ve kullanılmayan alanlar temizlenmiştir.
 type Config struct {
-	Env         string
-	PostgresURL string
-	RabbitMQURL string
-	// DÜZELTME: Artık kullanılmayan QueueName alanı kaldırıldı.
+	Env                  string
+	PostgresURL          string
+	RabbitMQURL          string
 	MetricsPort          string
 	LlmServiceURL        string
 	TtsServiceGrpcURL    string // Bu, TTS Gateway'in gRPC adresidir.
@@ -25,17 +22,15 @@ type Config struct {
 	GrpcTlsCaPath        string
 }
 
-// Load, .env dosyasından ve ortam değişkenlerinden yapılandırmayı yükler.
 func Load() (*Config, error) {
 	godotenv.Load()
 
 	cfg := &Config{
-		Env:         getEnvWithDefault("ENV", "production"),
-		PostgresURL: getEnv("POSTGRES_URL"),
-		RabbitMQURL: getEnv("RABBITMQ_URL"),
-		// DÜZELTME: Artık kullanılmayan QueueName yüklemesi kaldırıldı.
+		Env:                  getEnvWithDefault("ENV", "production"),
+		PostgresURL:          getEnv("POSTGRES_URL"),
+		RabbitMQURL:          getEnv("RABBITMQ_URL"),
 		MetricsPort:          getEnvWithDefault("METRICS_PORT_AGENT", "9091"),
-		LlmServiceURL:        getEnv("LLM_SERVICE_URL"), // Bu direkt tam URL olarak alınabilir.
+		LlmServiceURL:        getEnv("LLM_SERVICE_URL"),
 		TtsServiceGrpcURL:    getEnv("TTS_GATEWAY_URL"), // Yeni TTS Gateway URL'si
 		MediaServiceGrpcURL:  getEnv("MEDIA_SERVICE_GRPC_URL"),
 		UserServiceGrpcURL:   getEnv("USER_SERVICE_GRPC_URL"),
@@ -44,7 +39,6 @@ func Load() (*Config, error) {
 		GrpcTlsCaPath:        getEnv("GRPC_TLS_CA_PATH"),
 	}
 
-	// Kritik yapılandırma değerlerinin varlığını kontrol et
 	if cfg.PostgresURL == "" || cfg.RabbitMQURL == "" || cfg.MediaServiceGrpcURL == "" || cfg.UserServiceGrpcURL == "" || cfg.TtsServiceGrpcURL == "" || cfg.LlmServiceURL == "" {
 		return nil, fmt.Errorf("kritik altyapı URL'leri eksik (Postgres, RabbitMQ, Media, User, TTS Gateway, LLM)")
 	}
