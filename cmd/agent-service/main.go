@@ -72,7 +72,8 @@ func main() {
 	var wg sync.WaitGroup
 
 	// Tüketiciyi bir goroutine içinde başlat
-	go queue.StartConsumer(ctx, rabbitCh, cfg.QueueName, eventHandler.HandleRabbitMQMessage, appLog, &wg)
+	// DÜZELTME: Artık kullanılmayan cfg.QueueName parametresini kaldırıyoruz.
+	go queue.StartConsumer(ctx, rabbitCh, eventHandler.HandleRabbitMQMessage, appLog, &wg)
 
 	// 8. Kapatma sinyallerini dinle
 	quit := make(chan os.Signal, 1)

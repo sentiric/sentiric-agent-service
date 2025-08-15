@@ -34,7 +34,8 @@ func Connect(url string, log zerolog.Logger) (*amqp091.Channel, <-chan *amqp091.
 	return nil, nil
 }
 
-func StartConsumer(ctx context.Context, ch *amqp091.Channel, queueName string, handlerFunc func([]byte), log zerolog.Logger, wg *sync.WaitGroup) {
+// DÜZELTME: Artık kullanılmayan 'queueName' parametresini fonksiyondan kaldırıyoruz.
+func StartConsumer(ctx context.Context, ch *amqp091.Channel, handlerFunc func([]byte), log zerolog.Logger, wg *sync.WaitGroup) {
 	// 1. Olayların yayınlandığı fanout exchange'in var olduğundan emin ol.
 	err := ch.ExchangeDeclare(
 		exchangeName, // name

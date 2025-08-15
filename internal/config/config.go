@@ -11,10 +11,10 @@ import (
 // Config struct'ı, uygulamanın ihtiyaç duyduğu tüm yapılandırma değerlerini içerir.
 // Eski ve kullanılmayan alanlar temizlenmiştir.
 type Config struct {
-	Env                  string
-	PostgresURL          string
-	RabbitMQURL          string
-	QueueName            string
+	Env         string
+	PostgresURL string
+	RabbitMQURL string
+	// DÜZELTME: Artık kullanılmayan QueueName alanı kaldırıldı.
 	MetricsPort          string
 	LlmServiceURL        string
 	TtsServiceGrpcURL    string // Bu, TTS Gateway'in gRPC adresidir.
@@ -30,10 +30,10 @@ func Load() (*Config, error) {
 	godotenv.Load()
 
 	cfg := &Config{
-		Env:                  getEnvWithDefault("ENV", "production"),
-		PostgresURL:          getEnv("POSTGRES_URL"),
-		RabbitMQURL:          getEnv("RABBITMQ_URL"),
-		QueueName:            getEnvWithDefault("AGENT_QUEUE_NAME", "call.events"),
+		Env:         getEnvWithDefault("ENV", "production"),
+		PostgresURL: getEnv("POSTGRES_URL"),
+		RabbitMQURL: getEnv("RABBITMQ_URL"),
+		// DÜZELTME: Artık kullanılmayan QueueName yüklemesi kaldırıldı.
 		MetricsPort:          getEnvWithDefault("METRICS_PORT_AGENT", "9091"),
 		LlmServiceURL:        getEnv("LLM_SERVICE_URL"), // Bu direkt tam URL olarak alınabilir.
 		TtsServiceGrpcURL:    getEnv("TTS_GATEWAY_URL"), // Yeni TTS Gateway URL'si

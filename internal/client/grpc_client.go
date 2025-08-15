@@ -18,7 +18,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
+	// "google.golang.org/grpc/credentials/insecure" // DÜZELTME: Bu import artık kullanılmıyor.
 )
 
 // NewMediaServiceClient, Media servisi için bir gRPC istemcisi oluşturur.
@@ -41,12 +41,9 @@ func NewUserServiceClient(cfg *config.Config) (userv1.UserServiceClient, error) 
 
 // NewTTSServiceClient, TTS Gateway servisi için bir gRPC istemcisi oluşturur.
 func NewTTSServiceClient(cfg *config.Config) (ttsv1.TextToSpeechServiceClient, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	target := fmt.Sprintf("passthrough:///%s", cfg.TtsServiceGrpcURL)
-
-	conn, err := grpc.DialContext(ctx, target, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
+	// DÜZELTME: Güvensiz (insecure) bağlantı yerine, diğer servislerle tutarlı olarak
+	// mTLS kullanan güvenli bağlantı metodunu çağırıyoruz.
+	conn, err := createSecureGrpcClient(cfg, cfg.TtsServiceGrpcURL)
 	if err != nil {
 		return nil, fmt.Errorf("tts gateway istemcisi için bağlantı oluşturulamadı: %w", err)
 	}
