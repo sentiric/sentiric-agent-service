@@ -1,4 +1,3 @@
-// ========== FILE: sentiric-agent-service/internal/queue/rabbitmq.go ==========
 package queue
 
 import (
@@ -10,7 +9,11 @@ import (
 	"github.com/rs/zerolog"
 )
 
-const exchangeName = "sentiric_events"
+const (
+	exchangeName = "sentiric_events"
+	// YENİ: Agent için kalıcı ve bilinen bir kuyruk adı tanımlıyoruz.
+	agentQueueName = "sentiric.agent_service.events"
+)
 
 func Connect(url string, log zerolog.Logger) (*amqp091.Channel, <-chan *amqp091.Error) {
 	var conn *amqp091.Connection
@@ -34,9 +37,7 @@ func Connect(url string, log zerolog.Logger) (*amqp091.Channel, <-chan *amqp091.
 	return nil, nil
 }
 
-// DÜZELTME: Artık kullanılmayan 'queueName' parametresini fonksiyondan kaldırıyoruz.
 func StartConsumer(ctx context.Context, ch *amqp091.Channel, handlerFunc func([]byte), log zerolog.Logger, wg *sync.WaitGroup) {
-	// 1. Olayların yayınlandığı fanout exchange'in var olduğundan emin ol.
 	err := ch.ExchangeDeclare(
 		exchangeName, // name
 		"fanout",     // type
@@ -50,23 +51,22 @@ func StartConsumer(ctx context.Context, ch *amqp091.Channel, handlerFunc func([]
 		log.Fatal().Err(err).Str("exchange", exchangeName).Msg("Exchange deklare edilemedi")
 	}
 
-	// 2. Bu servis için özel, sunucu tarafından isimlendirilen geçici bir kuyruk oluştur.
+	// YENİ MİMARİ: Geçici ve isimsiz kuyruk yerine, kalıcı ve bilinen bir kuyruk oluşturuyoruz.
 	q, err := ch.QueueDeclare(
-		"",    // name: boş bırakınca RabbitMQ rastgele bir isim verir
-		false, // durable: bağlantı kapanınca silinsin
-		true,  // delete when unused: tüketici kalmayınca silinsin
-		true,  // exclusive: sadece bu bağlantı tarafından kullanılabilir
-		false, // no-wait
-		nil,   // arguments
+		agentQueueName, // name: Artık bilinen bir ismimiz var.
+		true,           // durable: RabbitMQ yeniden başlasa bile kuyruk kaybolmaz.
+		false,          // delete when unused: Tüketici olmasa bile silinmez.
+		false,          // exclusive: Birden fazla agent instance'ı aynı kuyruğu dinleyebilir.
+		false,          // no-wait
+		nil,            // arguments
 	)
 	if err != nil {
-		log.Fatal().Err(err).Msg("Özel tüketici kuyruğu oluşturulamadı")
+		log.Fatal().Err(err).Msg("Kalıcı agent kuyruğu oluşturulamadı")
 	}
 
-	// 3. Oluşturduğumuz özel kuyruğu, ana exchange'e bağla (bind).
 	err = ch.QueueBind(
 		q.Name,       // queue name
-		"",           // routing key: fanout için önemsiz
+		"",           // routing key
 		exchangeName, // exchange
 		false,
 		nil,
@@ -75,12 +75,19 @@ func StartConsumer(ctx context.Context, ch *amqp091.Channel, handlerFunc func([]
 		log.Fatal().Err(err).Str("queue", q.Name).Str("exchange", exchangeName).Msg("Kuyruk exchange'e bağlanamadı")
 	}
 
-	log.Info().Str("queue", q.Name).Str("exchange", exchangeName).Msg("Kuyruk başarıyla exchange'e bağlandı.")
+	log.Info().Str("queue", q.Name).Str("exchange", exchangeName).Msg("Kalıcı kuyruk başarıyla exchange'e bağlandı.")
+
+	// Prefetch ayarı, bir worker'ın aynı anda çok fazla mesaj alıp bellekte şişmesini engeller.
+	// Bir seferde sadece 1 mesaj alacak, onu işleyip onayladıktan sonra yenisini isteyecek.
+	err = ch.Qos(1, 0, false)
+	if err != nil {
+		log.Fatal().Err(err).Msg("QoS ayarı yapılamadı.")
+	}
 
 	msgs, err := ch.Consume(
 		q.Name, // queue
 		"",     // consumer
-		true,   // auto-ack
+		false,  // auto-ack: DEĞİŞTİRİLDİ! Mesajları manuel onaylayacağız.
 		false,  // exclusive
 		false,  // no-local
 		false,  // no-wait
@@ -90,7 +97,7 @@ func StartConsumer(ctx context.Context, ch *amqp091.Channel, handlerFunc func([]
 		log.Fatal().Err(err).Msg("Mesajlar tüketilemedi")
 	}
 
-	log.Info().Str("exchange", exchangeName).Msg("Exchange dinleniyor, mesajlar bekleniyor...")
+	log.Info().Str("queue", q.Name).Msg("Kuyruk dinleniyor, mesajlar bekleniyor...")
 
 	for {
 		select {
@@ -105,7 +112,10 @@ func StartConsumer(ctx context.Context, ch *amqp091.Channel, handlerFunc func([]
 			wg.Add(1)
 			go func(msg amqp091.Delivery) {
 				defer wg.Done()
+				// Handler'ı çalıştır. Handler'ın panic yapması durumuna karşı koruma eklenebilir.
 				handlerFunc(msg.Body)
+				// Handler başarıyla tamamlandıktan sonra mesajı RabbitMQ'dan silmesi için onay gönder.
+				msg.Ack(false)
 			}(d)
 		}
 	}
