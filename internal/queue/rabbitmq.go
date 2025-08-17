@@ -1,3 +1,4 @@
+// ========== FILE: sentiric-agent-service/internal/queue/rabbitmq.go (Durable Queue Mimarisi) ==========
 package queue
 
 import (
@@ -115,7 +116,7 @@ func StartConsumer(ctx context.Context, ch *amqp091.Channel, handlerFunc func([]
 				// Handler'ı çalıştır. Handler'ın panic yapması durumuna karşı koruma eklenebilir.
 				handlerFunc(msg.Body)
 				// Handler başarıyla tamamlandıktan sonra mesajı RabbitMQ'dan silmesi için onay gönder.
-				msg.Ack(false)
+				_ = msg.Ack(false)
 			}(d)
 		}
 	}
