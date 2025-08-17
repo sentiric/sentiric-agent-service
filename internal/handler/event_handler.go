@@ -1,3 +1,4 @@
+// ========== FILE: sentiric-agent-service/internal/handler/event_handler.go (Nihai ve Akış Kontrollü) ==========
 package handler
 
 import (
@@ -90,20 +91,23 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 func (h *EventHandler) handleCallStarted(l zerolog.Logger, event *CallEvent) {
 	l.Info().Msg("Yeni çağrı işleniyor...")
 
-	// --- YENİ ADIM: BEKLETME ANONSU ÇAL ---
-	// Bu, LLM ve TTS işlemleri tamamlanana kadar geçen "ölü zamanı" doldurur.
-	h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_CONNECTING")
-	// --- BİTTİ ---
-
+	// Hatalı Dialplan durumunu en başta kontrol et
 	if event.Dialplan.Action == nil || event.Dialplan.Action.ActionData == nil {
 		l.Error().Msg("Hata: Dialplan Action veya ActionData boş.")
 		h.eventsFailed.WithLabelValues(event.EventType, "nil_dialplan_action").Inc()
-		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR")
+		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR", true) // Hata anonsunu çal ve bekle
 		return
 	}
+
 	action := event.Dialplan.Action.Action
 	l = l.With().Str("action", action).Str("dialplan_id", event.Dialplan.DialplanId).Logger()
 
+	// --- AKIŞ YENİDEN DÜZENLENDİ ---
+	// 1. Önce bekleme anonsunu çal ve bitmesini BEKLE.
+	// Bu, kullanıcıya anında geri bildirim verir ve yarış durumunu engeller.
+	h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_CONNECTING", true)
+
+	// 2. Bekleme anonsu bittikten sonra, dialplan'e göre asıl eylemi gerçekleştir.
 	switch action {
 	case "PLAY_ANNOUNCEMENT":
 		h.handlePlayAnnouncement(l, event)
@@ -114,7 +118,7 @@ func (h *EventHandler) handleCallStarted(l zerolog.Logger, event *CallEvent) {
 	default:
 		l.Error().Str("received_action", action).Msg("Bilinmeyen eylem")
 		h.eventsFailed.WithLabelValues(event.EventType, "unknown_action").Inc()
-		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR")
+		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR", true)
 	}
 }
 
@@ -123,28 +127,27 @@ func (h *EventHandler) handlePlayAnnouncement(l zerolog.Logger, event *CallEvent
 	if !ok {
 		l.Error().Msg("Dialplan action_data içinde 'announcement_id' bulunamadı.")
 		h.eventsFailed.WithLabelValues(event.EventType, "missing_parameter").Inc()
-		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR")
+		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR", true)
 		return
 	}
 	l.Info().Str("announcement_id", announcementID).Msg("Anons çalma eylemi işleniyor")
-	h.playAnnouncement(l, event, announcementID)
+	h.playAnnouncement(l, event, announcementID, true)
 }
 
 func (h *EventHandler) handleStartAIConversation(l zerolog.Logger, event *CallEvent) {
 	l.Info().Msg("AI Konuşma başlatılıyor (Dinamik Karşılama)...")
 
-	// --- NİHAİ DÜZELTME BAŞLANGICI ---
 	var promptID string
 	var languageCode string
 
-	// Dil kodunu kullanıcı profilinden veya varsayılan olarak al
 	if event.Dialplan.MatchedUser != nil && event.Dialplan.MatchedUser.PreferredLanguageCode != nil {
 		languageCode = *event.Dialplan.MatchedUser.PreferredLanguageCode
 	} else {
-		languageCode = "tr" // Varsayılan dil
+		// DİKKAT: `inbound_routes` tablosunda `default_language_code` alanı henüz dialplan response'a eklenmemiş.
+		// Bu bir sonraki adımda `dialplan-service` ve `contracts`'te eklenebilir. Şimdilik `tr` varsayıyoruz.
+		languageCode = "tr"
 	}
 
-	// Prompt ID'sini belirle (artık sonunda dil kodu yok)
 	if event.Dialplan.MatchedUser != nil && event.Dialplan.MatchedUser.Name != nil {
 		promptID = "PROMPT_WELCOME_KNOWN_USER"
 	} else {
@@ -152,14 +155,12 @@ func (h *EventHandler) handleStartAIConversation(l zerolog.Logger, event *CallEv
 	}
 	l = l.With().Str("prompt_id", promptID).Str("language_code", languageCode).Logger()
 
-	// Prompt şablonunu veritabanından DİL KODU ile birlikte çek
 	promptTemplate, err := database.GetTemplateFromDB(h.db, promptID, languageCode)
 	if err != nil {
 		l.Error().Err(err).Msg("Prompt şablonu veritabanından alınamadı.")
-		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR")
+		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR", true)
 		return
 	}
-	// --- NİHAİ DÜZELTME SONU ---
 
 	prompt := promptTemplate
 	if event.Dialplan.MatchedUser != nil && event.Dialplan.MatchedUser.Name != nil {
@@ -172,7 +173,7 @@ func (h *EventHandler) handleStartAIConversation(l zerolog.Logger, event *CallEv
 	req, err := http.NewRequestWithContext(context.Background(), "POST", fullLlmUrl, bytes.NewBuffer(payloadBytes))
 	if err != nil {
 		l.Error().Err(err).Msg("LLM isteği oluşturulamadı.")
-		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR")
+		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR", true)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -181,24 +182,24 @@ func (h *EventHandler) handleStartAIConversation(l zerolog.Logger, event *CallEv
 	resp, err := client.Do(req)
 	if err != nil {
 		l.Error().Err(err).Msg("LLM servisinden yanıt alınamadı.")
-		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR")
+		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR", true)
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		l.Error().Int("status_code", resp.StatusCode).Msg("LLM servisi hata döndürdü.")
-		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR")
+		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR", true)
 		return
 	}
 	var llmResp LlmGenerateResponse
 	if err := json.NewDecoder(resp.Body).Decode(&llmResp); err != nil {
 		l.Error().Err(err).Msg("LLM yanıtı parse edilemedi.")
-		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR")
+		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR", true)
 		return
 	}
 	welcomeText := strings.Trim(llmResp.Text, "\"")
 	l.Info().Str("llm_response", welcomeText).Msg("LLM'den dinamik karşılama metni alındı.")
-	h.playText(l, event, welcomeText)
+	h.playText(l, event, welcomeText, true) // Dinamik AI yanıtının bitmesini de bekleyelim
 }
 
 func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *CallEvent) {
@@ -213,12 +214,12 @@ func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *CallEvent
 	h.handleStartAIConversation(l, event)
 }
 
-func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay string) {
+func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay string, waitForCompletion bool) {
 	l.Info().Str("text", textToPlay).Msg("Metin sese dönüştürülüyor...")
 	speakerURL, useCloning := event.Dialplan.Action.ActionData.Data["speaker_wav_url"]
 	voiceSelector, useVoiceSelector := event.Dialplan.Action.ActionData.Data["voice_selector"]
 	ctx := metadata.AppendToOutgoingContext(context.Background(), "x-trace-id", event.TraceID)
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second) // TTS ve çalma süresi için toplam timeout
 	defer cancel()
 
 	var languageCode string
@@ -233,7 +234,7 @@ func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay s
 		if !isAllowedSpeakerURL(speakerURL) {
 			l.Error().Str("speaker_url", speakerURL).Msg("GÜVENLİK UYARISI: İzin verilmeyen bir speaker_wav_url engellendi (SSRF).")
 			h.eventsFailed.WithLabelValues(event.EventType, "ssrf_attempt_blocked").Inc()
-			h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR")
+			h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR", true)
 			return
 		}
 		ttsReq.SpeakerWavUrl = &speakerURL
@@ -249,12 +250,11 @@ func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay s
 	if err != nil {
 		l.Error().Err(err).Msg("TTS Gateway'den yanıt alınamadı.")
 		h.eventsFailed.WithLabelValues(event.EventType, "tts_gateway_failed").Inc()
-		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR")
+		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR", true)
 		return
 	}
 	audioBytes := ttsResp.GetAudioContent()
 	l.Info().Str("engine_used", ttsResp.GetEngineUsed()).Int("audio_size_bytes", len(audioBytes)).Msg("TTS Gateway'den ses başarıyla alındı.")
-
 	var mediaType string
 	if ttsResp.GetEngineUsed() == "sentiric-tts-edge-service" {
 		mediaType = "audio/mpeg"
@@ -263,7 +263,6 @@ func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay s
 	}
 	encodedAudio := base64.StdEncoding.EncodeToString(audioBytes)
 	audioURI := fmt.Sprintf("data:%s;base64,%s", mediaType, encodedAudio)
-
 	mediaInfo := event.Media
 	rtpTarget, ok1 := mediaInfo["caller_rtp_addr"].(string)
 	serverPortFloat, ok2 := mediaInfo["server_rtp_port"].(float64)
@@ -274,27 +273,45 @@ func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay s
 	}
 	serverPort := uint32(serverPortFloat)
 
-	mediaCtx, mediaCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer mediaCancel()
-	_, err = h.mediaClient.PlayAudio(mediaCtx, &mediav1.PlayAudioRequest{
+	playReq := &mediav1.PlayAudioRequest{
 		RtpTargetAddr: rtpTarget,
 		ServerRtpPort: serverPort,
 		AudioUri:      audioURI,
-	})
+	}
+
+	if waitForCompletion {
+		l.Info().Msg("Dinamik ses (TTS) çalınıyor ve bitmesi bekleniyor...")
+		_, err = h.mediaClient.PlayAudio(ctx, playReq)
+	} else {
+		go func() {
+			_, err := h.mediaClient.PlayAudio(context.Background(), playReq)
+			if err != nil {
+				l.Error().Err(err).Msg("Hata: Arka plan TTS sesi çalınamadı")
+			}
+		}()
+	}
+
 	if err != nil {
 		l.Error().Err(err).Msg("Hata: Dinamik ses (TTS) çalınamadı")
 		h.eventsFailed.WithLabelValues(event.EventType, "play_tts_audio_failed").Inc()
-	} else {
-		l.Info().Msg("Dinamik ses (TTS) çalma komutu media-service'e gönderildi.")
+	} else if waitForCompletion {
+		l.Info().Msg("Dinamik ses (TTS) başarıyla çalındı ve bitti.")
 	}
 }
 
-func (h *EventHandler) playAnnouncement(l zerolog.Logger, event *CallEvent, announcementID string) {
+func (h *EventHandler) playAnnouncement(l zerolog.Logger, event *CallEvent, announcementID string, waitForCompletion bool) {
 	var languageCode string
+	// Önce kullanıcı profiline bak
 	if event.Dialplan.MatchedUser != nil && event.Dialplan.MatchedUser.PreferredLanguageCode != nil {
 		languageCode = *event.Dialplan.MatchedUser.PreferredLanguageCode
 	} else {
-		languageCode = "tr"
+		// Eğer kullanıcı bilgisi yoksa veya dli belirtilmemişse, aranan numaranın varsayılan diline bak
+		// Bu henüz kontratlarda yok, ama geleceğe hazırlık olarak mantığı ekliyoruz. Şimdilik 'tr' varsayalım.
+		// if event.Dialplan.InboundRoute != nil && event.Dialplan.InboundRoute.DefaultLanguageCode != "" {
+		// 	languageCode = event.Dialplan.InboundRoute.DefaultLanguageCode
+		// } else {
+		languageCode = "tr" // Son çare
+		// }
 	}
 	tenantID := event.Dialplan.TenantId
 	audioPath, err := database.GetAnnouncementPathFromDB(h.db, announcementID, tenantID, languageCode)
@@ -318,18 +335,31 @@ func (h *EventHandler) playAnnouncement(l zerolog.Logger, event *CallEvent, anno
 	}
 	serverPort := uint32(serverPortFloat)
 	ctx := metadata.AppendToOutgoingContext(context.Background(), "x-trace-id", event.TraceID)
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	playCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	_, err = h.mediaClient.PlayAudio(ctx, &mediav1.PlayAudioRequest{
+
+	playReq := &mediav1.PlayAudioRequest{
 		RtpTargetAddr: rtpTarget,
 		ServerRtpPort: serverPort,
 		AudioUri:      audioURI,
-	})
-	if err != nil {
-		l.Error().Err(err).Str("audio_uri", audioURI).Msg("Hata: Ses çalınamadı")
-		h.eventsFailed.WithLabelValues(event.EventType, "play_announcement_failed").Inc()
+	}
+
+	if waitForCompletion {
+		l.Info().Str("audio_uri", audioURI).Msg("Anons çalınıyor ve bitmesi bekleniyor...")
+		_, err = h.mediaClient.PlayAudio(playCtx, playReq)
 	} else {
-		l.Info().Str("audio_uri", audioURI).Msg("Ses çalma komutu gönderildi")
+		go func() {
+			_, err := h.mediaClient.PlayAudio(ctx, playReq)
+			if err != nil {
+				l.Error().Err(err).Str("audio_uri", audioURI).Msg("Hata: Arka plan anonsu çalınamadı")
+			}
+		}()
+	}
+	if err != nil {
+		l.Error().Err(err).Str("audio_uri", audioURI).Msg("Hata: Ses çalma komutu başarısız")
+		h.eventsFailed.WithLabelValues(event.EventType, "play_announcement_failed").Inc()
+	} else if waitForCompletion {
+		l.Info().Str("audio_uri", audioURI).Msg("Anons başarıyla çalındı ve bitti.")
 	}
 }
 
@@ -347,6 +377,7 @@ func (h *EventHandler) createGuestUser(l zerolog.Logger, event *CallEvent, calle
 			ContactType:  "phone",
 			ContactValue: callerID,
 		},
+		PreferredLanguageCode: nil, // Misafir için dil varsayılan olacak
 	})
 	if err != nil {
 		l.Error().Err(err).Msg("Hata: Misafir kullanıcı oluşturulamadı")
