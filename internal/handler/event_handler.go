@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url" // YENİ: URL parse etmek için eklendi
 	"regexp"
 	"strings"
 	"time"
@@ -22,6 +23,28 @@ import (
 	userv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/user/v1"
 	"google.golang.org/grpc/metadata"
 )
+
+// YENİ: SSRF zafiyetini önlemek için izin verilen alan adları listesi
+var allowedSpeakerDomains = map[string]bool{
+	"sentiric.github.io": true,
+	// Gelecekte eklenebilecek diğer güvenli alan adları
+}
+
+// YENİ: URL'nin güvenli olup olmadığını doğrulayan fonksiyon
+func isAllowedSpeakerURL(rawURL string) bool {
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return false // Geçersiz URL formatı
+	}
+
+	// Sadece http ve https şemalarına izin ver
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return false
+	}
+
+	// Alan adının izin verilenler listesinde olup olmadığını kontrol et
+	return allowedSpeakerDomains[parsedURL.Hostname()]
+}
 
 type CallEvent struct {
 	EventType string                             `json:"eventType"`
@@ -214,6 +237,14 @@ func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay s
 	}
 
 	if useCloning && speakerURL != "" {
+		// --- GÜVENLİK DÜZELTMESİ BURADA ---
+		if !isAllowedSpeakerURL(speakerURL) {
+			l.Error().Str("speaker_url", speakerURL).Msg("GÜVENLİK UYARISI: İzin verilmeyen bir speaker_wav_url engellendi (SSRF).")
+			h.eventsFailed.WithLabelValues(event.EventType, "ssrf_attempt_blocked").Inc()
+			h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR_TR") // Hata anonsu çal
+			return
+		}
+		// --- DÜZELTME SONU ---
 		ttsReq.SpeakerWavUrl = &speakerURL
 		l.Info().Str("speaker_url", speakerURL).Msg("Ses klonlama isteği hazırlanıyor.")
 	} else if useVoiceSelector && voiceSelector != "" {
