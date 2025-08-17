@@ -89,6 +89,12 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 
 func (h *EventHandler) handleCallStarted(l zerolog.Logger, event *CallEvent) {
 	l.Info().Msg("Yeni çağrı işleniyor...")
+
+	// --- YENİ ADIM: BEKLETME ANONSU ÇAL ---
+	// Bu, LLM ve TTS işlemleri tamamlanana kadar geçen "ölü zamanı" doldurur.
+	h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_CONNECTING")
+	// --- BİTTİ ---
+
 	if event.Dialplan.Action == nil || event.Dialplan.Action.ActionData == nil {
 		l.Error().Msg("Hata: Dialplan Action veya ActionData boş.")
 		h.eventsFailed.WithLabelValues(event.EventType, "nil_dialplan_action").Inc()
