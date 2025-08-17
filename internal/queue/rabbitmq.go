@@ -11,7 +11,7 @@ import (
 
 const (
 	exchangeName = "sentiric_events"
-	// YENİ: Agent için kalıcı ve bilinen bir kuyruk adı tanımlıyoruz.
+	// Agent için kalıcı ve bilinen bir kuyruk adı tanımlıyoruz.
 	agentQueueName = "sentiric.agent_service.events"
 )
 
