@@ -1,3 +1,4 @@
+// ========== FILE: sentiric-agent-service/internal/database/postgres.go ==========
 // AÇIKLAMA: Bu paket, veritabanı bağlantısı ve sorgulama işlemlerinden sorumludur.
 package database
 
@@ -29,20 +30,14 @@ func Connect(url string, log zerolog.Logger) (*sql.DB, error) {
 }
 
 // GetAnnouncementPathFromDB, veritabanından anonsun ses dosya yolunu alır.
-// DÜZELTME: Artık tenant_id ve language_code de alarak yeni şemaya uygun sorgu yapıyor.
-func GetAnnouncementPathFromDB(db *sql.DB, announcementID, tenantID, languageCode string) (string, error) {
+// DÜZELTME: Artık sadece tam ID ile arama yapıyor çünkü veritabanındaki ID artık dil kodunu içeriyor.
+func GetAnnouncementPathFromDB(db *sql.DB, announcementID string) (string, error) {
 	var audioPath string
-	// Önce kiracıya özel anonsu ara, bulamazsan 'system' anonsunu ara.
-	// Bu, 'system' anonslarının tüm kiracılar için bir fallback olmasını sağlar.
-	query := `
-		SELECT audio_path FROM announcements WHERE id = $1 AND (tenant_id = $2 OR tenant_id = 'system') AND language_code = $3
-		ORDER BY CASE WHEN tenant_id = 'system' THEN 1 ELSE 0 END
-		LIMIT 1
-	`
-	err := db.QueryRow(query, announcementID, tenantID, languageCode).Scan(&audioPath)
+	query := `SELECT audio_path FROM announcements WHERE id = $1 LIMIT 1`
+	err := db.QueryRow(query, announcementID).Scan(&audioPath)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return "", fmt.Errorf("anons bulunamadı: id=%s, tenant=%s, lang=%s", announcementID, tenantID, languageCode)
+			return "", fmt.Errorf("anons bulunamadı: id=%s", announcementID)
 		}
 		return "", fmt.Errorf("anons sorgusu başarısız: %w", err)
 	}
