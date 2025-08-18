@@ -381,8 +381,18 @@ func (h *EventHandler) transcribeAudio(ctx context.Context, state *CallState, au
 		l.Error().Err(err).Msg("Bellekte WAV dosyası oluşturulamadı.")
 		return "", fmt.Errorf("bellekte wav oluşturulamadı: %w", err)
 	}
+
 	var b bytes.Buffer
 	writer := multipart.NewWriter(&b)
+
+	// --- DÜZELTME BURADA ---
+	// Dil parametresini form verisi olarak ekliyoruz.
+	languageCode := h.getLanguageCode(state.Event)
+	if err := writer.WriteField("language", languageCode); err != nil {
+		return "", err
+	}
+	// --- BİTTİ ---
+
 	part, err := writer.CreateFormFile("audio_file", "stream.wav")
 	if err != nil {
 		return "", err
@@ -391,6 +401,7 @@ func (h *EventHandler) transcribeAudio(ctx context.Context, state *CallState, au
 		return "", err
 	}
 	writer.Close()
+
 	fullSttUrl := fmt.Sprintf("%s/api/v1/transcribe", h.sttServiceURL)
 	req, err := http.NewRequestWithContext(ctx, "POST", fullSttUrl, &b)
 	if err != nil {
@@ -413,9 +424,10 @@ func (h *EventHandler) transcribeAudio(ctx context.Context, state *CallState, au
 	if err := json.NewDecoder(resp.Body).Decode(&sttResp); err != nil {
 		return "", err
 	}
-	l.Info().Str("transcribed_text", sttResp.Text).Msg("Ses başarıyla metne çevrildi.")
+	l.Info().Str("transcribed_text", sttResp.Text).Str("language_used", languageCode).Msg("Ses başarıyla metne çevrildi.")
 	return sttResp.Text, nil
 }
+
 func (h *EventHandler) generateLlmResponse(ctx context.Context, state *CallState, prompt string) (string, error) {
 	llmReqPayload := LlmGenerateRequest{Prompt: prompt}
 	payloadBytes, _ := json.Marshal(llmReqPayload)
