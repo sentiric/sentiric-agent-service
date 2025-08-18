@@ -95,10 +95,12 @@ func (h *EventHandler) getLanguageCode(event *CallEvent) string {
 	if event.Dialplan.MatchedUser != nil && event.Dialplan.MatchedUser.PreferredLanguageCode != nil && *event.Dialplan.MatchedUser.PreferredLanguageCode != "" {
 		return *event.Dialplan.MatchedUser.PreferredLanguageCode
 	}
-	// 2. Öncelik: Gelecekte InboundRoute bilgisi eklendiğinde burası çalışacak.
-	// if event.Dialplan.GetInboundRoute() != nil && event.Dialplan.GetInboundRoute().DefaultLanguageCode != "" {
-	// 	return event.Dialplan.GetInboundRoute().DefaultLanguageCode
-	// }
+
+	// 2. Öncelik: Eğer aranan hattın varsayılan bir dili varsa, onu kullan. (Misafirler için)
+	if event.Dialplan.GetInboundRoute() != nil && event.Dialplan.GetInboundRoute().DefaultLanguageCode != "" {
+		return event.Dialplan.GetInboundRoute().DefaultLanguageCode
+	}
+
 	// 3. Öncelik (Son Çare): Varsayılan olarak 'tr' kullan.
 	return "tr"
 }
