@@ -10,7 +10,8 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
-	"net/url"
+	"net/url" // DÜZELTME: Bu import geri eklendi.
+	// DÜZELTME: Bu import geri eklendi.
 	"strings"
 	"time"
 
@@ -27,7 +28,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// --- Yeni Veri Yapıları ---
+// --- Veri Yapıları ---
 type DialogState string
 
 const (
@@ -43,11 +44,12 @@ type CallState struct {
 	CallID         string              `json:"call_id"`
 	TraceID        string              `json:"trace_id"`
 	CurrentState   DialogState         `json:"current_state"`
-	Event          *CallEvent          `json:"event"` // DÜZELTME: Artık bir işaretçi
+	Event          *CallEvent          `json:"event"`
 	Conversation   []map[string]string `json:"conversation"`
 	LastUpdateTime time.Time           `json:"last_update_time"`
 }
 
+// DÜZELTME: isAllowedSpeakerURL fonksiyonu geri eklendi.
 var allowedSpeakerDomains = map[string]bool{"sentiric.github.io": true}
 
 func isAllowedSpeakerURL(rawURL string) bool {
@@ -66,10 +68,9 @@ type CallEvent struct {
 	TraceID   string                              `json:"traceId"`
 	CallID    string                              `json:"callId"`
 	Media     map[string]interface{}              `json:"media"`
-	Dialplan  *dialplanv1.ResolveDialplanResponse `json:"dialplan"` // DÜZELTME: Artık bir işaretçi
+	Dialplan  *dialplanv1.ResolveDialplanResponse `json:"dialplan"`
 	From      string                              `json:"from"`
 }
-
 type LlmGenerateRequest struct {
 	Prompt string `json:"prompt"`
 }
@@ -94,15 +95,10 @@ type EventHandler struct {
 }
 
 func NewEventHandler(db *sql.DB, rdb *redis.Client, mc mediav1.MediaServiceClient, uc userv1.UserServiceClient, tc ttsv1.TextToSpeechServiceClient, llmURL, sttURL string, log zerolog.Logger, processed, failed *prometheus.CounterVec) *EventHandler {
-	return &EventHandler{
-		db: db, rdb: rdb, mediaClient: mc, userClient: uc, ttsClient: tc,
-		llmServiceURL: llmURL, sttServiceURL: sttURL, log: log,
-		eventsProcessed: processed, eventsFailed: failed,
-	}
+	return &EventHandler{db: db, rdb: rdb, mediaClient: mc, userClient: uc, ttsClient: tc, llmServiceURL: llmURL, sttServiceURL: sttURL, log: log, eventsProcessed: processed, eventsFailed: failed}
 }
 
-// --- Olay ve Durum Yönetimi ---
-
+// Olay ve Durum Yönetimi (DEĞİŞİKLİK YOK)
 func (h *EventHandler) getCallState(ctx context.Context, callID string) (*CallState, error) {
 	val, err := h.rdb.Get(ctx, "callstate:"+callID).Result()
 	if err == redis.Nil {
@@ -117,7 +113,6 @@ func (h *EventHandler) getCallState(ctx context.Context, callID string) (*CallSt
 	}
 	return &state, nil
 }
-
 func (h *EventHandler) setCallState(ctx context.Context, state *CallState) error {
 	state.LastUpdateTime = time.Now()
 	val, err := json.Marshal(state)
@@ -126,9 +121,8 @@ func (h *EventHandler) setCallState(ctx context.Context, state *CallState) error
 	}
 	return h.rdb.Set(ctx, "callstate:"+state.CallID, val, 2*time.Hour).Err()
 }
-
 func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
-	var event CallEvent // DÜZELTME: Değer olarak oluştur
+	var event CallEvent
 	if err := json.Unmarshal(body, &event); err != nil {
 		h.log.Error().Err(err).Bytes("raw_message", body).Msg("Hata: Mesaj JSON formatında değil")
 		h.eventsFailed.WithLabelValues("unknown", "json_unmarshal").Inc()
@@ -139,14 +133,11 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 	l.Info().Msg("Olay alındı")
 	switch event.EventType {
 	case "call.started":
-		// DÜZELTME: Fonksiyona işaretçisini (&event) gönder
 		go h.handleCallStarted(l, &event)
 	case "call.ended":
-		// DÜZELTME: Fonksiyona işaretçisini (&event) gönder
 		go h.handleCallEnded(l, &event)
 	}
 }
-
 func (h *EventHandler) handleCallStarted(l zerolog.Logger, event *CallEvent) {
 	l.Info().Msg("Yeni çağrı başlıyor, durum makinesi başlatılıyor...")
 	ctx := context.Background()
@@ -159,20 +150,13 @@ func (h *EventHandler) handleCallStarted(l zerolog.Logger, event *CallEvent) {
 		l.Warn().Msg("Bu çağrı için zaten aktif bir durum makinesi var, yeni bir tane başlatılmıyor.")
 		return
 	}
-	initialState := &CallState{
-		CallID:       event.CallID,
-		TraceID:      event.TraceID,
-		CurrentState: StateWelcoming,
-		Event:        event, // DÜZELTME: İşaretçiyi ata
-		Conversation: []map[string]string{},
-	}
+	initialState := &CallState{CallID: event.CallID, TraceID: event.TraceID, CurrentState: StateWelcoming, Event: event, Conversation: []map[string]string{}}
 	if err := h.setCallState(ctx, initialState); err != nil {
 		l.Error().Err(err).Msg("Redis'e başlangıç durumu yazılamadı.")
 		return
 	}
 	h.runDialogLoop(initialState)
 }
-
 func (h *EventHandler) handleCallEnded(l zerolog.Logger, event *CallEvent) {
 	l.Info().Msg("Çağrı sonlandı, durum makinesi durduruluyor...")
 	ctx := context.Background()
@@ -187,14 +171,11 @@ func (h *EventHandler) handleCallEnded(l zerolog.Logger, event *CallEvent) {
 	}
 }
 
-// ... (Geri kalan tüm kod aynı, değişiklik gerekmiyor) ...
-// --- Ana Diyalog Döngüsü ---
-
+// Ana Diyalog Döngüsü (DEĞİŞİKLİK YOK)
 func (h *EventHandler) runDialogLoop(initialState *CallState) {
 	ctx := context.Background()
 	state := initialState
 	l := h.log.With().Str("call_id", state.CallID).Str("trace_id", state.TraceID).Logger()
-
 	for state.CurrentState != StateEnded && state.CurrentState != StateTerminated {
 		l = l.With().Str("state", string(state.CurrentState)).Logger()
 		l.Info().Msg("Diyalog döngüsü adımı işleniyor.")
@@ -225,8 +206,7 @@ func (h *EventHandler) runDialogLoop(initialState *CallState) {
 	l.Info().Msg("Diyalog döngüsü tamamlandı.")
 }
 
-// --- Durum Fonksiyonları ---
-
+// Durum Fonksiyonları (DEĞİŞİKLİK YOK)
 func (h *EventHandler) stateFnWelcoming(ctx context.Context, state *CallState) (*CallState, error) {
 	l := h.log.With().Str("call_id", state.CallID).Logger()
 	h.playAnnouncement(l, state.Event, "ANNOUNCE_SYSTEM_CONNECTING", true)
@@ -239,7 +219,6 @@ func (h *EventHandler) stateFnWelcoming(ctx context.Context, state *CallState) (
 	state.CurrentState = StateListening
 	return state, nil
 }
-
 func (h *EventHandler) stateFnListening(ctx context.Context, state *CallState) (*CallState, error) {
 	l := h.log.With().Str("call_id", state.CallID).Logger()
 	l.Info().Msg("Kullanıcıdan ses bekleniyor...")
@@ -259,7 +238,6 @@ func (h *EventHandler) stateFnListening(ctx context.Context, state *CallState) (
 	state.CurrentState = StateThinking
 	return state, nil
 }
-
 func (h *EventHandler) stateFnThinking(ctx context.Context, state *CallState) (*CallState, error) {
 	l := h.log.With().Str("call_id", state.CallID).Logger()
 	l.Info().Msg("LLM'den yanıt üretiliyor...")
@@ -272,7 +250,6 @@ func (h *EventHandler) stateFnThinking(ctx context.Context, state *CallState) (*
 	state.CurrentState = StateSpeaking
 	return state, nil
 }
-
 func (h *EventHandler) stateFnSpeaking(ctx context.Context, state *CallState) (*CallState, error) {
 	l := h.log.With().Str("call_id", state.CallID).Logger()
 	lastAiMessage := state.Conversation[len(state.Conversation)-1]["ai"]
@@ -285,40 +262,49 @@ func (h *EventHandler) stateFnSpeaking(ctx context.Context, state *CallState) (*
 // --- Yardımcı Fonksiyonlar (API Çağrıları) ---
 
 func (h *EventHandler) recordAudio(ctx context.Context, state *CallState) ([]byte, error) {
-	grpcCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", state.TraceID)
-
+	l := h.log.With().Str("call_id", state.CallID).Logger()
+	grpcCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	grpcCtx = metadata.AppendToOutgoingContext(grpcCtx, "x-trace-id", state.TraceID)
 	stream, err := h.mediaClient.RecordAudio(grpcCtx, &mediav1.RecordAudioRequest{
 		ServerRtpPort: uint32(state.Event.Media["server_rtp_port"].(float64)),
 	})
 	if err != nil {
 		return nil, err
 	}
-
+	l.Info().Msg("Ses kaydı stream'i açıldı, veri bekleniyor...")
 	var audioData bytes.Buffer
 	silenceThreshold := 5
 	silenceCounter := 0
-
+	receivedData := false
 	for {
 		chunk, err := stream.Recv()
 		if err == io.EOF {
+			l.Info().Msg("Media-service stream'i kapattı (EOF).")
 			break
 		}
 		if err != nil {
-			st, ok := status.FromError(err)
-			if ok && st.Code() == codes.Canceled {
-				return nil, nil
+			st, _ := status.FromError(err)
+			if st.Code() == codes.Canceled || st.Code() == codes.DeadlineExceeded {
+				l.Warn().Msg("Ses kaydı stream'i zaman aşımı veya iptal nedeniyle sonlandı.")
+				break
 			}
-			return nil, err
+			return nil, fmt.Errorf("stream'den okuma hatası: %w", err)
 		}
-		if len(chunk.AudioData) < 10 {
+		receivedData = true
+		if len(chunk.AudioData) < 20 {
 			silenceCounter++
-			if silenceCounter > silenceThreshold {
+			if silenceCounter >= silenceThreshold {
+				l.Info().Int("threshold", silenceThreshold).Msg("Sessizlik eşiğine ulaşıldı, kayıt durduruluyor.")
 				break
 			}
 		} else {
 			silenceCounter = 0
 			audioData.Write(chunk.AudioData)
 		}
+	}
+	if !receivedData {
+		l.Warn().Msg("Hiç ses verisi alınmadı.")
 	}
 	return audioData.Bytes(), nil
 }
@@ -384,6 +370,8 @@ func (h *EventHandler) generateLlmResponse(ctx context.Context, state *CallState
 	}
 	return strings.Trim(llmResp.Text, "\" \n\r"), nil
 }
+
+// --- Diğer Yardımcı Fonksiyonlar (DEĞİŞİKLİK YOK) ---
 
 func (h *EventHandler) getLanguageCode(event *CallEvent) string {
 	if event.Dialplan.MatchedUser != nil && event.Dialplan.MatchedUser.PreferredLanguageCode != nil && *event.Dialplan.MatchedUser.PreferredLanguageCode != "" {
