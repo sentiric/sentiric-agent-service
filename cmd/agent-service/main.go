@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/go-redis/redis/v8" // YENİ
 	"github.com/sentiric/sentiric-agent-service/internal/client"
 	"github.com/sentiric/sentiric-agent-service/internal/config"
 	"github.com/sentiric/sentiric-agent-service/internal/database"
@@ -37,6 +38,15 @@ func main() {
 	}
 	defer db.Close()
 
+	// YENİ: Redis bağlantısı
+	redisClient := redis.NewClient(&redis.Options{
+		Addr: cfg.RedisURL,
+	})
+	if _, err := redisClient.Ping(context.Background()).Result(); err != nil {
+		appLog.Fatal().Err(err).Msg("Redis bağlantısı kurulamadı")
+	}
+	appLog.Info().Msg("Redis bağlantısı başarılı.")
+
 	mediaClient, err := client.NewMediaServiceClient(cfg)
 	if err != nil {
 		appLog.Fatal().Err(err).Msg("Media Service gRPC istemcisi oluşturulamadı")
@@ -50,8 +60,12 @@ func main() {
 		appLog.Fatal().Err(err).Msg("TTS Gateway gRPC istemcisi oluşturulamadı")
 	}
 
-	// DÜZELTME: EventHandler'a llmServiceURL'yi de veriyoruz.
-	eventHandler := handler.NewEventHandler(db, mediaClient, userClient, ttsClient, cfg.LlmServiceURL, appLog, metrics.EventsProcessed, metrics.EventsFailed)
+	// EventHandler'a yeni bağımlılıkları ekliyoruz
+	eventHandler := handler.NewEventHandler(
+		db, redisClient, mediaClient, userClient, ttsClient,
+		cfg.LlmServiceURL, cfg.SttServiceURL, appLog,
+		metrics.EventsProcessed, metrics.EventsFailed,
+	)
 
 	rabbitCh, closeChan := queue.Connect(cfg.RabbitMQURL, appLog)
 	if rabbitCh != nil {

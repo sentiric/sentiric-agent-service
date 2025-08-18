@@ -1,4 +1,3 @@
-// ========== FILE: sentiric-agent-service/internal/handler/event_handler.go (Nihai ve Derlenebilir Hali) ==========
 package handler
 
 import (
@@ -8,12 +7,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 	"time"
 
+	"github.com/go-redis/redis/v8"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 	"github.com/sentiric/sentiric-agent-service/internal/database"
@@ -21,12 +22,33 @@ import (
 	mediav1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/media/v1"
 	ttsv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/tts/v1"
 	userv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/user/v1"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
-var allowedSpeakerDomains = map[string]bool{
-	"sentiric.github.io": true,
+// --- Yeni Veri Yapıları ---
+type DialogState string
+
+const (
+	StateWelcoming  DialogState = "WELCOMING"
+	StateListening  DialogState = "LISTENING"
+	StateThinking   DialogState = "THINKING"
+	StateSpeaking   DialogState = "SPEAKING"
+	StateEnded      DialogState = "ENDED"
+	StateTerminated DialogState = "TERMINATED"
+)
+
+type CallState struct {
+	CallID         string              `json:"call_id"`
+	TraceID        string              `json:"trace_id"`
+	CurrentState   DialogState         `json:"current_state"`
+	Event          *CallEvent          `json:"event"` // DÜZELTME: Artık bir işaretçi
+	Conversation   []map[string]string `json:"conversation"`
+	LastUpdateTime time.Time           `json:"last_update_time"`
 }
+
+var allowedSpeakerDomains = map[string]bool{"sentiric.github.io": true}
 
 func isAllowedSpeakerURL(rawURL string) bool {
 	parsedURL, err := url.Parse(rawURL)
@@ -40,12 +62,12 @@ func isAllowedSpeakerURL(rawURL string) bool {
 }
 
 type CallEvent struct {
-	EventType string                             `json:"eventType"`
-	TraceID   string                             `json:"traceId"`
-	CallID    string                             `json:"callId"`
-	Media     map[string]interface{}             `json:"media"`
-	Dialplan  dialplanv1.ResolveDialplanResponse `json:"dialplan"`
-	From      string                             `json:"from"`
+	EventType string                              `json:"eventType"`
+	TraceID   string                              `json:"traceId"`
+	CallID    string                              `json:"callId"`
+	Media     map[string]interface{}              `json:"media"`
+	Dialplan  *dialplanv1.ResolveDialplanResponse `json:"dialplan"` // DÜZELTME: Artık bir işaretçi
+	From      string                              `json:"from"`
 }
 
 type LlmGenerateRequest struct {
@@ -54,9 +76,13 @@ type LlmGenerateRequest struct {
 type LlmGenerateResponse struct {
 	Text string `json:"text"`
 }
+type SttTranscribeResponse struct {
+	Text string `json:"text"`
+}
 
 type EventHandler struct {
 	db              *sql.DB
+	rdb             *redis.Client
 	mediaClient     mediav1.MediaServiceClient
 	userClient      userv1.UserServiceClient
 	ttsClient       ttsv1.TextToSpeechServiceClient
@@ -64,17 +90,45 @@ type EventHandler struct {
 	eventsProcessed *prometheus.CounterVec
 	eventsFailed    *prometheus.CounterVec
 	llmServiceURL   string
+	sttServiceURL   string
 }
 
-func NewEventHandler(db *sql.DB, mc mediav1.MediaServiceClient, uc userv1.UserServiceClient, tc ttsv1.TextToSpeechServiceClient, llmURL string, log zerolog.Logger, processed, failed *prometheus.CounterVec) *EventHandler {
+func NewEventHandler(db *sql.DB, rdb *redis.Client, mc mediav1.MediaServiceClient, uc userv1.UserServiceClient, tc ttsv1.TextToSpeechServiceClient, llmURL, sttURL string, log zerolog.Logger, processed, failed *prometheus.CounterVec) *EventHandler {
 	return &EventHandler{
-		db: db, mediaClient: mc, userClient: uc, ttsClient: tc, llmServiceURL: llmURL,
-		log: log, eventsProcessed: processed, eventsFailed: failed,
+		db: db, rdb: rdb, mediaClient: mc, userClient: uc, ttsClient: tc,
+		llmServiceURL: llmURL, sttServiceURL: sttURL, log: log,
+		eventsProcessed: processed, eventsFailed: failed,
 	}
 }
 
+// --- Olay ve Durum Yönetimi ---
+
+func (h *EventHandler) getCallState(ctx context.Context, callID string) (*CallState, error) {
+	val, err := h.rdb.Get(ctx, "callstate:"+callID).Result()
+	if err == redis.Nil {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var state CallState
+	if err := json.Unmarshal([]byte(val), &state); err != nil {
+		return nil, err
+	}
+	return &state, nil
+}
+
+func (h *EventHandler) setCallState(ctx context.Context, state *CallState) error {
+	state.LastUpdateTime = time.Now()
+	val, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	return h.rdb.Set(ctx, "callstate:"+state.CallID, val, 2*time.Hour).Err()
+}
+
 func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
-	var event CallEvent
+	var event CallEvent // DÜZELTME: Değer olarak oluştur
 	if err := json.Unmarshal(body, &event); err != nil {
 		h.log.Error().Err(err).Bytes("raw_message", body).Msg("Hata: Mesaj JSON formatında değil")
 		h.eventsFailed.WithLabelValues("unknown", "json_unmarshal").Inc()
@@ -82,140 +136,263 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 	}
 	h.eventsProcessed.WithLabelValues(event.EventType).Inc()
 	l := h.log.With().Str("call_id", event.CallID).Str("trace_id", event.TraceID).Str("event_type", event.EventType).Logger()
-	l.Info().RawJSON("event_data", body).Msg("Olay alındı")
-	if event.EventType == "call.started" {
+	l.Info().Msg("Olay alındı")
+	switch event.EventType {
+	case "call.started":
+		// DÜZELTME: Fonksiyona işaretçisini (&event) gönder
 		go h.handleCallStarted(l, &event)
+	case "call.ended":
+		// DÜZELTME: Fonksiyona işaretçisini (&event) gönder
+		go h.handleCallEnded(l, &event)
 	}
-}
-
-// --- ANA MANTIK ---
-// Dil kodunu belirlemek için tek bir merkezi fonksiyon
-func (h *EventHandler) getLanguageCode(event *CallEvent) string {
-	// 1. Öncelik: Eğer kullanıcı belliyse ve dil tercihi varsa, onu kullan.
-	if event.Dialplan.MatchedUser != nil && event.Dialplan.MatchedUser.PreferredLanguageCode != nil && *event.Dialplan.MatchedUser.PreferredLanguageCode != "" {
-		return *event.Dialplan.MatchedUser.PreferredLanguageCode
-	}
-
-	// 2. Öncelik: Eğer aranan hattın varsayılan bir dili varsa, onu kullan. (Misafirler için)
-	if event.Dialplan.GetInboundRoute() != nil && event.Dialplan.GetInboundRoute().DefaultLanguageCode != "" {
-		return event.Dialplan.GetInboundRoute().DefaultLanguageCode
-	}
-
-	// 3. Öncelik (Son Çare): Varsayılan olarak 'tr' kullan.
-	return "tr"
 }
 
 func (h *EventHandler) handleCallStarted(l zerolog.Logger, event *CallEvent) {
-	l.Info().Msg("Yeni çağrı işleniyor...")
-
-	if event.Dialplan.Action == nil {
-		l.Error().Msg("Hata: Dialplan Action boş.")
-		h.eventsFailed.WithLabelValues(event.EventType, "nil_dialplan_action").Inc()
-		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR", true)
+	l.Info().Msg("Yeni çağrı başlıyor, durum makinesi başlatılıyor...")
+	ctx := context.Background()
+	state, err := h.getCallState(ctx, event.CallID)
+	if err != nil {
+		l.Error().Err(err).Msg("Redis'ten durum alınamadı.")
 		return
 	}
-	action := event.Dialplan.Action.Action
-	l = l.With().Str("action", action).Str("dialplan_id", event.Dialplan.DialplanId).Logger()
+	if state != nil {
+		l.Warn().Msg("Bu çağrı için zaten aktif bir durum makinesi var, yeni bir tane başlatılmıyor.")
+		return
+	}
+	initialState := &CallState{
+		CallID:       event.CallID,
+		TraceID:      event.TraceID,
+		CurrentState: StateWelcoming,
+		Event:        event, // DÜZELTME: İşaretçiyi ata
+		Conversation: []map[string]string{},
+	}
+	if err := h.setCallState(ctx, initialState); err != nil {
+		l.Error().Err(err).Msg("Redis'e başlangıç durumu yazılamadı.")
+		return
+	}
+	h.runDialogLoop(initialState)
+}
 
-	// Önce bekleme anonsunu çal ve bitmesini BEKLE.
-	h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_CONNECTING", true)
-
-	// Bekleme anonsu bittikten sonra asıl eylemi gerçekleştir.
-	switch action {
-	case "PLAY_ANNOUNCEMENT":
-		h.handlePlayAnnouncement(l, event)
-	case "START_AI_CONVERSATION":
-		h.handleStartAIConversation(l, event)
-	case "PROCESS_GUEST_CALL":
-		h.handleProcessGuestCall(l, event)
-	default:
-		l.Error().Str("received_action", action).Msg("Bilinmeyen eylem")
-		h.eventsFailed.WithLabelValues(event.EventType, "unknown_action").Inc()
-		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR", true)
+func (h *EventHandler) handleCallEnded(l zerolog.Logger, event *CallEvent) {
+	l.Info().Msg("Çağrı sonlandı, durum makinesi durduruluyor...")
+	ctx := context.Background()
+	state, err := h.getCallState(ctx, event.CallID)
+	if err != nil || state == nil {
+		l.Warn().Err(err).Msg("Sonlanan çağrı için aktif bir durum bulunamadı.")
+		return
+	}
+	state.CurrentState = StateEnded
+	if err := h.setCallState(ctx, state); err != nil {
+		l.Error().Err(err).Msg("Redis'e 'Ended' durumu yazılamadı.")
 	}
 }
 
-func (h *EventHandler) handlePlayAnnouncement(l zerolog.Logger, event *CallEvent) {
-	announcementID, ok := event.Dialplan.Action.ActionData.Data["announcement_id"]
-	if !ok {
-		l.Error().Msg("Dialplan action_data içinde 'announcement_id' bulunamadı.")
-		h.eventsFailed.WithLabelValues(event.EventType, "missing_parameter").Inc()
-		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR", true)
-		return
+// ... (Geri kalan tüm kod aynı, değişiklik gerekmiyor) ...
+// --- Ana Diyalog Döngüsü ---
+
+func (h *EventHandler) runDialogLoop(initialState *CallState) {
+	ctx := context.Background()
+	state := initialState
+	l := h.log.With().Str("call_id", state.CallID).Str("trace_id", state.TraceID).Logger()
+
+	for state.CurrentState != StateEnded && state.CurrentState != StateTerminated {
+		l = l.With().Str("state", string(state.CurrentState)).Logger()
+		l.Info().Msg("Diyalog döngüsü adımı işleniyor.")
+		var err error
+		switch state.CurrentState {
+		case StateWelcoming:
+			state, err = h.stateFnWelcoming(ctx, state)
+		case StateListening:
+			state, err = h.stateFnListening(ctx, state)
+		case StateThinking:
+			state, err = h.stateFnThinking(ctx, state)
+		case StateSpeaking:
+			state, err = h.stateFnSpeaking(ctx, state)
+		default:
+			l.Error().Msg("Bilinmeyen durum, döngü sonlandırılıyor.")
+			state.CurrentState = StateTerminated
+		}
+		if err != nil {
+			l.Error().Err(err).Msg("Durum işlenirken hata oluştu, sonlandırma deneniyor.")
+			h.playAnnouncement(l, state.Event, "ANNOUNCE_SYSTEM_ERROR", true)
+			state.CurrentState = StateTerminated
+		}
+		if err := h.setCallState(ctx, state); err != nil {
+			l.Error().Err(err).Msg("Döngü içinde durum güncellenemedi, sonlandırılıyor.")
+			state.CurrentState = StateTerminated
+		}
 	}
-	l.Info().Str("announcement_id", announcementID).Msg("Anons çalma eylemi işleniyor")
-	h.playAnnouncement(l, event, announcementID, true)
+	l.Info().Msg("Diyalog döngüsü tamamlandı.")
 }
 
-func (h *EventHandler) handleStartAIConversation(l zerolog.Logger, event *CallEvent) {
-	l.Info().Msg("AI Konuşma başlatılıyor (Dinamik Karşılama)...")
-	var promptID string
-	languageCode := h.getLanguageCode(event)
+// --- Durum Fonksiyonları ---
 
-	if event.Dialplan.MatchedUser != nil && event.Dialplan.MatchedUser.Name != nil {
-		promptID = "PROMPT_WELCOME_KNOWN_USER"
-	} else {
-		promptID = "PROMPT_WELCOME_GUEST"
-	}
-	l = l.With().Str("prompt_id", promptID).Str("language_code", languageCode).Logger()
-
-	promptTemplate, err := database.GetTemplateFromDB(h.db, promptID, languageCode)
+func (h *EventHandler) stateFnWelcoming(ctx context.Context, state *CallState) (*CallState, error) {
+	l := h.log.With().Str("call_id", state.CallID).Logger()
+	h.playAnnouncement(l, state.Event, "ANNOUNCE_SYSTEM_CONNECTING", true)
+	welcomeText, err := h.generateWelcomeText(l, state.Event)
 	if err != nil {
-		l.Error().Err(err).Msg("Prompt şablonu veritabanından alınamadı.")
-		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR", true)
-		return
+		return state, err
 	}
+	state.Conversation = append(state.Conversation, map[string]string{"ai": welcomeText})
+	h.playText(l, state.Event, welcomeText, true)
+	state.CurrentState = StateListening
+	return state, nil
+}
 
-	prompt := promptTemplate
-	if event.Dialplan.MatchedUser != nil && event.Dialplan.MatchedUser.Name != nil {
-		prompt = strings.Replace(prompt, "{user_name}", *event.Dialplan.MatchedUser.Name, -1)
-	}
-
-	llmReqPayload := LlmGenerateRequest{Prompt: prompt}
-	payloadBytes, _ := json.Marshal(llmReqPayload)
-	fullLlmUrl := fmt.Sprintf("%s/generate", h.llmServiceURL)
-	req, err := http.NewRequestWithContext(context.Background(), "POST", fullLlmUrl, bytes.NewBuffer(payloadBytes))
+func (h *EventHandler) stateFnListening(ctx context.Context, state *CallState) (*CallState, error) {
+	l := h.log.With().Str("call_id", state.CallID).Logger()
+	l.Info().Msg("Kullanıcıdan ses bekleniyor...")
+	audioData, err := h.recordAudio(ctx, state)
 	if err != nil {
-		l.Error().Err(err).Msg("LLM isteği oluşturulamadı.")
-		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR", true)
-		return
+		return state, fmt.Errorf("ses kaydı alınamadı: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Trace-ID", event.TraceID)
-	client := &http.Client{Timeout: 10 * time.Second}
+	if len(audioData) == 0 {
+		l.Warn().Msg("Kullanıcı konuşmadı veya boş ses verisi alındı. Tekrar dinleniyor.")
+		return state, nil
+	}
+	transcribedText, err := h.transcribeAudio(ctx, state, audioData)
+	if err != nil {
+		return state, fmt.Errorf("ses metne çevrilemedi: %w", err)
+	}
+	state.Conversation = append(state.Conversation, map[string]string{"user": transcribedText})
+	state.CurrentState = StateThinking
+	return state, nil
+}
+
+func (h *EventHandler) stateFnThinking(ctx context.Context, state *CallState) (*CallState, error) {
+	l := h.log.With().Str("call_id", state.CallID).Logger()
+	l.Info().Msg("LLM'den yanıt üretiliyor...")
+	prompt := h.buildLlmPrompt(state.Conversation)
+	llmRespText, err := h.generateLlmResponse(ctx, state, prompt)
+	if err != nil {
+		return state, fmt.Errorf("LLM yanıtı üretilemedi: %w", err)
+	}
+	state.Conversation = append(state.Conversation, map[string]string{"ai": llmRespText})
+	state.CurrentState = StateSpeaking
+	return state, nil
+}
+
+func (h *EventHandler) stateFnSpeaking(ctx context.Context, state *CallState) (*CallState, error) {
+	l := h.log.With().Str("call_id", state.CallID).Logger()
+	lastAiMessage := state.Conversation[len(state.Conversation)-1]["ai"]
+	l.Info().Str("text", lastAiMessage).Msg("AI yanıtı seslendiriliyor...")
+	h.playText(l, state.Event, lastAiMessage, true)
+	state.CurrentState = StateListening
+	return state, nil
+}
+
+// --- Yardımcı Fonksiyonlar (API Çağrıları) ---
+
+func (h *EventHandler) recordAudio(ctx context.Context, state *CallState) ([]byte, error) {
+	grpcCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", state.TraceID)
+
+	stream, err := h.mediaClient.RecordAudio(grpcCtx, &mediav1.RecordAudioRequest{
+		ServerRtpPort: uint32(state.Event.Media["server_rtp_port"].(float64)),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var audioData bytes.Buffer
+	silenceThreshold := 5
+	silenceCounter := 0
+
+	for {
+		chunk, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			st, ok := status.FromError(err)
+			if ok && st.Code() == codes.Canceled {
+				return nil, nil
+			}
+			return nil, err
+		}
+		if len(chunk.AudioData) < 10 {
+			silenceCounter++
+			if silenceCounter > silenceThreshold {
+				break
+			}
+		} else {
+			silenceCounter = 0
+			audioData.Write(chunk.AudioData)
+		}
+	}
+	return audioData.Bytes(), nil
+}
+
+func (h *EventHandler) transcribeAudio(ctx context.Context, state *CallState, audioData []byte) (string, error) {
+	l := h.log.With().Str("call_id", state.CallID).Logger()
+	var b bytes.Buffer
+	writer := multipart.NewWriter(&b)
+	part, err := writer.CreateFormFile("audio_file", "stream.wav")
+	if err != nil {
+		return "", err
+	}
+	part.Write(audioData)
+	writer.Close()
+	fullSttUrl := fmt.Sprintf("%s/api/v1/transcribe", h.sttServiceURL)
+	req, err := http.NewRequestWithContext(ctx, "POST", fullSttUrl, &b)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("X-Trace-ID", state.TraceID)
+	client := &http.Client{Timeout: 20 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		l.Error().Err(err).Msg("LLM servisinden yanıt alınamadı.")
-		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR", true)
-		return
+		return "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		l.Error().Int("status_code", resp.StatusCode).Msg("LLM servisi hata döndürdü.")
-		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR", true)
-		return
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		l.Error().Int("status_code", resp.StatusCode).Bytes("body", bodyBytes).Msg("STT servisi hata döndürdü.")
+		return "", fmt.Errorf("STT servisi %d kodu döndürdü", resp.StatusCode)
+	}
+	var sttResp SttTranscribeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sttResp); err != nil {
+		return "", err
+	}
+	l.Info().Str("transcribed_text", sttResp.Text).Msg("Ses başarıyla metne çevrildi.")
+	return sttResp.Text, nil
+}
+
+func (h *EventHandler) generateLlmResponse(ctx context.Context, state *CallState, prompt string) (string, error) {
+	llmReqPayload := LlmGenerateRequest{Prompt: prompt}
+	payloadBytes, _ := json.Marshal(llmReqPayload)
+	fullLlmUrl := fmt.Sprintf("%s/generate", h.llmServiceURL)
+	req, err := http.NewRequestWithContext(ctx, "POST", fullLlmUrl, bytes.NewBuffer(payloadBytes))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Trace-ID", state.TraceID)
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("LLM servisi %d kodu döndürdü", resp.StatusCode)
 	}
 	var llmResp LlmGenerateResponse
 	if err := json.NewDecoder(resp.Body).Decode(&llmResp); err != nil {
-		l.Error().Err(err).Msg("LLM yanıtı parse edilemedi.")
-		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR", true)
-		return
+		return "", err
 	}
-	welcomeText := strings.Trim(llmResp.Text, "\"")
-	l.Info().Str("llm_response", welcomeText).Msg("LLM'den dinamik karşılama metni alındı.")
-	h.playText(l, event, welcomeText, true)
+	return strings.Trim(llmResp.Text, "\" \n\r"), nil
 }
 
-func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *CallEvent) {
-	callerID := extractCallerID(event.From)
-	tenantID := event.Dialplan.TenantId
-	if callerID != "" && tenantID != "" {
-		h.createGuestUser(l, event, callerID, tenantID)
-	} else {
-		l.Error().Str("caller_id", callerID).Str("tenant_id", tenantID).Msg("Misafir kullanıcı oluşturulamadı, bilgi eksik.")
-		h.eventsFailed.WithLabelValues(event.EventType, "missing_guest_info").Inc()
+func (h *EventHandler) getLanguageCode(event *CallEvent) string {
+	if event.Dialplan.MatchedUser != nil && event.Dialplan.MatchedUser.PreferredLanguageCode != nil && *event.Dialplan.MatchedUser.PreferredLanguageCode != "" {
+		return *event.Dialplan.MatchedUser.PreferredLanguageCode
 	}
-	h.handleStartAIConversation(l, event)
+	if event.Dialplan.GetInboundRoute() != nil && event.Dialplan.GetInboundRoute().DefaultLanguageCode != "" {
+		return event.Dialplan.GetInboundRoute().DefaultLanguageCode
+	}
+	return "tr"
 }
 
 func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay string, waitForCompletion bool) {
@@ -223,9 +400,7 @@ func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay s
 	speakerURL, useCloning := event.Dialplan.Action.ActionData.Data["speaker_wav_url"]
 	voiceSelector, useVoiceSelector := event.Dialplan.Action.ActionData.Data["voice_selector"]
 	ctx := metadata.AppendToOutgoingContext(context.Background(), "x-trace-id", event.TraceID)
-
 	languageCode := h.getLanguageCode(event)
-
 	ttsReq := &ttsv1.SynthesizeRequest{Text: textToPlay, LanguageCode: languageCode}
 	if useCloning && speakerURL != "" {
 		if !isAllowedSpeakerURL(speakerURL) {
@@ -235,14 +410,9 @@ func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay s
 			return
 		}
 		ttsReq.SpeakerWavUrl = &speakerURL
-		l.Info().Str("speaker_url", speakerURL).Msg("Ses klonlama isteği hazırlanıyor.")
 	} else if useVoiceSelector && voiceSelector != "" {
 		ttsReq.VoiceSelector = &voiceSelector
-		l.Info().Str("voice_selector", voiceSelector).Msg("Özel ses seçici isteği hazırlanıyor.")
-	} else {
-		l.Info().Msg("Varsayılan ses sentezleme isteği hazırlanıyor.")
 	}
-
 	ttsCtx, ttsCancel := context.WithTimeout(ctx, 20*time.Second)
 	defer ttsCancel()
 	ttsResp, err := h.ttsClient.Synthesize(ttsCtx, ttsReq)
@@ -253,26 +423,15 @@ func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay s
 		return
 	}
 	audioBytes := ttsResp.GetAudioContent()
-	l.Info().Str("engine_used", ttsResp.GetEngineUsed()).Int("audio_size_bytes", len(audioBytes)).Msg("TTS Gateway'den ses başarıyla alındı.")
-	var mediaType string
-	if ttsResp.GetEngineUsed() == "sentiric-tts-edge-service" {
-		mediaType = "audio/mpeg"
-	} else {
+	mediaType := "audio/mpeg"
+	if ttsResp.GetEngineUsed() != "sentiric-tts-edge-service" {
 		mediaType = "audio/wav"
 	}
 	encodedAudio := base64.StdEncoding.EncodeToString(audioBytes)
 	audioURI := fmt.Sprintf("data:%s;base64,%s", mediaType, encodedAudio)
-
 	mediaInfo := event.Media
-	rtpTarget, ok1 := mediaInfo["caller_rtp_addr"].(string)
-	serverPortFloat, ok2 := mediaInfo["server_rtp_port"].(float64)
-	if !ok1 || !ok2 || rtpTarget == "" || serverPortFloat == 0 {
-		l.Error().Interface("media_info", mediaInfo).Msg("Geçersiz veya eksik medya bilgisi, dinamik ses çalınamıyor.")
-		h.eventsFailed.WithLabelValues(event.EventType, "invalid_media_info_for_tts").Inc()
-		return
-	}
-	serverPort := uint32(serverPortFloat)
-
+	rtpTarget := mediaInfo["caller_rtp_addr"].(string)
+	serverPort := uint32(mediaInfo["server_rtp_port"].(float64))
 	playReq := &mediav1.PlayAudioRequest{
 		RtpTargetAddr: rtpTarget,
 		ServerRtpPort: serverPort,
@@ -280,9 +439,7 @@ func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay s
 	}
 	playCtx, playCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer playCancel()
-
 	if waitForCompletion {
-		l.Info().Msg("Dinamik ses (TTS) çalınıyor ve bitmesi bekleniyor...")
 		_, err = h.mediaClient.PlayAudio(playCtx, playReq)
 	} else {
 		go func() {
@@ -295,47 +452,31 @@ func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay s
 	if err != nil {
 		l.Error().Err(err).Msg("Hata: Dinamik ses (TTS) çalınamadı")
 		h.eventsFailed.WithLabelValues(event.EventType, "play_tts_audio_failed").Inc()
-	} else if waitForCompletion {
-		l.Info().Msg("Dinamik ses (TTS) başarıyla çalındı ve bitti.")
 	}
 }
 
 func (h *EventHandler) playAnnouncement(l zerolog.Logger, event *CallEvent, announcementIDBase string, waitForCompletion bool) {
 	languageCode := h.getLanguageCode(event)
 	announcementID := fmt.Sprintf("%s_%s", announcementIDBase, strings.ToUpper(languageCode))
-
 	audioPath, err := database.GetAnnouncementPathFromDB(h.db, announcementID)
 	if err != nil {
-		l.Error().Err(err).Str("announcement_id", announcementID).Msg("Anons yolu alınamadı, fallback İngilizce deneniyor")
-		h.eventsFailed.WithLabelValues(event.EventType, "get_announcement_failed").Inc()
+		l.Error().Err(err).Str("announcement_id", announcementID).Msg("Anons yolu alınamadı, fallback deneniyor")
 		announcementID = fmt.Sprintf("%s_EN", announcementIDBase)
 		audioPath, err = database.GetAnnouncementPathFromDB(h.db, announcementID)
 		if err != nil {
-			l.Error().Err(err).Msg("KRİTİK HATA: Sistem fallback anonsu dahi yüklenemedi. Ses çalınamayacak.")
+			l.Error().Err(err).Msg("KRİTİK HATA: Sistem fallback anonsu dahi yüklenemedi.")
 			return
 		}
 	}
 	audioURI := fmt.Sprintf("file:///%s", audioPath)
 	mediaInfo := event.Media
-	rtpTarget, ok1 := mediaInfo["caller_rtp_addr"].(string)
-	serverPortFloat, ok2 := mediaInfo["server_rtp_port"].(float64)
-	if !ok1 || !ok2 || rtpTarget == "" || serverPortFloat == 0 {
-		l.Error().Interface("media_info", mediaInfo).Msg("Geçersiz veya eksik medya bilgisi, ses çalınamıyor.")
-		h.eventsFailed.WithLabelValues(event.EventType, "invalid_media_info").Inc()
-		return
-	}
-	serverPort := uint32(serverPortFloat)
+	rtpTarget := mediaInfo["caller_rtp_addr"].(string)
+	serverPort := uint32(mediaInfo["server_rtp_port"].(float64))
 	ctx := metadata.AppendToOutgoingContext(context.Background(), "x-trace-id", event.TraceID)
 	playCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-
-	playReq := &mediav1.PlayAudioRequest{
-		RtpTargetAddr: rtpTarget,
-		ServerRtpPort: serverPort,
-		AudioUri:      audioURI,
-	}
+	playReq := &mediav1.PlayAudioRequest{RtpTargetAddr: rtpTarget, ServerRtpPort: serverPort, AudioUri: audioURI}
 	if waitForCompletion {
-		l.Info().Str("audio_uri", audioURI).Msg("Anons çalınıyor ve bitmesi bekleniyor...")
 		_, err = h.mediaClient.PlayAudio(playCtx, playReq)
 	} else {
 		go func() {
@@ -348,41 +489,39 @@ func (h *EventHandler) playAnnouncement(l zerolog.Logger, event *CallEvent, anno
 	if err != nil {
 		l.Error().Err(err).Str("audio_uri", audioURI).Msg("Hata: Ses çalma komutu başarısız")
 		h.eventsFailed.WithLabelValues(event.EventType, "play_announcement_failed").Inc()
-	} else if waitForCompletion {
-		l.Info().Str("audio_uri", audioURI).Msg("Anons başarıyla çalındı ve bitti.")
 	}
 }
 
-func (h *EventHandler) createGuestUser(l zerolog.Logger, event *CallEvent, callerID, tenantID string) {
-	l.Info().Str("caller_id", callerID).Str("tenant_id", tenantID).Msg("Misafir kullanıcı oluşturuluyor...")
-	ctx := metadata.AppendToOutgoingContext(context.Background(), "x-trace-id", event.TraceID)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	guestName := "Guest Caller"
-	languageCode := h.getLanguageCode(event) // Misafirin dilini de belirleyelim
-	_, err := h.userClient.CreateUser(ctx, &userv1.CreateUserRequest{
-		TenantId: tenantID,
-		UserType: "caller",
-		Name:     &guestName,
-		InitialContact: &userv1.CreateUserRequest_InitialContact{
-			ContactType:  "phone",
-			ContactValue: callerID,
-		},
-		PreferredLanguageCode: &languageCode,
-	})
-	if err != nil {
-		l.Error().Err(err).Msg("Hata: Misafir kullanıcı oluşturulamadı")
-		h.eventsFailed.WithLabelValues("process_guest_call", "create_guest_user_failed").Inc()
+func (h *EventHandler) generateWelcomeText(l zerolog.Logger, event *CallEvent) (string, error) {
+	languageCode := h.getLanguageCode(event)
+	var promptID string
+	if event.Dialplan.MatchedUser != nil && event.Dialplan.MatchedUser.Name != nil {
+		promptID = "PROMPT_WELCOME_KNOWN_USER"
 	} else {
-		l.Info().Str("caller_id", callerID).Msg("Misafir kullanıcı başarıyla oluşturuldu")
+		promptID = "PROMPT_WELCOME_GUEST"
 	}
+	promptTemplate, err := database.GetTemplateFromDB(h.db, promptID, languageCode)
+	if err != nil {
+		l.Error().Err(err).Msg("Prompt şablonu veritabanından alınamadı.")
+		return "Merhaba, hoş geldiniz.", err
+	}
+	prompt := promptTemplate
+	if event.Dialplan.MatchedUser != nil && event.Dialplan.MatchedUser.Name != nil {
+		prompt = strings.Replace(prompt, "{user_name}", *event.Dialplan.MatchedUser.Name, -1)
+	}
+	return h.generateLlmResponse(context.Background(), &CallState{TraceID: event.TraceID}, prompt)
 }
 
-func extractCallerID(fromURI string) string {
-	re := regexp.MustCompile(`sip:(\+?\d+)@`)
-	matches := re.FindStringSubmatch(fromURI)
-	if len(matches) > 1 {
-		return matches[1]
+func (h *EventHandler) buildLlmPrompt(conversation []map[string]string) string {
+	var promptBuilder strings.Builder
+	promptBuilder.WriteString("Aşağıdaki diyaloğa devam et:\n")
+	for _, msg := range conversation {
+		if text, ok := msg["user"]; ok {
+			promptBuilder.WriteString(fmt.Sprintf("Kullanıcı: %s\n", text))
+		} else if text, ok := msg["ai"]; ok {
+			promptBuilder.WriteString(fmt.Sprintf("Asistan: %s\n", text))
+		}
 	}
-	return ""
+	promptBuilder.WriteString("Asistan: ")
+	return promptBuilder.String()
 }

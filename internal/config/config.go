@@ -1,4 +1,3 @@
-// ========== FILE: sentiric-agent-service/internal/config/config.go ==========
 package config
 
 import (
@@ -12,8 +11,10 @@ type Config struct {
 	Env                  string
 	PostgresURL          string
 	RabbitMQURL          string
+	RedisURL             string // YENİ
 	MetricsPort          string
-	LlmServiceURL        string // <-- BU SATIR EKLENDİ
+	LlmServiceURL        string
+	SttServiceURL        string // YENİ
 	TtsServiceGrpcURL    string
 	MediaServiceGrpcURL  string
 	UserServiceGrpcURL   string
@@ -29,8 +30,10 @@ func Load() (*Config, error) {
 		Env:                  getEnvWithDefault("ENV", "production"),
 		PostgresURL:          getEnv("POSTGRES_URL"),
 		RabbitMQURL:          getEnv("RABBITMQ_URL"),
+		RedisURL:             getEnv("REDIS_URL"), // YENİ
 		MetricsPort:          getEnvWithDefault("METRICS_PORT_AGENT", "9091"),
-		LlmServiceURL:        getEnv("LLM_SERVICE_URL"), // <-- BU SATIR EKLENDİ
+		LlmServiceURL:        getEnv("LLM_SERVICE_URL"),
+		SttServiceURL:        getEnv("STT_SERVICE_URL"), // YENİ
 		TtsServiceGrpcURL:    getEnv("TTS_GATEWAY_URL"),
 		MediaServiceGrpcURL:  getEnv("MEDIA_SERVICE_GRPC_URL"),
 		UserServiceGrpcURL:   getEnv("USER_SERVICE_GRPC_URL"),
@@ -39,8 +42,8 @@ func Load() (*Config, error) {
 		GrpcTlsCaPath:        getEnv("GRPC_TLS_CA_PATH"),
 	}
 
-	if cfg.PostgresURL == "" || cfg.RabbitMQURL == "" || cfg.MediaServiceGrpcURL == "" || cfg.UserServiceGrpcURL == "" || cfg.TtsServiceGrpcURL == "" || cfg.LlmServiceURL == "" {
-		return nil, fmt.Errorf("kritik altyapı URL'leri eksik (Postgres, RabbitMQ, Media, User, TTS Gateway, LLM)")
+	if cfg.PostgresURL == "" || cfg.RabbitMQURL == "" || cfg.RedisURL == "" || cfg.MediaServiceGrpcURL == "" || cfg.UserServiceGrpcURL == "" || cfg.TtsServiceGrpcURL == "" || cfg.LlmServiceURL == "" || cfg.SttServiceURL == "" {
+		return nil, fmt.Errorf("kritik altyapı URL'leri eksik (Postgres, RabbitMQ, Redis, Media, User, TTS, LLM, STT)")
 	}
 
 	return cfg, nil

@@ -71,10 +71,18 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      # YENİ BAĞIMLILIKLAR:
+      redis:
+        condition: service_healthy
       tts-gateway:
         condition: service_healthy
+      # stt-service ve llm-service'in healthcheck'i yok, started yeterli.
+      stt-service:
+        condition: service_started
+      llm-service:
+        condition: service_started
 
-  # --- YENİ SES ORKESTRASYON KATMANI ---
+  # --- DİĞER SERVİSLER (DEĞİŞİKLİK YOK) ---
   tts-gateway:
     build: 
       context: ../sentiric-tts-gateway-service
@@ -120,3 +128,29 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+
+  # YENİ SERVİSLER (AGENT'IN BAĞIMLI OLDUĞU)
+  stt-service:
+    build: { context: ../sentiric-stt-service }
+    container_name: sentiric-stt-1
+    env_file: [".env.docker"]
+    networks: [sentiric-net]
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 2m
+
+  llm-service:
+    build: { context: ../sentiric-llm-service }
+    container_name: sentiric-llm-1
+    env_file: [".env.docker"]
+    networks: [sentiric-net]
+    restart: always
+    healthcheck:
+        test: ["CMD", "curl", "-f", "http://localhost:7860/health"]
+        interval: 10s
+        timeout: 5s
+        retries: 5
