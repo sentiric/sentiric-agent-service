@@ -10,12 +10,12 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
-	"net/url" // DÜZELTME: Bu import geri eklendi.
-
-	// DÜZELTME: Bu import geri eklendi.
+	"net/url"
 	"strings"
 	"time"
 
+	"github.com/go-audio/audio"
+	"github.com/go-audio/wav"
 	"github.com/go-redis/redis/v8"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
@@ -29,7 +29,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// --- Veri Yapıları ---
+// --- Veri Yapıları (DEĞİŞİKLİK YOK) ---
 type DialogState string
 
 const (
@@ -50,27 +50,20 @@ type CallState struct {
 	LastUpdateTime time.Time           `json:"last_update_time"`
 }
 
-// DÜZELTME: isAllowedSpeakerURL fonksiyonu geri eklendi.
 var allowedSpeakerDomains = map[string]bool{"sentiric.github.io": true}
 
 func isAllowedSpeakerURL(rawURL string) bool {
-	parsedURL, err := url.Parse(rawURL)
-	if err != nil {
-		return false
-	}
-	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-		return false
-	}
-	return allowedSpeakerDomains[parsedURL.Hostname()]
+	u, e := url.Parse(rawURL)
+	return e == nil && (u.Scheme == "http" || u.Scheme == "https") && allowedSpeakerDomains[u.Hostname()]
 }
 
 type CallEvent struct {
-	EventType string                              `json:"eventType"`
-	TraceID   string                              `json:"traceId"`
-	CallID    string                              `json:"callId"`
-	Media     map[string]interface{}              `json:"media"`
-	Dialplan  *dialplanv1.ResolveDialplanResponse `json:"dialplan"`
-	From      string                              `json:"from"`
+	EventType string
+	TraceID   string
+	CallID    string
+	Media     map[string]interface{}
+	Dialplan  *dialplanv1.ResolveDialplanResponse
+	From      string
 }
 type LlmGenerateRequest struct {
 	Prompt string `json:"prompt"`
@@ -81,7 +74,6 @@ type LlmGenerateResponse struct {
 type SttTranscribeResponse struct {
 	Text string `json:"text"`
 }
-
 type EventHandler struct {
 	db              *sql.DB
 	rdb             *redis.Client
@@ -99,7 +91,7 @@ func NewEventHandler(db *sql.DB, rdb *redis.Client, mc mediav1.MediaServiceClien
 	return &EventHandler{db: db, rdb: rdb, mediaClient: mc, userClient: uc, ttsClient: tc, llmServiceURL: llmURL, sttServiceURL: sttURL, log: log, eventsProcessed: processed, eventsFailed: failed}
 }
 
-// Olay ve Durum Yönetimi (DEĞİŞİKLİK YOK)
+// --- Olay ve Durum Yönetimi (DEĞİŞİKLİK YOK) ---
 func (h *EventHandler) getCallState(ctx context.Context, callID string) (*CallState, error) {
 	val, err := h.rdb.Get(ctx, "callstate:"+callID).Result()
 	if err == redis.Nil {
@@ -172,7 +164,7 @@ func (h *EventHandler) handleCallEnded(l zerolog.Logger, event *CallEvent) {
 	}
 }
 
-// Ana Diyalog Döngüsü (DEĞİŞİKLİK YOK)
+// --- Ana Diyalog Döngüsü (DEĞİŞİKLİK YOK) ---
 func (h *EventHandler) runDialogLoop(initialState *CallState) {
 	ctx := context.Background()
 	state := initialState
@@ -207,7 +199,7 @@ func (h *EventHandler) runDialogLoop(initialState *CallState) {
 	l.Info().Msg("Diyalog döngüsü tamamlandı.")
 }
 
-// Durum Fonksiyonları (DEĞİŞİKLİK YOK)
+// --- Durum Fonksiyonları (DEĞİŞİKLİK YOK) ---
 func (h *EventHandler) stateFnWelcoming(ctx context.Context, state *CallState) (*CallState, error) {
 	l := h.log.With().Str("call_id", state.CallID).Logger()
 	h.playAnnouncement(l, state.Event, "ANNOUNCE_SYSTEM_CONNECTING", true)
@@ -263,26 +255,19 @@ func (h *EventHandler) stateFnSpeaking(ctx context.Context, state *CallState) (*
 // --- Yardımcı Fonksiyonlar (API Çağrıları) ---
 
 func (h *EventHandler) recordAudio(ctx context.Context, state *CallState) ([]byte, error) {
-	// ... bu fonksiyon aynı, değişiklik yok ...
 	l := h.log.With().Str("call_id", state.CallID).Logger()
-	grpcCtx, cancel := context.WithTimeout(ctx, 15*time.Second) // Akışa toplam 15 saniye zaman aşımı
+	grpcCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	grpcCtx = metadata.AppendToOutgoingContext(grpcCtx, "x-trace-id", state.TraceID)
-
-	stream, err := h.mediaClient.RecordAudio(grpcCtx, &mediav1.RecordAudioRequest{
-		ServerRtpPort: uint32(state.Event.Media["server_rtp_port"].(float64)),
-	})
+	stream, err := h.mediaClient.RecordAudio(grpcCtx, &mediav1.RecordAudioRequest{ServerRtpPort: uint32(state.Event.Media["server_rtp_port"].(float64))})
 	if err != nil {
 		return nil, err
 	}
-
 	l.Info().Msg("Ses kaydı stream'i açıldı, veri bekleniyor...")
-
 	var audioData bytes.Buffer
 	silenceThreshold := 5
 	silenceCounter := 0
 	receivedData := false
-
 	for {
 		chunk, err := stream.Recv()
 		if err == io.EOF {
@@ -297,7 +282,6 @@ func (h *EventHandler) recordAudio(ctx context.Context, state *CallState) ([]byt
 			}
 			return nil, fmt.Errorf("stream'den okuma hatası: %w", err)
 		}
-
 		receivedData = true
 		if len(chunk.AudioData) < 20 {
 			silenceCounter++
@@ -310,61 +294,128 @@ func (h *EventHandler) recordAudio(ctx context.Context, state *CallState) ([]byt
 			audioData.Write(chunk.AudioData)
 		}
 	}
-
 	if !receivedData {
 		l.Warn().Msg("Hiç ses verisi alınmadı.")
 	}
-
 	return audioData.Bytes(), nil
+}
+
+var ulawToPcmTable [256]int16
+
+func init() {
+	for i := 0; i < 256; i++ {
+		ulaw := ^byte(i)
+		sign := (ulaw & 0x80)
+		exponent := int16((ulaw >> 4) & 0x07)
+		mantissa := int16(ulaw & 0x0F)
+		sample := (mantissa << (exponent + 3)) | (1 << (exponent + 2))
+		if sign != 0 {
+			ulawToPcmTable[i] = -sample
+		} else {
+			ulawToPcmTable[i] = sample
+		}
+	}
+}
+
+// DÜZELTME: inMemoryWriteSeeker struct'ı ve metodları
+type inMemoryWriteSeeker struct {
+	buf []byte
+	pos int
+}
+
+func (imws *inMemoryWriteSeeker) Write(p []byte) (n int, err error) {
+	if imws.pos+len(p) > len(imws.buf) {
+		imws.buf = append(imws.buf, make([]byte, imws.pos+len(p)-len(imws.buf))...)
+	}
+	n = copy(imws.buf[imws.pos:], p)
+	imws.pos += n
+	return n, nil
+}
+func (imws *inMemoryWriteSeeker) Seek(offset int64, whence int) (int64, error) {
+	newPos := imws.pos
+	switch whence {
+	case io.SeekStart:
+		newPos = int(offset)
+	case io.SeekCurrent:
+		newPos = imws.pos + int(offset)
+	case io.SeekEnd:
+		newPos = len(imws.buf) + int(offset)
+	}
+	if newPos < 0 {
+		return 0, fmt.Errorf("negatif seek pozisyonu")
+	}
+	imws.pos = newPos
+	return int64(newPos), nil
+}
+func (imws *inMemoryWriteSeeker) Bytes() []byte {
+	return imws.buf
+}
+
+func createWavInMemory(pcmuData []byte) (*bytes.Buffer, error) {
+	numSamples := len(pcmuData)
+	pcmInts := make([]int, numSamples)
+	for i, ulawByte := range pcmuData {
+		pcmInts[i] = int(ulawToPcmTable[ulawByte])
+	}
+	format := &audio.Format{NumChannels: 1, SampleRate: 8000}
+	intBuffer := &audio.IntBuffer{Format: format, Data: pcmInts, SourceBitDepth: 16}
+
+	// DÜZELTME: io.WriteSeeker arayüzünü karşılayan özel struct'ımızı kullanıyoruz.
+	out := &inMemoryWriteSeeker{buf: make([]byte, 0, 1024)}
+	encoder := wav.NewEncoder(out, format.SampleRate, 16, format.NumChannels, 1)
+
+	if err := encoder.Write(intBuffer); err != nil {
+		return nil, err
+	}
+	if err := encoder.Close(); err != nil {
+		return nil, err
+	}
+
+	return bytes.NewBuffer(out.Bytes()), nil
 }
 
 func (h *EventHandler) transcribeAudio(ctx context.Context, state *CallState, audioData []byte) (string, error) {
 	l := h.log.With().Str("call_id", state.CallID).Logger()
-
+	wavBuffer, err := createWavInMemory(audioData)
+	if err != nil {
+		l.Error().Err(err).Msg("Bellekte WAV dosyası oluşturulamadı.")
+		return "", fmt.Errorf("bellekte wav oluşturulamadı: %w", err)
+	}
 	var b bytes.Buffer
 	writer := multipart.NewWriter(&b)
 	part, err := writer.CreateFormFile("audio_file", "stream.wav")
 	if err != nil {
 		return "", err
 	}
-	part.Write(audioData)
+	if _, err := io.Copy(part, wavBuffer); err != nil {
+		return "", err
+	}
 	writer.Close()
-
 	fullSttUrl := fmt.Sprintf("%s/api/v1/transcribe", h.sttServiceURL)
 	req, err := http.NewRequestWithContext(ctx, "POST", fullSttUrl, &b)
 	if err != nil {
 		return "", err
 	}
-
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("X-Trace-ID", state.TraceID)
-
-	// --- DEĞİŞİKLİK BURADA ---
-	// Timeout süresini 60 saniyeye çıkararak "cold start" sorununu tolere ediyoruz.
 	client := &http.Client{Timeout: 60 * time.Second}
-	// --- DEĞİŞİKLİK SONU ---
-
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		l.Error().Int("status_code", resp.StatusCode).Bytes("body", bodyBytes).Msg("STT servisi hata döndürdü.")
 		return "", fmt.Errorf("STT servisi %d kodu döndürdü", resp.StatusCode)
 	}
-
 	var sttResp SttTranscribeResponse
 	if err := json.NewDecoder(resp.Body).Decode(&sttResp); err != nil {
 		return "", err
 	}
-
 	l.Info().Str("transcribed_text", sttResp.Text).Msg("Ses başarıyla metne çevrildi.")
 	return sttResp.Text, nil
 }
-
 func (h *EventHandler) generateLlmResponse(ctx context.Context, state *CallState, prompt string) (string, error) {
 	llmReqPayload := LlmGenerateRequest{Prompt: prompt}
 	payloadBytes, _ := json.Marshal(llmReqPayload)
@@ -392,7 +443,6 @@ func (h *EventHandler) generateLlmResponse(ctx context.Context, state *CallState
 }
 
 // --- Diğer Yardımcı Fonksiyonlar (DEĞİŞİKLİK YOK) ---
-
 func (h *EventHandler) getLanguageCode(event *CallEvent) string {
 	if event.Dialplan.MatchedUser != nil && event.Dialplan.MatchedUser.PreferredLanguageCode != nil && *event.Dialplan.MatchedUser.PreferredLanguageCode != "" {
 		return *event.Dialplan.MatchedUser.PreferredLanguageCode
@@ -402,7 +452,6 @@ func (h *EventHandler) getLanguageCode(event *CallEvent) string {
 	}
 	return "tr"
 }
-
 func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay string, waitForCompletion bool) {
 	l.Info().Str("text", textToPlay).Msg("Metin sese dönüştürülüyor...")
 	speakerURL, useCloning := event.Dialplan.Action.ActionData.Data["speaker_wav_url"]
@@ -440,11 +489,7 @@ func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay s
 	mediaInfo := event.Media
 	rtpTarget := mediaInfo["caller_rtp_addr"].(string)
 	serverPort := uint32(mediaInfo["server_rtp_port"].(float64))
-	playReq := &mediav1.PlayAudioRequest{
-		RtpTargetAddr: rtpTarget,
-		ServerRtpPort: serverPort,
-		AudioUri:      audioURI,
-	}
+	playReq := &mediav1.PlayAudioRequest{RtpTargetAddr: rtpTarget, ServerRtpPort: serverPort, AudioUri: audioURI}
 	playCtx, playCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer playCancel()
 	if waitForCompletion {
@@ -462,7 +507,6 @@ func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay s
 		h.eventsFailed.WithLabelValues(event.EventType, "play_tts_audio_failed").Inc()
 	}
 }
-
 func (h *EventHandler) playAnnouncement(l zerolog.Logger, event *CallEvent, announcementIDBase string, waitForCompletion bool) {
 	languageCode := h.getLanguageCode(event)
 	announcementID := fmt.Sprintf("%s_%s", announcementIDBase, strings.ToUpper(languageCode))
@@ -499,7 +543,6 @@ func (h *EventHandler) playAnnouncement(l zerolog.Logger, event *CallEvent, anno
 		h.eventsFailed.WithLabelValues(event.EventType, "play_announcement_failed").Inc()
 	}
 }
-
 func (h *EventHandler) generateWelcomeText(l zerolog.Logger, event *CallEvent) (string, error) {
 	languageCode := h.getLanguageCode(event)
 	var promptID string
@@ -519,7 +562,6 @@ func (h *EventHandler) generateWelcomeText(l zerolog.Logger, event *CallEvent) (
 	}
 	return h.generateLlmResponse(context.Background(), &CallState{TraceID: event.TraceID}, prompt)
 }
-
 func (h *EventHandler) buildLlmPrompt(conversation []map[string]string) string {
 	var promptBuilder strings.Builder
 	promptBuilder.WriteString("Aşağıdaki diyaloğa devam et:\n")
