@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/go-redis/redis/v8" // YENİ
+	"github.com/go-redis/redis/v8"
 	"github.com/sentiric/sentiric-agent-service/internal/client"
 	"github.com/sentiric/sentiric-agent-service/internal/config"
 	"github.com/sentiric/sentiric-agent-service/internal/database"
@@ -38,10 +38,14 @@ func main() {
 	}
 	defer db.Close()
 
-	// YENİ: Redis bağlantısı
-	redisClient := redis.NewClient(&redis.Options{
-		Addr: cfg.RedisURL,
-	})
+	// --- KRİTİK DÜZELTME: Redis bağlantı mantığını güncelliyoruz ---
+	opt, err := redis.ParseURL(cfg.RedisURL)
+	if err != nil {
+		appLog.Fatal().Err(err).Msg("Redis URL'si parse edilemedi")
+	}
+	redisClient := redis.NewClient(opt)
+	// --- BİTTİ ---
+
 	if _, err := redisClient.Ping(context.Background()).Result(); err != nil {
 		appLog.Fatal().Err(err).Msg("Redis bağlantısı kurulamadı")
 	}
@@ -60,7 +64,6 @@ func main() {
 		appLog.Fatal().Err(err).Msg("TTS Gateway gRPC istemcisi oluşturulamadı")
 	}
 
-	// EventHandler'a yeni bağımlılıkları ekliyoruz
 	eventHandler := handler.NewEventHandler(
 		db, redisClient, mediaClient, userClient, ttsClient,
 		cfg.LlmServiceURL, cfg.SttServiceURL, appLog,
