@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-redis/redis/v8"
+	"github.com/rs/zerolog"
 	"github.com/sentiric/sentiric-agent-service/internal/client"
 	"github.com/sentiric/sentiric-agent-service/internal/config"
 	"github.com/sentiric/sentiric-agent-service/internal/database"
@@ -20,6 +21,34 @@ import (
 )
 
 const serviceName = "agent-service"
+
+// YENİ: connectToRedisWithRetry fonksiyonu
+func connectToRedisWithRetry(cfg *config.Config, log zerolog.Logger) *redis.Client {
+	var rdb *redis.Client
+	var err error
+
+	opt, err := redis.ParseURL(cfg.RedisURL)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Redis URL'si parse edilemedi")
+	}
+
+	for i := 0; i < 10; i++ {
+		rdb = redis.NewClient(opt)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if _, err = rdb.Ping(ctx).Result(); err == nil {
+			log.Info().Msg("Redis bağlantısı başarılı.")
+			return rdb
+		}
+
+		log.Warn().Err(err).Int("attempt", i+1).Int("max_attempts", 10).Msg("Redis'e bağlanılamadı, 5 saniye sonra tekrar denenecek...")
+		time.Sleep(5 * time.Second)
+	}
+
+	log.Fatal().Err(err).Msgf("Maksimum deneme (%d) sonrası Redis'e bağlanılamadı", 10)
+	return nil
+}
 
 func main() {
 	cfg, err := config.Load()
@@ -38,27 +67,19 @@ func main() {
 	}
 	defer db.Close()
 
-	// --- KRİTİK DÜZELTME: Redis bağlantı mantığını güncelliyoruz ---
-	opt, err := redis.ParseURL(cfg.RedisURL)
-	if err != nil {
-		appLog.Fatal().Err(err).Msg("Redis URL'si parse edilemedi")
-	}
-	redisClient := redis.NewClient(opt)
-	// --- BİTTİ ---
-
-	if _, err := redisClient.Ping(context.Background()).Result(); err != nil {
-		appLog.Fatal().Err(err).Msg("Redis bağlantısı kurulamadı")
-	}
-	appLog.Info().Msg("Redis bağlantısı başarılı.")
+	// DÜZELTME: Yeni dayanıklı fonksiyonu kullanıyoruz
+	redisClient := connectToRedisWithRetry(cfg, appLog)
 
 	mediaClient, err := client.NewMediaServiceClient(cfg)
 	if err != nil {
 		appLog.Fatal().Err(err).Msg("Media Service gRPC istemcisi oluşturulamadı")
 	}
+
 	userClient, err := client.NewUserServiceClient(cfg)
 	if err != nil {
 		appLog.Fatal().Err(err).Msg("User Service gRPC istemcisi oluşturulamadı")
 	}
+
 	ttsClient, err := client.NewTTSServiceClient(cfg)
 	if err != nil {
 		appLog.Fatal().Err(err).Msg("TTS Gateway gRPC istemcisi oluşturulamadı")
