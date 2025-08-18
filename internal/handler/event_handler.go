@@ -11,6 +11,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url" // DÜZELTME: Bu import geri eklendi.
+
 	// DÜZELTME: Bu import geri eklendi.
 	"strings"
 	"time"
@@ -262,21 +263,26 @@ func (h *EventHandler) stateFnSpeaking(ctx context.Context, state *CallState) (*
 // --- Yardımcı Fonksiyonlar (API Çağrıları) ---
 
 func (h *EventHandler) recordAudio(ctx context.Context, state *CallState) ([]byte, error) {
+	// ... bu fonksiyon aynı, değişiklik yok ...
 	l := h.log.With().Str("call_id", state.CallID).Logger()
-	grpcCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	grpcCtx, cancel := context.WithTimeout(ctx, 15*time.Second) // Akışa toplam 15 saniye zaman aşımı
 	defer cancel()
 	grpcCtx = metadata.AppendToOutgoingContext(grpcCtx, "x-trace-id", state.TraceID)
+
 	stream, err := h.mediaClient.RecordAudio(grpcCtx, &mediav1.RecordAudioRequest{
 		ServerRtpPort: uint32(state.Event.Media["server_rtp_port"].(float64)),
 	})
 	if err != nil {
 		return nil, err
 	}
+
 	l.Info().Msg("Ses kaydı stream'i açıldı, veri bekleniyor...")
+
 	var audioData bytes.Buffer
 	silenceThreshold := 5
 	silenceCounter := 0
 	receivedData := false
+
 	for {
 		chunk, err := stream.Recv()
 		if err == io.EOF {
@@ -291,6 +297,7 @@ func (h *EventHandler) recordAudio(ctx context.Context, state *CallState) ([]byt
 			}
 			return nil, fmt.Errorf("stream'den okuma hatası: %w", err)
 		}
+
 		receivedData = true
 		if len(chunk.AudioData) < 20 {
 			silenceCounter++
@@ -303,14 +310,17 @@ func (h *EventHandler) recordAudio(ctx context.Context, state *CallState) ([]byt
 			audioData.Write(chunk.AudioData)
 		}
 	}
+
 	if !receivedData {
 		l.Warn().Msg("Hiç ses verisi alınmadı.")
 	}
+
 	return audioData.Bytes(), nil
 }
 
 func (h *EventHandler) transcribeAudio(ctx context.Context, state *CallState, audioData []byte) (string, error) {
 	l := h.log.With().Str("call_id", state.CallID).Logger()
+
 	var b bytes.Buffer
 	writer := multipart.NewWriter(&b)
 	part, err := writer.CreateFormFile("audio_file", "stream.wav")
@@ -319,28 +329,38 @@ func (h *EventHandler) transcribeAudio(ctx context.Context, state *CallState, au
 	}
 	part.Write(audioData)
 	writer.Close()
+
 	fullSttUrl := fmt.Sprintf("%s/api/v1/transcribe", h.sttServiceURL)
 	req, err := http.NewRequestWithContext(ctx, "POST", fullSttUrl, &b)
 	if err != nil {
 		return "", err
 	}
+
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("X-Trace-ID", state.TraceID)
-	client := &http.Client{Timeout: 20 * time.Second}
+
+	// --- DEĞİŞİKLİK BURADA ---
+	// Timeout süresini 60 saniyeye çıkararak "cold start" sorununu tolere ediyoruz.
+	client := &http.Client{Timeout: 60 * time.Second}
+	// --- DEĞİŞİKLİK SONU ---
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		l.Error().Int("status_code", resp.StatusCode).Bytes("body", bodyBytes).Msg("STT servisi hata döndürdü.")
 		return "", fmt.Errorf("STT servisi %d kodu döndürdü", resp.StatusCode)
 	}
+
 	var sttResp SttTranscribeResponse
 	if err := json.NewDecoder(resp.Body).Decode(&sttResp); err != nil {
 		return "", err
 	}
+
 	l.Info().Str("transcribed_text", sttResp.Text).Msg("Ses başarıyla metne çevrildi.")
 	return sttResp.Text, nil
 }
