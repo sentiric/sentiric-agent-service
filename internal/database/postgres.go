@@ -3,7 +3,6 @@ package database
 import (
 	"database/sql"
 	"fmt"
-	"strings"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -15,13 +14,6 @@ func Connect(url string, log zerolog.Logger) (*sql.DB, error) {
 	var err error
 
 	finalURL := url
-	if !strings.Contains(finalURL, "statement_cache_mode") {
-		separator := "?"
-		if strings.Contains(finalURL, "?") {
-			separator = "&"
-		}
-		finalURL = fmt.Sprintf("%s%sstatement_cache_mode=disable", finalURL, separator)
-	}
 
 	for i := 0; i < 10; i++ {
 		db, err = sql.Open("pgx", finalURL)
