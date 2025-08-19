@@ -30,6 +30,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// ... (dosyanın üstündeki struct, const ve var tanımları aynı kalacak) ...
 var activeCallContexts = struct {
 	sync.RWMutex
 	m map[string]context.CancelFunc
@@ -47,12 +48,12 @@ const (
 )
 
 type CallState struct {
-	CallID         string              `json:"call_id"`
-	TraceID        string              `json:"trace_id"`
-	CurrentState   DialogState         `json:"current_state"`
-	Event          *CallEvent          `json:"event"`
-	Conversation   []map[string]string `json:"conversation"`
-	LastUpdateTime time.Time           `json:"last_update_time"`
+	CallID         string
+	TraceID        string
+	CurrentState   DialogState
+	Event          *CallEvent
+	Conversation   []map[string]string
+	LastUpdateTime time.Time
 }
 
 var allowedSpeakerDomains = map[string]bool{"sentiric.github.io": true}
@@ -95,7 +96,6 @@ type EventHandler struct {
 func NewEventHandler(db *sql.DB, rdb *redis.Client, mc mediav1.MediaServiceClient, uc userv1.UserServiceClient, tc ttsv1.TextToSpeechServiceClient, llmURL, sttURL string, log zerolog.Logger, processed, failed *prometheus.CounterVec) *EventHandler {
 	return &EventHandler{db: db, rdb: rdb, mediaClient: mc, userClient: uc, ttsClient: tc, llmServiceURL: llmURL, sttServiceURL: sttURL, log: log, eventsProcessed: processed, eventsFailed: failed}
 }
-
 func (h *EventHandler) getCallState(ctx context.Context, callID string) (*CallState, error) {
 	val, err := h.rdb.Get(ctx, "callstate:"+callID).Result()
 	if err == redis.Nil {
@@ -110,7 +110,6 @@ func (h *EventHandler) getCallState(ctx context.Context, callID string) (*CallSt
 	}
 	return &state, nil
 }
-
 func (h *EventHandler) setCallState(ctx context.Context, state *CallState) error {
 	state.LastUpdateTime = time.Now()
 	val, err := json.Marshal(state)
@@ -119,7 +118,6 @@ func (h *EventHandler) setCallState(ctx context.Context, state *CallState) error
 	}
 	return h.rdb.Set(ctx, "callstate:"+state.CallID, val, 2*time.Hour).Err()
 }
-
 func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 	var event CallEvent
 	if err := json.Unmarshal(body, &event); err != nil {
@@ -137,7 +135,6 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 		go h.handleCallEnded(l, &event)
 	}
 }
-
 func (h *EventHandler) handleCallStarted(l zerolog.Logger, event *CallEvent) {
 	l.Info().Msg("Yeni çağrı başlıyor, durum makinesi başlatılıyor...")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -166,20 +163,13 @@ func (h *EventHandler) handleCallStarted(l zerolog.Logger, event *CallEvent) {
 		l.Warn().Msg("Bu çağrı için zaten aktif bir Redis durumu var, yeni bir tane başlatılmıyor.")
 		return
 	}
-	initialState := &CallState{
-		CallID:       event.CallID,
-		TraceID:      event.TraceID,
-		CurrentState: StateWelcoming,
-		Event:        event,
-		Conversation: []map[string]string{},
-	}
+	initialState := &CallState{CallID: event.CallID, TraceID: event.TraceID, CurrentState: StateWelcoming, Event: event, Conversation: []map[string]string{}}
 	if err := h.setCallState(ctx, initialState); err != nil {
 		l.Error().Err(err).Msg("Redis'e başlangıç durumu yazılamadı.")
 		return
 	}
 	h.runDialogLoop(ctx, initialState)
 }
-
 func (h *EventHandler) handleCallEnded(l zerolog.Logger, event *CallEvent) {
 	l.Info().Msg("Çağrı sonlandı, durum makinesi durduruluyor...")
 	activeCallContexts.Lock()
@@ -198,7 +188,6 @@ func (h *EventHandler) handleCallEnded(l zerolog.Logger, event *CallEvent) {
 		l.Error().Err(err).Msg("Redis'e 'Ended' durumu yazılamadı.")
 	}
 }
-
 func (h *EventHandler) runDialogLoop(ctx context.Context, initialState *CallState) {
 	currentCallID := initialState.CallID
 	l := h.log.With().Str("call_id", currentCallID).Str("trace_id", initialState.TraceID).Logger()
@@ -255,25 +244,18 @@ func (h *EventHandler) runDialogLoop(ctx context.Context, initialState *CallStat
 		}
 	}
 }
-
 func (h *EventHandler) stateFnWelcoming(ctx context.Context, state *CallState) (*CallState, error) {
 	l := h.log.With().Str("call_id", state.CallID).Logger()
-	h.playAnnouncement(l, state.Event, "ANNOUNCE_SYSTEM_CONNECTING", true) // Bağlanıyor anonsu bitmeli.
-
+	h.playAnnouncement(l, state.Event, "ANNOUNCE_SYSTEM_CONNECTING", true)
 	welcomeText, err := h.generateWelcomeText(l, state.Event)
 	if err != nil {
 		return state, err
 	}
 	state.Conversation = append(state.Conversation, map[string]string{"ai": welcomeText})
-
-	// --- DEĞİŞİKLİK BURADA: Artık AI konuşurken beklemiyoruz ---
-	h.playText(l, state.Event, welcomeText, false) // waitForCompletion = false
-	// --- DEĞİŞİKLİK SONU ---
-
+	h.playText(l, state.Event, welcomeText, false)
 	state.CurrentState = StateListening
 	return state, nil
 }
-
 func (h *EventHandler) stateFnListening(ctx context.Context, state *CallState) (*CallState, error) {
 	l := h.log.With().Str("call_id", state.CallID).Logger()
 	l.Info().Msg("Kullanıcıdan ses bekleniyor...")
@@ -297,12 +279,20 @@ func (h *EventHandler) stateFnListening(ctx context.Context, state *CallState) (
 func (h *EventHandler) stateFnThinking(ctx context.Context, state *CallState) (*CallState, error) {
 	l := h.log.With().Str("call_id", state.CallID).Logger()
 	l.Info().Msg("LLM'den yanıt üretiliyor...")
-	prompt := h.buildLlmPrompt(state.Conversation)
+
+	// --- YENİ: prompt'u burada oluşturuyoruz ---
+	prompt, err := h.buildLlmPrompt(ctx, state)
+	if err != nil {
+		return state, fmt.Errorf("LLM prompt'u oluşturulamadı: %w", err)
+	}
+	// --- BİTTİ ---
+
 	select {
 	case <-ctx.Done():
 		return nil, context.Canceled
 	default:
 	}
+
 	llmRespText, err := h.generateLlmResponse(ctx, state, prompt)
 	if err != nil {
 		return state, fmt.Errorf("LLM yanıtı üretilemedi: %w", err)
@@ -312,25 +302,47 @@ func (h *EventHandler) stateFnThinking(ctx context.Context, state *CallState) (*
 	return state, nil
 }
 
+func (h *EventHandler) buildLlmPrompt(ctx context.Context, state *CallState) (string, error) {
+	l := h.log.With().Str("call_id", state.CallID).Logger()
+	languageCode := h.getLanguageCode(state.Event)
+
+	// Adım 1: Veritabanından sistem prompt'unu al
+	systemPrompt, err := database.GetTemplateFromDB(h.db, "PROMPT_SYSTEM_DEFAULT", languageCode)
+	if err != nil {
+		l.Error().Err(err).Msg("Varsayılan sistem prompt'u veritabanından alınamadı, fallback kullanılıyor.")
+		systemPrompt = "Aşağıdaki diyaloğa devam et. Cevapların kısa olsun." // Fallback
+	}
+
+	var promptBuilder strings.Builder
+	promptBuilder.WriteString(systemPrompt)
+	promptBuilder.WriteString("\n\n--- KONUŞMA GEÇMİŞİ ---\n")
+
+	// Adım 2: Konuşma geçmişini ekle
+	for _, msg := range state.Conversation {
+		if text, ok := msg["user"]; ok {
+			promptBuilder.WriteString(fmt.Sprintf("Kullanıcı: %s\n", text))
+		} else if text, ok := msg["ai"]; ok {
+			promptBuilder.WriteString(fmt.Sprintf("Asistan: %s\n", text))
+		}
+	}
+
+	// Adım 3: Asistanın konuşması için bitir
+	promptBuilder.WriteString("Asistan:")
+	return promptBuilder.String(), nil
+}
+
 func (h *EventHandler) stateFnSpeaking(ctx context.Context, state *CallState) (*CallState, error) {
 	l := h.log.With().Str("call_id", state.CallID).Logger()
 	lastAiMessage := state.Conversation[len(state.Conversation)-1]["ai"]
 	l.Info().Str("text", lastAiMessage).Msg("AI yanıtı seslendiriliyor...")
-
-	// --- DEĞİŞİKLİK BURADA: Artık AI konuşurken beklemiyoruz ---
-	h.playText(l, state.Event, lastAiMessage, false) // waitForCompletion = false
-	// --- DEĞİŞİKLİK SONU ---
-
+	h.playText(l, state.Event, lastAiMessage, false)
 	state.CurrentState = StateListening
 	return state, nil
 }
-
 func (h *EventHandler) recordAudio(ctx context.Context, state *CallState) ([]byte, error) {
 	l := h.log.With().Str("call_id", state.CallID).Logger()
 	grpcCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", state.TraceID)
-	stream, err := h.mediaClient.RecordAudio(grpcCtx, &mediav1.RecordAudioRequest{
-		ServerRtpPort: uint32(state.Event.Media["server_rtp_port"].(float64)),
-	})
+	stream, err := h.mediaClient.RecordAudio(grpcCtx, &mediav1.RecordAudioRequest{ServerRtpPort: uint32(state.Event.Media["server_rtp_port"].(float64))})
 	if err != nil {
 		return nil, err
 	}
@@ -400,6 +412,8 @@ func (h *EventHandler) recordAudio(ctx context.Context, state *CallState) ([]byt
 	}
 }
 
+// --- YENİ FONKSİYONLAR: PCMU -> WAV DÖNÜŞÜMÜ ---
+
 var ulawToPcmTable [256]int16
 
 func init() {
@@ -465,13 +479,19 @@ func createWavInMemory(pcmuData []byte) (*bytes.Buffer, error) {
 	}
 	return bytes.NewBuffer(out.Bytes()), nil
 }
+
+// --- transcribeAudio FONKSİYONU GÜNCELLENDİ ---
 func (h *EventHandler) transcribeAudio(ctx context.Context, state *CallState, audioData []byte) (string, error) {
 	l := h.log.With().Str("call_id", state.CallID).Logger()
+
+	// Adım 1: Gelen ham PCMU verisini WAV formatına dönüştür.
 	wavBuffer, err := createWavInMemory(audioData)
 	if err != nil {
 		l.Error().Err(err).Msg("Bellekte WAV dosyası oluşturulamadı.")
 		return "", fmt.Errorf("bellekte wav oluşturulamadı: %w", err)
 	}
+
+	// Adım 2: WAV verisini multipart/form-data olarak STT servisine gönder.
 	var b bytes.Buffer
 	writer := multipart.NewWriter(&b)
 	languageCode := h.getLanguageCode(state.Event)
@@ -511,6 +531,8 @@ func (h *EventHandler) transcribeAudio(ctx context.Context, state *CallState, au
 	l.Info().Str("transcribed_text", sttResp.Text).Str("language_used", languageCode).Msg("Ses başarıyla metne çevrildi.")
 	return sttResp.Text, nil
 }
+
+// --- Geri Kalan Tüm Fonksiyonlar Tamamen Aynı ---
 func (h *EventHandler) generateLlmResponse(ctx context.Context, state *CallState, prompt string) (string, error) {
 	llmReqPayload := LlmGenerateRequest{Prompt: prompt}
 	payloadBytes, _ := json.Marshal(llmReqPayload)

@@ -15,6 +15,7 @@ require (
 	github.com/rs/zerolog v1.34.0
 	github.com/sentiric/sentiric-contracts v1.7.8
 	google.golang.org/grpc v1.73.0
+
 )
 
 require (
