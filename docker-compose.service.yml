@@ -40,7 +40,6 @@ services:
       timeout: 10s
       retries: 3
   
-  # YENİ SERVİS: Redis
   redis:
     image: redis:7-alpine
     container_name: sentiric-redis-for-agent
@@ -63,7 +62,7 @@ services:
     volumes:
       - ../sentiric-config/tls/certs:/etc/sentiric/tls:ro
     ports:
-      - "${METRICS_PORT_AGENT:-9091}:${METRICS_PORT_AGENT:-9091}" # METRICS_PORT_AGENT olarak düzeltildi
+      - "${METRICS_PORT_AGENT:-9091}:${METRICS_PORT_AGENT:-9091}"
     networks:
       - sentiric-net
     restart: always
@@ -72,29 +71,65 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-      # YENİ BAĞIMLILIKLAR:
       redis:
+        condition: service_healthy
+      # KRİTİK DÜZELTME: agent-service, bu servislerin sağlıklı olmasını beklemeli
+      media-service:
+        condition: service_healthy
+      user-service:
         condition: service_healthy
       tts-gateway:
         condition: service_healthy
-      # stt-service ve llm-service'in healthcheck'i var, healthy beklenmeli.
       stt-service:
         condition: service_healthy
       llm-service:
         condition: service_healthy
 
-  # --- DİĞER BAĞIMLI SERVİSLER ---
+  # --- DİĞER SERVİSLER (AGENT'IN BAĞIMLI OLDUĞU) ---
+  
+  # YENİ: media-service ve user-service'i de bu profile ekliyoruz.
+  # Onlar olmadan agent başlayamaz.
+  media-service:
+    build:
+      context: ../sentiric-media-service
+    env_file: [".env.docker"]
+    volumes:
+      - ../sentiric-config/tls/certs:/etc/sentiric/tls:ro
+    networks: [sentiric-net]
+    restart: always
+    healthcheck:
+        test: ["CMD", "nc", "-z", "localhost", "50052"]
+        interval: 10s
+        timeout: 5s
+        retries: 5
+        start_period: 10s
+
+  user-service:
+    build:
+      context: ../sentiric-user-service
+    env_file: [".env.docker"]
+    volumes:
+      - ../sentiric-config/tls/certs:/etc/sentiric/tls:ro
+    networks: [sentiric-net]
+    restart: always
+    healthcheck:
+        test: ["CMD", "nc", "-z", "localhost", "50053"]
+        interval: 10s
+        timeout: 5s
+        retries: 5
+        start_period: 10s
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   tts-gateway:
     build: 
       context: ../sentiric-tts-gateway-service
-      args: 
-        SERVICE_NAME: sentiric-tts-gateway-service
-    container_name: sentiric-tts-gateway-1 # Tutarlılık için isimlendirme
+    container_name: sentiric-tts-gateway-1
     env_file: [".env.docker"]
     networks: [sentiric-net]
     restart: always
     depends_on:
-      # Gateway'in çalışması için uzman motorların sağlıklı olması gerekir.
       tts-coqui-service:
         condition: service_healthy
       tts-edge-service:
@@ -130,7 +165,6 @@ services:
       timeout: 10s
       retries: 3
 
-  # YENİ SERVİSLER (AGENT'IN BAĞIMLI OLDUĞU)
   stt-service:
     build: { context: ../sentiric-stt-service }
     container_name: sentiric-stt-1
@@ -151,8 +185,8 @@ services:
     networks: [sentiric-net]
     restart: always
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:7860/health"]
-      interval: 30s # Modelin yüklenmesi uzun sürebilir
-      timeout: 10s
-      retries: 5
-      start_period: 2m # Başlaması için zaman tanı
+        test: ["CMD", "curl", "-f", "http://localhost:7860/health"]
+        interval: 30s
+        timeout: 10s
+        retries: 5
+        start_period: 2m
