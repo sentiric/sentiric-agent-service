@@ -40,6 +40,7 @@ services:
       timeout: 10s
       retries: 3
   
+  # YENİ SERVİS: Redis
   redis:
     image: redis:7-alpine
     container_name: sentiric-redis-for-agent
@@ -62,7 +63,7 @@ services:
     volumes:
       - ../sentiric-config/tls/certs:/etc/sentiric/tls:ro
     ports:
-      - "${METRICS_PORT:-9091}:${METRICS_PORT:-9091}"
+      - "${METRICS_PORT_AGENT:-9091}:${METRICS_PORT_AGENT:-9091}" # METRICS_PORT_AGENT olarak düzeltildi
     networks:
       - sentiric-net
     restart: always
@@ -76,24 +77,24 @@ services:
         condition: service_healthy
       tts-gateway:
         condition: service_healthy
-      # stt-service ve llm-service'in healthcheck'i yok, started yeterli.
+      # stt-service ve llm-service'in healthcheck'i var, healthy beklenmeli.
       stt-service:
-        condition: service_started
+        condition: service_healthy
       llm-service:
-        condition: service_started
+        condition: service_healthy
 
-  # --- DİĞER SERVİSLER (DEĞİŞİKLİK YOK) ---
+  # --- DİĞER BAĞIMLI SERVİSLER ---
   tts-gateway:
     build: 
       context: ../sentiric-tts-gateway-service
       args: 
         SERVICE_NAME: sentiric-tts-gateway-service
-    container_name: sentiric-tts-gateway-1
+    container_name: sentiric-tts-gateway-1 # Tutarlılık için isimlendirme
     env_file: [".env.docker"]
-    ports: ["${TTS_GATEWAY_PORT:-50051}:50051"]
     networks: [sentiric-net]
     restart: always
     depends_on:
+      # Gateway'in çalışması için uzman motorların sağlıklı olması gerekir.
       tts-coqui-service:
         condition: service_healthy
       tts-edge-service:
@@ -150,7 +151,8 @@ services:
     networks: [sentiric-net]
     restart: always
     healthcheck:
-        test: ["CMD", "curl", "-f", "http://localhost:7860/health"]
-        interval: 10s
-        timeout: 5s
-        retries: 5
+      test: ["CMD", "curl", "-f", "http://localhost:7860/health"]
+      interval: 30s # Modelin yüklenmesi uzun sürebilir
+      timeout: 10s
+      retries: 5
+      start_period: 2m # Başlaması için zaman tanı
