@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync" // sync'i import et
 	"time"
 
 	"github.com/go-audio/audio"
@@ -29,7 +30,13 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// --- YENİ VERİ YAPILARI: Durum Makinesi için ---
+// --- YENİ: Aktif çağrıların context'lerini ve iptal fonksiyonlarını tutan thread-safe map ---
+var activeCallContexts = struct {
+	sync.RWMutex
+	m map[string]context.CancelFunc
+}{m: make(map[string]context.CancelFunc)}
+
+// --- Diğer struct'lar ve sabitler aynı kalır ---
 type DialogState string
 
 const (
@@ -41,7 +48,6 @@ const (
 	StateTerminated DialogState = "TERMINATED"
 )
 
-// CallState, Redis'te her bir çağrının durumunu tutan yapıdır.
 type CallState struct {
 	CallID         string              `json:"call_id"`
 	TraceID        string              `json:"trace_id"`
@@ -51,15 +57,13 @@ type CallState struct {
 	LastUpdateTime time.Time           `json:"last_update_time"`
 }
 
-// Güvenlik için SSRF saldırılarını önlemek amacıyla izin verilen alan adları
 var allowedSpeakerDomains = map[string]bool{"sentiric.github.io": true}
 
 func isAllowedSpeakerURL(rawURL string) bool {
 	u, e := url.Parse(rawURL)
-	return e == nil && (u.Scheme == "http" || u.Scheme == "https" || u.Scheme == "https") && allowedSpeakerDomains[u.Hostname()]
+	return e == nil && (u.Scheme == "http" || u.Scheme == "https") && allowedSpeakerDomains[u.Hostname()]
 }
 
-// --- Mevcut Veri Yapıları ---
 type CallEvent struct {
 	EventType string
 	TraceID   string
@@ -78,10 +82,9 @@ type SttTranscribeResponse struct {
 	Text string `json:"text"`
 }
 
-// EventHandler yapısı güncellendi
 type EventHandler struct {
 	db              *sql.DB
-	rdb             *redis.Client // Redis client eklendi
+	rdb             *redis.Client
 	mediaClient     mediav1.MediaServiceClient
 	userClient      userv1.UserServiceClient
 	ttsClient       ttsv1.TextToSpeechServiceClient
@@ -89,19 +92,17 @@ type EventHandler struct {
 	eventsProcessed *prometheus.CounterVec
 	eventsFailed    *prometheus.CounterVec
 	llmServiceURL   string
-	sttServiceURL   string // STT service URL eklendi
+	sttServiceURL   string
 }
 
-// NewEventHandler constructor güncellendi
 func NewEventHandler(db *sql.DB, rdb *redis.Client, mc mediav1.MediaServiceClient, uc userv1.UserServiceClient, tc ttsv1.TextToSpeechServiceClient, llmURL, sttURL string, log zerolog.Logger, processed, failed *prometheus.CounterVec) *EventHandler {
 	return &EventHandler{db: db, rdb: rdb, mediaClient: mc, userClient: uc, ttsClient: tc, llmServiceURL: llmURL, sttServiceURL: sttURL, log: log, eventsProcessed: processed, eventsFailed: failed}
 }
 
-// --- YENİ FONKSİYONLAR: Durum Yönetimi ---
 func (h *EventHandler) getCallState(ctx context.Context, callID string) (*CallState, error) {
 	val, err := h.rdb.Get(ctx, "callstate:"+callID).Result()
 	if err == redis.Nil {
-		return nil, nil // Durum yok, bu bir hata değil
+		return nil, nil
 	}
 	if err != nil {
 		return nil, err
@@ -119,11 +120,9 @@ func (h *EventHandler) setCallState(ctx context.Context, state *CallState) error
 	if err != nil {
 		return err
 	}
-	// Durumu 2 saat sonra otomatik sil
 	return h.rdb.Set(ctx, "callstate:"+state.CallID, val, 2*time.Hour).Err()
 }
 
-// HandleRabbitMQMessage güncellendi
 func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 	var event CallEvent
 	if err := json.Unmarshal(body, &event); err != nil {
@@ -131,11 +130,9 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 		h.eventsFailed.WithLabelValues("unknown", "json_unmarshal").Inc()
 		return
 	}
-
 	h.eventsProcessed.WithLabelValues(event.EventType).Inc()
 	l := h.log.With().Str("call_id", event.CallID).Str("trace_id", event.TraceID).Str("event_type", event.EventType).Logger()
 	l.Info().Msg("Olay alındı")
-
 	switch event.EventType {
 	case "call.started":
 		go h.handleCallStarted(l, &event)
@@ -144,10 +141,21 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 	}
 }
 
-// --- YENİ FONKSİYONLAR: Olay İşleyicileri ---
 func (h *EventHandler) handleCallStarted(l zerolog.Logger, event *CallEvent) {
 	l.Info().Msg("Yeni çağrı başlıyor, durum makinesi başlatılıyor...")
-	ctx := context.Background()
+
+	// --- YENİ: Çağrı için bir iptal context'i oluştur ve sakla ---
+	ctx, cancel := context.WithCancel(context.Background())
+	activeCallContexts.Lock()
+	if _, exists := activeCallContexts.m[event.CallID]; exists {
+		l.Warn().Msg("Bu çağrı için zaten aktif bir context var, yeni goroutine başlatılmıyor.")
+		activeCallContexts.Unlock()
+		cancel() // Oluşturduğumuz yeni context'i iptal et
+		return
+	}
+	activeCallContexts.m[event.CallID] = cancel
+	activeCallContexts.Unlock()
+	// --- BİTTİ ---
 
 	state, err := h.getCallState(ctx, event.CallID)
 	if err != nil {
@@ -168,44 +176,59 @@ func (h *EventHandler) handleCallStarted(l zerolog.Logger, event *CallEvent) {
 	}
 	if err := h.setCallState(ctx, initialState); err != nil {
 		l.Error().Err(err).Msg("Redis'e başlangıç durumu yazılamadı.")
+		activeCallContexts.Lock()
+		delete(activeCallContexts.m, event.CallID)
+		activeCallContexts.Unlock()
+		cancel()
 		return
 	}
-	h.runDialogLoop(initialState)
+	h.runDialogLoop(ctx, initialState) // Context'i döngüye de gönder
 }
 
 func (h *EventHandler) handleCallEnded(l zerolog.Logger, event *CallEvent) {
 	l.Info().Msg("Çağrı sonlandı, durum makinesi durduruluyor...")
 	ctx := context.Background()
 
+	// --- YENİ: İlgili çağrının context'ini iptal et ---
+	activeCallContexts.Lock()
+	if cancel, ok := activeCallContexts.m[event.CallID]; ok {
+		l.Info().Msg("Aktif diyalog döngüsü için iptal sinyali gönderiliyor.")
+		cancel()
+		delete(activeCallContexts.m, event.CallID)
+	}
+	activeCallContexts.Unlock()
+	// --- BİTTİ ---
+
 	state, err := h.getCallState(ctx, event.CallID)
 	if err != nil || state == nil {
 		l.Warn().Err(err).Msg("Sonlanan çağrı için aktif bir durum bulunamadı.")
 		return
 	}
-
 	state.CurrentState = StateEnded
 	if err := h.setCallState(ctx, state); err != nil {
 		l.Error().Err(err).Msg("Redis'e 'Ended' durumu yazılamadı.")
 	}
 }
 
-// sentiric-agent-service/internal/handler/event_handler.go -> runDialogLoop fonksiyonu
-
-func (h *EventHandler) runDialogLoop(initialState *CallState) {
-	ctx := context.Background()
-	currentCallID := initialState.CallID // Sadece ID'yi al
+func (h *EventHandler) runDialogLoop(ctx context.Context, initialState *CallState) {
+	currentCallID := initialState.CallID
 	l := h.log.With().Str("call_id", currentCallID).Str("trace_id", initialState.TraceID).Logger()
 
-	for { // Sonsuz döngü, çıkış koşulları içeride yönetilecek
-		// --- KRİTİK DEĞİŞİKLİK: Her döngünün başında durumu Redis'ten oku ---
+	for {
+		// --- YENİ: Her döngünün başında context'in iptal edilip edilmediğini kontrol et ---
+		select {
+		case <-ctx.Done():
+			l.Info().Msg("Context iptal edildi, diyalog döngüsü temiz bir şekilde sonlandırılıyor.")
+			return
+		default: // Non-blocking
+		}
+
 		state, err := h.getCallState(ctx, currentCallID)
 		if err != nil || state == nil {
 			l.Error().Err(err).Msg("Döngü için durum Redis'ten alınamadı veya nil, döngü sonlandırılıyor.")
 			break
 		}
-		// --- DEĞİŞİKLİK SONU ---
 
-		// Çıkış koşulunu döngünün en başına taşı
 		if state.CurrentState == StateEnded || state.CurrentState == StateTerminated {
 			l.Info().Str("final_state", string(state.CurrentState)).Msg("Diyalog döngüsü sonlandırma durumuna ulaştı.")
 			break
@@ -214,7 +237,7 @@ func (h *EventHandler) runDialogLoop(initialState *CallState) {
 		l = l.With().Str("state", string(state.CurrentState)).Logger()
 		l.Info().Msg("Diyalog döngüsü adımı işleniyor.")
 
-		var nextState *CallState // Bir sonraki durumu tutmak için
+		var nextState *CallState
 		switch state.CurrentState {
 		case StateWelcoming:
 			nextState, err = h.stateFnWelcoming(ctx, state)
@@ -237,16 +260,15 @@ func (h *EventHandler) runDialogLoop(initialState *CallState) {
 			nextState = state
 		}
 
-		// Bir sonraki durumu Redis'e yaz
 		if err := h.setCallState(ctx, nextState); err != nil {
 			l.Error().Err(err).Msg("Döngü içinde durum güncellenemedi, sonlandırılıyor.")
-			break // Durum yazılamıyorsa döngüden çık
+			break
 		}
 	}
 	l.Info().Msg("Diyalog döngüsü tamamlandı.")
 }
 
-// --- YENİ FONKSİYONLAR: Durum Fonksiyonları ---
+// ... (stateFn... fonksiyonları aynı kalır) ...
 func (h *EventHandler) stateFnWelcoming(ctx context.Context, state *CallState) (*CallState, error) {
 	l := h.log.With().Str("call_id", state.CallID).Logger()
 	h.playAnnouncement(l, state.Event, "ANNOUNCE_SYSTEM_CONNECTING", true)
@@ -308,15 +330,13 @@ func (h *EventHandler) stateFnSpeaking(ctx context.Context, state *CallState) (*
 	return state, nil
 }
 
-// --- YENİ FONKSİYONLAR: Yardımcı Fonksiyonlar (API Çağrıları) ---
-
+// recordAudio fonksiyonunu güncelleyin
 func (h *EventHandler) recordAudio(ctx context.Context, state *CallState) ([]byte, error) {
 	l := h.log.With().Str("call_id", state.CallID).Logger()
 
-	// --- DÜZELTME: Süre sınırı olmayan bir context kullan ---
-	grpcCtx, cancel := context.WithCancel(ctx) // WithTimeout yerine WithCancel
-	defer cancel()
-	grpcCtx = metadata.AppendToOutgoingContext(grpcCtx, "x-trace-id", state.TraceID)
+	// --- DÜZELTME: Artık fonksiyon parametresi olarak gelen context'i kullanıyoruz. ---
+	// Bu, handleCallEnded'den gelen iptal sinyalinin burayı etkilemesini sağlar.
+	grpcCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", state.TraceID)
 
 	stream, err := h.mediaClient.RecordAudio(grpcCtx, &mediav1.RecordAudioRequest{
 		ServerRtpPort: uint32(state.Event.Media["server_rtp_port"].(float64)),
@@ -338,15 +358,14 @@ func (h *EventHandler) recordAudio(ctx context.Context, state *CallState) ([]byt
 		}
 		if err != nil {
 			st, _ := status.FromError(err)
-			// Canceled ve DeadlineExceeded normal durumlar olabilir, bunları hata olarak loglama
-			if st.Code() == codes.Canceled || st.Code() == codes.DeadlineExceeded {
-				l.Warn().Msg("Ses kaydı stream'i zaman aşımı veya iptal nedeniyle sonlandı.")
-				break
+			if st.Code() == codes.Canceled {
+				l.Warn().Msg("Ses kaydı stream'i context iptali nedeniyle sonlandı.")
+				return nil, err // Hata ile dönerek döngüyü kır
 			}
 			return nil, fmt.Errorf("stream'den okuma hatası: %w", err)
 		}
 		receivedData = true
-		if len(chunk.AudioData) < 20 { // Basit bir sessizlik tespiti
+		if len(chunk.AudioData) < 20 {
 			silenceCounter++
 			if silenceCounter >= silenceThreshold {
 				l.Info().Int("threshold", silenceThreshold).Msg("Sessizlik eşiğine ulaşıldı, kayıt durduruluyor.")
@@ -363,7 +382,9 @@ func (h *EventHandler) recordAudio(ctx context.Context, state *CallState) ([]byt
 	return audioData.Bytes(), nil
 }
 
-// PCMU (G.711 μ-law) verisini PCM'e dönüştürmek için lookup tablosu
+// ... (dosyanın geri kalanı aynı kalabilir) ...
+
+// ... (inMemoryWriteSeeker ve diğer yardımcı fonksiyonlar)
 var ulawToPcmTable [256]int16
 
 func init() {
@@ -381,7 +402,6 @@ func init() {
 	}
 }
 
-// Bellekte WAV dosyası oluşturmak için `io.WriteSeeker` arayüzünü uygulayan bir struct
 type inMemoryWriteSeeker struct {
 	buf []byte
 	pos int
@@ -413,7 +433,6 @@ func (imws *inMemoryWriteSeeker) Seek(offset int64, whence int) (int64, error) {
 }
 func (imws *inMemoryWriteSeeker) Bytes() []byte { return imws.buf }
 
-// Ham PCMU verisini WAV formatına dönüştürür.
 func createWavInMemory(pcmuData []byte) (*bytes.Buffer, error) {
 	numSamples := len(pcmuData)
 	pcmInts := make([]int, numSamples)
@@ -422,10 +441,8 @@ func createWavInMemory(pcmuData []byte) (*bytes.Buffer, error) {
 	}
 	format := &audio.Format{NumChannels: 1, SampleRate: 8000}
 	intBuffer := &audio.IntBuffer{Format: format, Data: pcmInts, SourceBitDepth: 16}
-
 	out := &inMemoryWriteSeeker{buf: make([]byte, 0, 1024)}
 	encoder := wav.NewEncoder(out, format.SampleRate, 16, format.NumChannels, 1)
-
 	if err := encoder.Write(intBuffer); err != nil {
 		return nil, err
 	}
@@ -442,16 +459,12 @@ func (h *EventHandler) transcribeAudio(ctx context.Context, state *CallState, au
 		l.Error().Err(err).Msg("Bellekte WAV dosyası oluşturulamadı.")
 		return "", fmt.Errorf("bellekte wav oluşturulamadı: %w", err)
 	}
-
 	var b bytes.Buffer
 	writer := multipart.NewWriter(&b)
-
-	// Dil parametresini form verisi olarak ekliyoruz
 	languageCode := h.getLanguageCode(state.Event)
 	if err := writer.WriteField("language", languageCode); err != nil {
 		return "", err
 	}
-
 	part, err := writer.CreateFormFile("audio_file", "stream.wav")
 	if err != nil {
 		return "", err
@@ -460,7 +473,6 @@ func (h *EventHandler) transcribeAudio(ctx context.Context, state *CallState, au
 		return "", err
 	}
 	writer.Close()
-
 	fullSttUrl := fmt.Sprintf("%s/api/v1/transcribe", h.sttServiceURL)
 	req, err := http.NewRequestWithContext(ctx, "POST", fullSttUrl, &b)
 	if err != nil {
@@ -468,25 +480,21 @@ func (h *EventHandler) transcribeAudio(ctx context.Context, state *CallState, au
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("X-Trace-ID", state.TraceID)
-
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		l.Error().Int("status_code", resp.StatusCode).Bytes("body", bodyBytes).Msg("STT servisi hata döndürdü.")
 		return "", fmt.Errorf("STT servisi %d kodu döndürdü", resp.StatusCode)
 	}
-
 	var sttResp SttTranscribeResponse
 	if err := json.NewDecoder(resp.Body).Decode(&sttResp); err != nil {
 		return "", err
 	}
-
 	l.Info().Str("transcribed_text", sttResp.Text).Str("language_used", languageCode).Msg("Ses başarıyla metne çevrildi.")
 	return sttResp.Text, nil
 }
@@ -495,21 +503,18 @@ func (h *EventHandler) generateLlmResponse(ctx context.Context, state *CallState
 	llmReqPayload := LlmGenerateRequest{Prompt: prompt}
 	payloadBytes, _ := json.Marshal(llmReqPayload)
 	fullLlmUrl := fmt.Sprintf("%s/generate", h.llmServiceURL)
-
 	req, err := http.NewRequestWithContext(ctx, "POST", fullLlmUrl, bytes.NewBuffer(payloadBytes))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Trace-ID", state.TraceID)
-
 	client := &http.Client{Timeout: 20 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("LLM servisi %d kodu döndürdü", resp.StatusCode)
 	}
@@ -520,7 +525,6 @@ func (h *EventHandler) generateLlmResponse(ctx context.Context, state *CallState
 	return strings.Trim(llmResp.Text, "\" \n\r"), nil
 }
 
-// --- Mevcut Diğer Yardımcı Fonksiyonlar ---
 func (h *EventHandler) getLanguageCode(event *CallEvent) string {
 	if event.Dialplan.MatchedUser != nil && event.Dialplan.MatchedUser.PreferredLanguageCode != nil && *event.Dialplan.MatchedUser.PreferredLanguageCode != "" {
 		return *event.Dialplan.MatchedUser.PreferredLanguageCode
@@ -535,10 +539,8 @@ func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay s
 	l.Info().Str("text", textToPlay).Msg("Metin sese dönüştürülüyor...")
 	speakerURL, useCloning := event.Dialplan.Action.ActionData.Data["speaker_wav_url"]
 	voiceSelector, useVoiceSelector := event.Dialplan.Action.ActionData.Data["voice_selector"]
-
 	ctx := metadata.AppendToOutgoingContext(context.Background(), "x-trace-id", event.TraceID)
 	languageCode := h.getLanguageCode(event)
-
 	ttsReq := &ttsv1.SynthesizeRequest{Text: textToPlay, LanguageCode: languageCode}
 	if useCloning && speakerURL != "" {
 		if !isAllowedSpeakerURL(speakerURL) {
@@ -551,7 +553,6 @@ func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay s
 	} else if useVoiceSelector && voiceSelector != "" {
 		ttsReq.VoiceSelector = &voiceSelector
 	}
-
 	ttsCtx, ttsCancel := context.WithTimeout(ctx, 20*time.Second)
 	defer ttsCancel()
 	ttsResp, err := h.ttsClient.Synthesize(ttsCtx, ttsReq)
@@ -561,7 +562,6 @@ func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay s
 		h.playAnnouncement(l, event, "ANNOUNCE_SYSTEM_ERROR", true)
 		return
 	}
-
 	audioBytes := ttsResp.GetAudioContent()
 	mediaType := "audio/mpeg"
 	if ttsResp.GetEngineUsed() != "sentiric-tts-edge-service" {
@@ -569,40 +569,25 @@ func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay s
 	}
 	encodedAudio := base64.StdEncoding.EncodeToString(audioBytes)
 	audioURI := fmt.Sprintf("data:%s;base64,%s", mediaType, encodedAudio)
-
 	mediaInfo := event.Media
 	rtpTarget := mediaInfo["caller_rtp_addr"].(string)
 	serverPort := uint32(mediaInfo["server_rtp_port"].(float64))
 	playReq := &mediav1.PlayAudioRequest{RtpTargetAddr: rtpTarget, ServerRtpPort: serverPort, AudioUri: audioURI}
 
-	playCtx, playCancel := context.WithTimeout(ctx, 60*time.Second) // Timeout'u 60 saniyeye çıkar
+	// DÜZELTME: Timeout'u 60 saniyeye çıkar
+	playCtx, playCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer playCancel()
-
 	if waitForCompletion {
 		_, err = h.mediaClient.PlayAudio(playCtx, playReq)
 	} else {
-		// --- YENİ NON-BLOCKING YAKLAŞIM ---
 		go func() {
-			// Arka planda çalışacak bu goroutine için kendi context'ini oluştur.
-			// Ana fonksiyonun context'ine bağlı kalmasın.
-			bgCtx := context.Background()
-			bgCtx = metadata.AppendToOutgoingContext(bgCtx, "x-trace-id", event.TraceID)
-
-			// Timeout'u çok daha uzun tutabiliriz, çünkü bu artık ana akışı bloke etmiyor.
-			playCtx, playCancel := context.WithTimeout(bgCtx, 5*time.Minute)
-			defer playCancel()
-
-			_, err := h.mediaClient.PlayAudio(playCtx, playReq)
+			_, err := h.mediaClient.PlayAudio(context.Background(), playReq)
 			if err != nil {
-				// Arka plan loglaması için kendi logger'ını kullan.
-				h.log.Error().Err(err).Str("call_id", event.CallID).Msg("Hata: Arka plan TTS sesi çalınamadı")
+				l.Error().Err(err).Msg("Hata: Arka plan TTS sesi çalınamadı")
 			}
 		}()
-		err = nil // Ana fonksiyona hata döndürme, çünkü işlem arka plana atıldı.
 	}
-
-	// waitForCompletion false ise bu hata kontrolü artık anlamsız.
-	if waitForCompletion && err != nil {
+	if err != nil {
 		l.Error().Err(err).Msg("Hata: Dinamik ses (TTS) çalınamadı")
 		h.eventsFailed.WithLabelValues(event.EventType, "play_tts_audio_failed").Inc()
 	}
@@ -621,17 +606,14 @@ func (h *EventHandler) playAnnouncement(l zerolog.Logger, event *CallEvent, anno
 			return
 		}
 	}
-
 	audioURI := fmt.Sprintf("file:///%s", audioPath)
 	mediaInfo := event.Media
 	rtpTarget := mediaInfo["caller_rtp_addr"].(string)
 	serverPort := uint32(mediaInfo["server_rtp_port"].(float64))
-
 	ctx := metadata.AppendToOutgoingContext(context.Background(), "x-trace-id", event.TraceID)
 	playCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	playReq := &mediav1.PlayAudioRequest{RtpTargetAddr: rtpTarget, ServerRtpPort: serverPort, AudioUri: audioURI}
-
 	if waitForCompletion {
 		_, err = h.mediaClient.PlayAudio(playCtx, playReq)
 	} else {
@@ -656,7 +638,6 @@ func (h *EventHandler) generateWelcomeText(l zerolog.Logger, event *CallEvent) (
 	} else {
 		promptID = "PROMPT_WELCOME_GUEST"
 	}
-
 	promptTemplate, err := database.GetTemplateFromDB(h.db, promptID, languageCode)
 	if err != nil {
 		l.Error().Err(err).Msg("Prompt şablonu veritabanından alınamadı.")
