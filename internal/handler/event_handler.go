@@ -258,7 +258,7 @@ func (h *EventHandler) runDialogLoop(ctx context.Context, initialState *CallStat
 
 func (h *EventHandler) stateFnWelcoming(ctx context.Context, state *CallState) (*CallState, error) {
 	l := h.log.With().Str("call_id", state.CallID).Logger()
-	h.playAnnouncement(l, state.Event, "ANNOUNCE_SYSTEM_CONNECTING", true)
+	h.playAnnouncement(l, state.Event, "ANNOUNCE_SYSTEM_CONNECTING", true) // Bağlanıyor anonsu bitmeli.
 
 	welcomeText, err := h.generateWelcomeText(l, state.Event)
 	if err != nil {
@@ -266,8 +266,8 @@ func (h *EventHandler) stateFnWelcoming(ctx context.Context, state *CallState) (
 	}
 	state.Conversation = append(state.Conversation, map[string]string{"ai": welcomeText})
 
-	// --- DEĞİŞİKLİK: Artık AI konuşurken beklemiyoruz ---
-	h.playText(l, state.Event, welcomeText, false)
+	// --- DEĞİŞİKLİK BURADA: Artık AI konuşurken beklemiyoruz ---
+	h.playText(l, state.Event, welcomeText, false) // waitForCompletion = false
 	// --- DEĞİŞİKLİK SONU ---
 
 	state.CurrentState = StateListening
@@ -317,8 +317,8 @@ func (h *EventHandler) stateFnSpeaking(ctx context.Context, state *CallState) (*
 	lastAiMessage := state.Conversation[len(state.Conversation)-1]["ai"]
 	l.Info().Str("text", lastAiMessage).Msg("AI yanıtı seslendiriliyor...")
 
-	// --- DEĞİŞİKLİK: Artık AI konuşurken beklemiyoruz ---
-	h.playText(l, state.Event, lastAiMessage, false)
+	// --- DEĞİŞİKLİK BURADA: Artık AI konuşurken beklemiyoruz ---
+	h.playText(l, state.Event, lastAiMessage, false) // waitForCompletion = false
 	// --- DEĞİŞİKLİK SONU ---
 
 	state.CurrentState = StateListening
