@@ -150,16 +150,13 @@ func (h *EventHandler) handleCallStarted(l zerolog.Logger, event *CallEvent) {
 	}
 	activeCallContexts.m[event.CallID] = cancel
 	activeCallContexts.Unlock()
-
-	// Goroutine bittiğinde context'i temizlediğimizden emin olalım
 	defer func() {
 		activeCallContexts.Lock()
 		delete(activeCallContexts.m, event.CallID)
 		activeCallContexts.Unlock()
-		cancel() // cancel'ı burada çağırmak, tüm alt context'lerin temizlenmesini sağlar
+		cancel()
 		l.Info().Msg("Çağrı context'i temizlendi.")
 	}()
-
 	state, err := h.getCallState(ctx, event.CallID)
 	if err != nil {
 		l.Error().Err(err).Msg("Redis'ten durum alınamadı.")
@@ -189,10 +186,8 @@ func (h *EventHandler) handleCallEnded(l zerolog.Logger, event *CallEvent) {
 	if cancel, ok := activeCallContexts.m[event.CallID]; ok {
 		l.Info().Msg("Aktif diyalog döngüsü için iptal sinyali gönderiliyor.")
 		cancel()
-		// Map'ten silme işlemini artık defer'de handleCallStarted'da yapıyoruz.
 	}
 	activeCallContexts.Unlock()
-
 	state, err := h.getCallState(context.Background(), event.CallID)
 	if err != nil || state == nil {
 		l.Warn().Err(err).Msg("Sonlanan çağrı için aktif bir durum bulunamadı.")
@@ -207,7 +202,6 @@ func (h *EventHandler) handleCallEnded(l zerolog.Logger, event *CallEvent) {
 func (h *EventHandler) runDialogLoop(ctx context.Context, initialState *CallState) {
 	currentCallID := initialState.CallID
 	l := h.log.With().Str("call_id", currentCallID).Str("trace_id", initialState.TraceID).Logger()
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -262,7 +256,68 @@ func (h *EventHandler) runDialogLoop(ctx context.Context, initialState *CallStat
 	}
 }
 
-// --- recordAudio FONKSİYONUNUN TAMAMEN YENİ HALİ ---
+func (h *EventHandler) stateFnWelcoming(ctx context.Context, state *CallState) (*CallState, error) {
+	l := h.log.With().Str("call_id", state.CallID).Logger()
+	h.playAnnouncement(l, state.Event, "ANNOUNCE_SYSTEM_CONNECTING", true)
+	welcomeText, err := h.generateWelcomeText(l, state.Event)
+	if err != nil {
+		return state, err
+	}
+	state.Conversation = append(state.Conversation, map[string]string{"ai": welcomeText})
+	h.playText(l, state.Event, welcomeText, true)
+	state.CurrentState = StateListening
+	return state, nil
+}
+
+func (h *EventHandler) stateFnListening(ctx context.Context, state *CallState) (*CallState, error) {
+	l := h.log.With().Str("call_id", state.CallID).Logger()
+	l.Info().Msg("Kullanıcıdan ses bekleniyor...")
+	audioData, err := h.recordAudio(ctx, state)
+	if err != nil {
+		return state, fmt.Errorf("ses kaydı alınamadı: %w", err)
+	}
+	if len(audioData) == 0 {
+		l.Warn().Msg("Kullanıcı konuşmadı veya boş ses verisi alındı. Tekrar dinleniyor.")
+		return state, nil
+	}
+	transcribedText, err := h.transcribeAudio(ctx, state, audioData)
+	if err != nil {
+		return state, fmt.Errorf("ses metne çevrilemedi: %w", err)
+	}
+	state.Conversation = append(state.Conversation, map[string]string{"user": transcribedText})
+	state.CurrentState = StateThinking
+	return state, nil
+}
+
+func (h *EventHandler) stateFnThinking(ctx context.Context, state *CallState) (*CallState, error) {
+	l := h.log.With().Str("call_id", state.CallID).Logger()
+	l.Info().Msg("LLM'den yanıt üretiliyor...")
+	prompt := h.buildLlmPrompt(state.Conversation)
+
+	select {
+	case <-ctx.Done():
+		return nil, context.Canceled
+	default:
+	}
+
+	llmRespText, err := h.generateLlmResponse(ctx, state, prompt)
+	if err != nil {
+		return state, fmt.Errorf("LLM yanıtı üretilemedi: %w", err)
+	}
+	state.Conversation = append(state.Conversation, map[string]string{"ai": llmRespText})
+	state.CurrentState = StateSpeaking
+	return state, nil
+}
+
+func (h *EventHandler) stateFnSpeaking(ctx context.Context, state *CallState) (*CallState, error) {
+	l := h.log.With().Str("call_id", state.CallID).Logger()
+	lastAiMessage := state.Conversation[len(state.Conversation)-1]["ai"]
+	l.Info().Str("text", lastAiMessage).Msg("AI yanıtı seslendiriliyor...")
+	h.playText(l, state.Event, lastAiMessage, true)
+	state.CurrentState = StateListening
+	return state, nil
+}
+
 func (h *EventHandler) recordAudio(ctx context.Context, state *CallState) ([]byte, error) {
 	l := h.log.With().Str("call_id", state.CallID).Logger()
 	grpcCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", state.TraceID)
@@ -272,26 +327,19 @@ func (h *EventHandler) recordAudio(ctx context.Context, state *CallState) ([]byt
 	if err != nil {
 		return nil, err
 	}
-
 	l.Info().Msg("Ses kaydı stream'i açıldı, VAD döngüsü başlıyor...")
-
 	const listeningTimeout = 15 * time.Second
 	const silenceThresholdDuration = 1 * time.Second
 	const speechStartThreshold = 20
-
 	var audioData bytes.Buffer
 	var speechStarted bool
-
 	silenceTimer := time.NewTimer(silenceThresholdDuration)
 	if !silenceTimer.Stop() {
 		<-silenceTimer.C
 	}
-
 	timeoutTimer := time.NewTimer(listeningTimeout)
 	defer timeoutTimer.Stop()
-
 	for {
-		// Her döngüde bir ses paketi beklemek için bir kanal kullanıyoruz
 		chunkChan := make(chan *mediav1.AudioChunk, 1)
 		errChan := make(chan error, 1)
 		go func() {
@@ -302,12 +350,10 @@ func (h *EventHandler) recordAudio(ctx context.Context, state *CallState) ([]byt
 			}
 			chunkChan <- chunk
 		}()
-
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-timeoutTimer.C:
-			// Eğer konuşma başlamışsa, bu zaman aşımı sessizlik anlamına gelir
 			if speechStarted {
 				l.Info().Msg("Genel zaman aşımı sırasında konuşma algılandığı için kayıt tamamlandı.")
 				return audioData.Bytes(), nil
@@ -345,59 +391,6 @@ func (h *EventHandler) recordAudio(ctx context.Context, state *CallState) ([]byt
 			}
 		}
 	}
-}
-
-// ... (kalan tüm fonksiyonlar aynı, değişiklik yok)
-func (h *EventHandler) stateFnWelcoming(ctx context.Context, state *CallState) (*CallState, error) {
-	l := h.log.With().Str("call_id", state.CallID).Logger()
-	h.playAnnouncement(l, state.Event, "ANNOUNCE_SYSTEM_CONNECTING", true)
-	welcomeText, err := h.generateWelcomeText(l, state.Event)
-	if err != nil {
-		return state, err
-	}
-	state.Conversation = append(state.Conversation, map[string]string{"ai": welcomeText})
-	h.playText(l, state.Event, welcomeText, true)
-	state.CurrentState = StateListening
-	return state, nil
-}
-func (h *EventHandler) stateFnListening(ctx context.Context, state *CallState) (*CallState, error) {
-	l := h.log.With().Str("call_id", state.CallID).Logger()
-	l.Info().Msg("Kullanıcıdan ses bekleniyor...")
-	audioData, err := h.recordAudio(ctx, state)
-	if err != nil {
-		return state, fmt.Errorf("ses kaydı alınamadı: %w", err)
-	}
-	if len(audioData) == 0 {
-		l.Warn().Msg("Kullanıcı konuşmadı veya boş ses verisi alındı. Tekrar dinleniyor.")
-		return state, nil
-	}
-	transcribedText, err := h.transcribeAudio(ctx, state, audioData)
-	if err != nil {
-		return state, fmt.Errorf("ses metne çevrilemedi: %w", err)
-	}
-	state.Conversation = append(state.Conversation, map[string]string{"user": transcribedText})
-	state.CurrentState = StateThinking
-	return state, nil
-}
-func (h *EventHandler) stateFnThinking(ctx context.Context, state *CallState) (*CallState, error) {
-	l := h.log.With().Str("call_id", state.CallID).Logger()
-	l.Info().Msg("LLM'den yanıt üretiliyor...")
-	prompt := h.buildLlmPrompt(state.Conversation)
-	llmRespText, err := h.generateLlmResponse(ctx, state, prompt)
-	if err != nil {
-		return state, fmt.Errorf("LLM yanıtı üretilemedi: %w", err)
-	}
-	state.Conversation = append(state.Conversation, map[string]string{"ai": llmRespText})
-	state.CurrentState = StateSpeaking
-	return state, nil
-}
-func (h *EventHandler) stateFnSpeaking(ctx context.Context, state *CallState) (*CallState, error) {
-	l := h.log.With().Str("call_id", state.CallID).Logger()
-	lastAiMessage := state.Conversation[len(state.Conversation)-1]["ai"]
-	l.Info().Str("text", lastAiMessage).Msg("AI yanıtı seslendiriliyor...")
-	h.playText(l, state.Event, lastAiMessage, true)
-	state.CurrentState = StateListening
-	return state, nil
 }
 
 var ulawToPcmTable [256]int16
