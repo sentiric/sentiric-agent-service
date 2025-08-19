@@ -294,7 +294,9 @@ func (h *EventHandler) stateFnSpeaking(ctx context.Context, state *CallState) (*
 
 func (h *EventHandler) recordAudio(ctx context.Context, state *CallState) ([]byte, error) {
 	l := h.log.With().Str("call_id", state.CallID).Logger()
-	grpcCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+
+	// --- DÜZELTME: Süre sınırı olmayan bir context kullan ---
+	grpcCtx, cancel := context.WithCancel(ctx) // WithTimeout yerine WithCancel
 	defer cancel()
 	grpcCtx = metadata.AppendToOutgoingContext(grpcCtx, "x-trace-id", state.TraceID)
 
@@ -318,6 +320,7 @@ func (h *EventHandler) recordAudio(ctx context.Context, state *CallState) ([]byt
 		}
 		if err != nil {
 			st, _ := status.FromError(err)
+			// Canceled ve DeadlineExceeded normal durumlar olabilir, bunları hata olarak loglama
 			if st.Code() == codes.Canceled || st.Code() == codes.DeadlineExceeded {
 				l.Warn().Msg("Ses kaydı stream'i zaman aşımı veya iptal nedeniyle sonlandı.")
 				break
@@ -554,20 +557,34 @@ func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay s
 	serverPort := uint32(mediaInfo["server_rtp_port"].(float64))
 	playReq := &mediav1.PlayAudioRequest{RtpTargetAddr: rtpTarget, ServerRtpPort: serverPort, AudioUri: audioURI}
 
-	playCtx, playCancel := context.WithTimeout(ctx, 30*time.Second)
+	playCtx, playCancel := context.WithTimeout(ctx, 60*time.Second) // Timeout'u 60 saniyeye çıkar
 	defer playCancel()
 
 	if waitForCompletion {
 		_, err = h.mediaClient.PlayAudio(playCtx, playReq)
 	} else {
+		// --- YENİ NON-BLOCKING YAKLAŞIM ---
 		go func() {
-			_, err := h.mediaClient.PlayAudio(context.Background(), playReq)
+			// Arka planda çalışacak bu goroutine için kendi context'ini oluştur.
+			// Ana fonksiyonun context'ine bağlı kalmasın.
+			bgCtx := context.Background()
+			bgCtx = metadata.AppendToOutgoingContext(bgCtx, "x-trace-id", event.TraceID)
+
+			// Timeout'u çok daha uzun tutabiliriz, çünkü bu artık ana akışı bloke etmiyor.
+			playCtx, playCancel := context.WithTimeout(bgCtx, 5*time.Minute)
+			defer playCancel()
+
+			_, err := h.mediaClient.PlayAudio(playCtx, playReq)
 			if err != nil {
-				l.Error().Err(err).Msg("Hata: Arka plan TTS sesi çalınamadı")
+				// Arka plan loglaması için kendi logger'ını kullan.
+				h.log.Error().Err(err).Str("call_id", event.CallID).Msg("Hata: Arka plan TTS sesi çalınamadı")
 			}
 		}()
+		err = nil // Ana fonksiyona hata döndürme, çünkü işlem arka plana atıldı.
 	}
-	if err != nil {
+
+	// waitForCompletion false ise bu hata kontrolü artık anlamsız.
+	if waitForCompletion && err != nil {
 		l.Error().Err(err).Msg("Hata: Dinamik ses (TTS) çalınamadı")
 		h.eventsFailed.WithLabelValues(event.EventType, "play_tts_audio_failed").Inc()
 	}
