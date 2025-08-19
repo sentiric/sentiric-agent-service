@@ -259,12 +259,17 @@ func (h *EventHandler) runDialogLoop(ctx context.Context, initialState *CallStat
 func (h *EventHandler) stateFnWelcoming(ctx context.Context, state *CallState) (*CallState, error) {
 	l := h.log.With().Str("call_id", state.CallID).Logger()
 	h.playAnnouncement(l, state.Event, "ANNOUNCE_SYSTEM_CONNECTING", true)
+
 	welcomeText, err := h.generateWelcomeText(l, state.Event)
 	if err != nil {
 		return state, err
 	}
 	state.Conversation = append(state.Conversation, map[string]string{"ai": welcomeText})
-	h.playText(l, state.Event, welcomeText, false) // Artık beklemiyoruz
+
+	// --- DEĞİŞİKLİK: Artık AI konuşurken beklemiyoruz ---
+	h.playText(l, state.Event, welcomeText, false)
+	// --- DEĞİŞİKLİK SONU ---
+
 	state.CurrentState = StateListening
 	return state, nil
 }
@@ -311,7 +316,11 @@ func (h *EventHandler) stateFnSpeaking(ctx context.Context, state *CallState) (*
 	l := h.log.With().Str("call_id", state.CallID).Logger()
 	lastAiMessage := state.Conversation[len(state.Conversation)-1]["ai"]
 	l.Info().Str("text", lastAiMessage).Msg("AI yanıtı seslendiriliyor...")
-	h.playText(l, state.Event, lastAiMessage, false) // Artık beklemiyoruz
+
+	// --- DEĞİŞİKLİK: Artık AI konuşurken beklemiyoruz ---
+	h.playText(l, state.Event, lastAiMessage, false)
+	// --- DEĞİŞİKLİK SONU ---
+
 	state.CurrentState = StateListening
 	return state, nil
 }
