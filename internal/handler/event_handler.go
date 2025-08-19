@@ -150,13 +150,23 @@ func (h *EventHandler) handleCallStarted(l zerolog.Logger, event *CallEvent) {
 	}
 	activeCallContexts.m[event.CallID] = cancel
 	activeCallContexts.Unlock()
+
+	// Goroutine bittiğinde context'i temizlediğimizden emin olalım
+	defer func() {
+		activeCallContexts.Lock()
+		delete(activeCallContexts.m, event.CallID)
+		activeCallContexts.Unlock()
+		cancel() // cancel'ı burada çağırmak, tüm alt context'lerin temizlenmesini sağlar
+		l.Info().Msg("Çağrı context'i temizlendi.")
+	}()
+
 	state, err := h.getCallState(ctx, event.CallID)
 	if err != nil {
 		l.Error().Err(err).Msg("Redis'ten durum alınamadı.")
 		return
 	}
 	if state != nil {
-		l.Warn().Msg("Bu çağrı için zaten aktif bir durum makinesi var, yeni bir tane başlatılmıyor.")
+		l.Warn().Msg("Bu çağrı için zaten aktif bir Redis durumu var, yeni bir tane başlatılmıyor.")
 		return
 	}
 	initialState := &CallState{
@@ -168,10 +178,6 @@ func (h *EventHandler) handleCallStarted(l zerolog.Logger, event *CallEvent) {
 	}
 	if err := h.setCallState(ctx, initialState); err != nil {
 		l.Error().Err(err).Msg("Redis'e başlangıç durumu yazılamadı.")
-		activeCallContexts.Lock()
-		delete(activeCallContexts.m, event.CallID)
-		activeCallContexts.Unlock()
-		cancel()
 		return
 	}
 	h.runDialogLoop(ctx, initialState)
@@ -179,21 +185,21 @@ func (h *EventHandler) handleCallStarted(l zerolog.Logger, event *CallEvent) {
 
 func (h *EventHandler) handleCallEnded(l zerolog.Logger, event *CallEvent) {
 	l.Info().Msg("Çağrı sonlandı, durum makinesi durduruluyor...")
-	ctx := context.Background()
 	activeCallContexts.Lock()
 	if cancel, ok := activeCallContexts.m[event.CallID]; ok {
 		l.Info().Msg("Aktif diyalog döngüsü için iptal sinyali gönderiliyor.")
 		cancel()
-		delete(activeCallContexts.m, event.CallID)
+		// Map'ten silme işlemini artık defer'de handleCallStarted'da yapıyoruz.
 	}
 	activeCallContexts.Unlock()
-	state, err := h.getCallState(ctx, event.CallID)
+
+	state, err := h.getCallState(context.Background(), event.CallID)
 	if err != nil || state == nil {
 		l.Warn().Err(err).Msg("Sonlanan çağrı için aktif bir durum bulunamadı.")
 		return
 	}
 	state.CurrentState = StateEnded
-	if err := h.setCallState(ctx, state); err != nil {
+	if err := h.setCallState(context.Background(), state); err != nil {
 		l.Error().Err(err).Msg("Redis'e 'Ended' durumu yazılamadı.")
 	}
 }
@@ -201,12 +207,7 @@ func (h *EventHandler) handleCallEnded(l zerolog.Logger, event *CallEvent) {
 func (h *EventHandler) runDialogLoop(ctx context.Context, initialState *CallState) {
 	currentCallID := initialState.CallID
 	l := h.log.With().Str("call_id", currentCallID).Str("trace_id", initialState.TraceID).Logger()
-	defer func() {
-		activeCallContexts.Lock()
-		delete(activeCallContexts.m, currentCallID)
-		activeCallContexts.Unlock()
-		l.Info().Msg("Diyalog döngüsü sonlandı ve context temizlendi.")
-	}()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -261,6 +262,92 @@ func (h *EventHandler) runDialogLoop(ctx context.Context, initialState *CallStat
 	}
 }
 
+// --- recordAudio FONKSİYONUNUN TAMAMEN YENİ HALİ ---
+func (h *EventHandler) recordAudio(ctx context.Context, state *CallState) ([]byte, error) {
+	l := h.log.With().Str("call_id", state.CallID).Logger()
+	grpcCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", state.TraceID)
+	stream, err := h.mediaClient.RecordAudio(grpcCtx, &mediav1.RecordAudioRequest{
+		ServerRtpPort: uint32(state.Event.Media["server_rtp_port"].(float64)),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	l.Info().Msg("Ses kaydı stream'i açıldı, VAD döngüsü başlıyor...")
+
+	const listeningTimeout = 15 * time.Second
+	const silenceThresholdDuration = 1 * time.Second
+	const speechStartThreshold = 20
+
+	var audioData bytes.Buffer
+	var speechStarted bool
+
+	silenceTimer := time.NewTimer(silenceThresholdDuration)
+	if !silenceTimer.Stop() {
+		<-silenceTimer.C
+	}
+
+	timeoutTimer := time.NewTimer(listeningTimeout)
+	defer timeoutTimer.Stop()
+
+	for {
+		// Her döngüde bir ses paketi beklemek için bir kanal kullanıyoruz
+		chunkChan := make(chan *mediav1.AudioChunk, 1)
+		errChan := make(chan error, 1)
+		go func() {
+			chunk, err := stream.Recv()
+			if err != nil {
+				errChan <- err
+				return
+			}
+			chunkChan <- chunk
+		}()
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timeoutTimer.C:
+			// Eğer konuşma başlamışsa, bu zaman aşımı sessizlik anlamına gelir
+			if speechStarted {
+				l.Info().Msg("Genel zaman aşımı sırasında konuşma algılandığı için kayıt tamamlandı.")
+				return audioData.Bytes(), nil
+			}
+			l.Warn().Msg("Dinleme zaman aşımına uğradı, kullanıcı hiç konuşmadı.")
+			return nil, nil
+		case <-silenceTimer.C:
+			l.Info().Msg("Sessizlik eşiğine ulaşıldı, kayıt tamamlandı.")
+			return audioData.Bytes(), nil
+		case err := <-errChan:
+			if err == io.EOF {
+				l.Info().Msg("Media-service stream'i kapattı (EOF).")
+				return audioData.Bytes(), nil
+			}
+			st, _ := status.FromError(err)
+			if st.Code() == codes.Canceled {
+				l.Warn().Msg("Ses kaydı stream'i context iptali nedeniyle sonlandı.")
+				return nil, context.Canceled
+			}
+			return nil, fmt.Errorf("stream'den okuma hatası: %w", err)
+		case chunk := <-chunkChan:
+			audioData.Write(chunk.AudioData)
+			if len(chunk.AudioData) > speechStartThreshold {
+				if !speechStarted {
+					l.Info().Msg("Konuşma aktivitesi tespit edildi.")
+					speechStarted = true
+				}
+				if !silenceTimer.Stop() {
+					select {
+					case <-silenceTimer.C:
+					default:
+					}
+				}
+				silenceTimer.Reset(silenceThresholdDuration)
+			}
+		}
+	}
+}
+
+// ... (kalan tüm fonksiyonlar aynı, değişiklik yok)
 func (h *EventHandler) stateFnWelcoming(ctx context.Context, state *CallState) (*CallState, error) {
 	l := h.log.With().Str("call_id", state.CallID).Logger()
 	h.playAnnouncement(l, state.Event, "ANNOUNCE_SYSTEM_CONNECTING", true)
@@ -273,7 +360,6 @@ func (h *EventHandler) stateFnWelcoming(ctx context.Context, state *CallState) (
 	state.CurrentState = StateListening
 	return state, nil
 }
-
 func (h *EventHandler) stateFnListening(ctx context.Context, state *CallState) (*CallState, error) {
 	l := h.log.With().Str("call_id", state.CallID).Logger()
 	l.Info().Msg("Kullanıcıdan ses bekleniyor...")
@@ -293,7 +379,6 @@ func (h *EventHandler) stateFnListening(ctx context.Context, state *CallState) (
 	state.CurrentState = StateThinking
 	return state, nil
 }
-
 func (h *EventHandler) stateFnThinking(ctx context.Context, state *CallState) (*CallState, error) {
 	l := h.log.With().Str("call_id", state.CallID).Logger()
 	l.Info().Msg("LLM'den yanıt üretiliyor...")
@@ -306,7 +391,6 @@ func (h *EventHandler) stateFnThinking(ctx context.Context, state *CallState) (*
 	state.CurrentState = StateSpeaking
 	return state, nil
 }
-
 func (h *EventHandler) stateFnSpeaking(ctx context.Context, state *CallState) (*CallState, error) {
 	l := h.log.With().Str("call_id", state.CallID).Logger()
 	lastAiMessage := state.Conversation[len(state.Conversation)-1]["ai"]
@@ -316,83 +400,6 @@ func (h *EventHandler) stateFnSpeaking(ctx context.Context, state *CallState) (*
 	return state, nil
 }
 
-// --- recordAudio FONKSİYONUNUN TAMAMEN YENİ HALİ ---
-func (h *EventHandler) recordAudio(ctx context.Context, state *CallState) ([]byte, error) {
-	l := h.log.With().Str("call_id", state.CallID).Logger()
-	grpcCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", state.TraceID)
-	stream, err := h.mediaClient.RecordAudio(grpcCtx, &mediav1.RecordAudioRequest{
-		ServerRtpPort: uint32(state.Event.Media["server_rtp_port"].(float64)),
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	l.Info().Msg("Ses kaydı stream'i açıldı, VAD döngüsü başlıyor...")
-
-	const listeningTimeout = 15 * time.Second        // Kullanıcının konuşmaya başlaması için toplam bekleme süresi
-	const silenceThresholdDuration = 1 * time.Second // Konuşma bittikten sonra ne kadar sessizlik bekleneceği
-	const speechStartThreshold = 20                  // Bir chunk'ın "konuşma" sayılması için minimum byte sayısı
-
-	var audioData bytes.Buffer
-	var speechStarted bool
-
-	// Sessizlik zamanlayıcısını başlat ama durdurulmuş olarak
-	silenceTimer := time.NewTimer(silenceThresholdDuration)
-	if !silenceTimer.Stop() {
-		<-silenceTimer.C
-	}
-
-	// Genel dinleme zaman aşımını ayarla
-	timeoutTimer := time.NewTimer(listeningTimeout)
-	defer timeoutTimer.Stop()
-
-	for {
-		select {
-		case <-ctx.Done(): // Çağrı sonlandı mı?
-			return nil, ctx.Err()
-		case <-timeoutTimer.C: // Kullanıcı hiç konuşmadı mı?
-			l.Warn().Msg("Dinleme zaman aşımına uğradı, kullanıcı konuşmadı.")
-			return nil, nil // Boş data, hata değil
-		case <-silenceTimer.C: // Kullanıcı konuşmayı bitirdi mi?
-			l.Info().Msg("Sessizlik eşiğine ulaşıldı, kayıt tamamlandı.")
-			return audioData.Bytes(), nil
-		default:
-			chunk, err := stream.Recv()
-			if err != nil {
-				if err == io.EOF {
-					l.Info().Msg("Media-service stream'i kapattı (EOF).")
-					return audioData.Bytes(), nil
-				}
-				st, _ := status.FromError(err)
-				if st.Code() == codes.Canceled {
-					l.Warn().Msg("Ses kaydı stream'i context iptali nedeniyle sonlandı.")
-					return nil, context.Canceled
-				}
-				return nil, fmt.Errorf("stream'den okuma hatası: %w", err)
-			}
-
-			audioData.Write(chunk.AudioData)
-
-			// Konuşma başladı mı ve devam ediyor mu kontrolü
-			if len(chunk.AudioData) > speechStartThreshold {
-				if !speechStarted {
-					l.Info().Msg("Konuşma aktivitesi tespit edildi.")
-					speechStarted = true
-				}
-				// Konuşma devam ettiği sürece sessizlik sayacını sıfırla
-				if !silenceTimer.Stop() {
-					select {
-					case <-silenceTimer.C:
-					default:
-					}
-				}
-				silenceTimer.Reset(silenceThresholdDuration)
-			}
-		}
-	}
-}
-
-// ... (dosyanın geri kalanı tamamen aynı)
 var ulawToPcmTable [256]int16
 
 func init() {
