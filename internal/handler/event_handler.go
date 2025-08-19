@@ -189,40 +189,58 @@ func (h *EventHandler) handleCallEnded(l zerolog.Logger, event *CallEvent) {
 	}
 }
 
-// --- YENİ FONKSİYON: Ana Diyalog Döngüsü ---
+// sentiric-agent-service/internal/handler/event_handler.go -> runDialogLoop fonksiyonu
+
 func (h *EventHandler) runDialogLoop(initialState *CallState) {
 	ctx := context.Background()
-	state := initialState
-	l := h.log.With().Str("call_id", state.CallID).Str("trace_id", state.TraceID).Logger()
+	currentCallID := initialState.CallID // Sadece ID'yi al
+	l := h.log.With().Str("call_id", currentCallID).Str("trace_id", initialState.TraceID).Logger()
 
-	for state.CurrentState != StateEnded && state.CurrentState != StateTerminated {
+	for { // Sonsuz döngü, çıkış koşulları içeride yönetilecek
+		// --- KRİTİK DEĞİŞİKLİK: Her döngünün başında durumu Redis'ten oku ---
+		state, err := h.getCallState(ctx, currentCallID)
+		if err != nil || state == nil {
+			l.Error().Err(err).Msg("Döngü için durum Redis'ten alınamadı veya nil, döngü sonlandırılıyor.")
+			break
+		}
+		// --- DEĞİŞİKLİK SONU ---
+
+		// Çıkış koşulunu döngünün en başına taşı
+		if state.CurrentState == StateEnded || state.CurrentState == StateTerminated {
+			l.Info().Str("final_state", string(state.CurrentState)).Msg("Diyalog döngüsü sonlandırma durumuna ulaştı.")
+			break
+		}
+
 		l = l.With().Str("state", string(state.CurrentState)).Logger()
 		l.Info().Msg("Diyalog döngüsü adımı işleniyor.")
 
-		var err error
+		var nextState *CallState // Bir sonraki durumu tutmak için
 		switch state.CurrentState {
 		case StateWelcoming:
-			state, err = h.stateFnWelcoming(ctx, state)
+			nextState, err = h.stateFnWelcoming(ctx, state)
 		case StateListening:
-			state, err = h.stateFnListening(ctx, state)
+			nextState, err = h.stateFnListening(ctx, state)
 		case StateThinking:
-			state, err = h.stateFnThinking(ctx, state)
+			nextState, err = h.stateFnThinking(ctx, state)
 		case StateSpeaking:
-			state, err = h.stateFnSpeaking(ctx, state)
+			nextState, err = h.stateFnSpeaking(ctx, state)
 		default:
 			l.Error().Msg("Bilinmeyen durum, döngü sonlandırılıyor.")
 			state.CurrentState = StateTerminated
+			nextState = state
 		}
 
 		if err != nil {
 			l.Error().Err(err).Msg("Durum işlenirken hata oluştu, sonlandırma deneniyor.")
 			h.playAnnouncement(l, state.Event, "ANNOUNCE_SYSTEM_ERROR", true)
 			state.CurrentState = StateTerminated
+			nextState = state
 		}
 
-		if err := h.setCallState(ctx, state); err != nil {
+		// Bir sonraki durumu Redis'e yaz
+		if err := h.setCallState(ctx, nextState); err != nil {
 			l.Error().Err(err).Msg("Döngü içinde durum güncellenemedi, sonlandırılıyor.")
-			state.CurrentState = StateTerminated
+			break // Durum yazılamıyorsa döngüden çık
 		}
 	}
 	l.Info().Msg("Diyalog döngüsü tamamlandı.")
