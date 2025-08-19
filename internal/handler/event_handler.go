@@ -256,68 +256,6 @@ func (h *EventHandler) runDialogLoop(ctx context.Context, initialState *CallStat
 	}
 }
 
-func (h *EventHandler) stateFnWelcoming(ctx context.Context, state *CallState) (*CallState, error) {
-	l := h.log.With().Str("call_id", state.CallID).Logger()
-	h.playAnnouncement(l, state.Event, "ANNOUNCE_SYSTEM_CONNECTING", true)
-	welcomeText, err := h.generateWelcomeText(l, state.Event)
-	if err != nil {
-		return state, err
-	}
-	state.Conversation = append(state.Conversation, map[string]string{"ai": welcomeText})
-	h.playText(l, state.Event, welcomeText, true)
-	state.CurrentState = StateListening
-	return state, nil
-}
-
-func (h *EventHandler) stateFnListening(ctx context.Context, state *CallState) (*CallState, error) {
-	l := h.log.With().Str("call_id", state.CallID).Logger()
-	l.Info().Msg("Kullanıcıdan ses bekleniyor...")
-	audioData, err := h.recordAudio(ctx, state)
-	if err != nil {
-		return state, fmt.Errorf("ses kaydı alınamadı: %w", err)
-	}
-	if len(audioData) == 0 {
-		l.Warn().Msg("Kullanıcı konuşmadı veya boş ses verisi alındı. Tekrar dinleniyor.")
-		return state, nil
-	}
-	transcribedText, err := h.transcribeAudio(ctx, state, audioData)
-	if err != nil {
-		return state, fmt.Errorf("ses metne çevrilemedi: %w", err)
-	}
-	state.Conversation = append(state.Conversation, map[string]string{"user": transcribedText})
-	state.CurrentState = StateThinking
-	return state, nil
-}
-
-func (h *EventHandler) stateFnThinking(ctx context.Context, state *CallState) (*CallState, error) {
-	l := h.log.With().Str("call_id", state.CallID).Logger()
-	l.Info().Msg("LLM'den yanıt üretiliyor...")
-	prompt := h.buildLlmPrompt(state.Conversation)
-
-	select {
-	case <-ctx.Done():
-		return nil, context.Canceled
-	default:
-	}
-
-	llmRespText, err := h.generateLlmResponse(ctx, state, prompt)
-	if err != nil {
-		return state, fmt.Errorf("LLM yanıtı üretilemedi: %w", err)
-	}
-	state.Conversation = append(state.Conversation, map[string]string{"ai": llmRespText})
-	state.CurrentState = StateSpeaking
-	return state, nil
-}
-
-func (h *EventHandler) stateFnSpeaking(ctx context.Context, state *CallState) (*CallState, error) {
-	l := h.log.With().Str("call_id", state.CallID).Logger()
-	lastAiMessage := state.Conversation[len(state.Conversation)-1]["ai"]
-	l.Info().Str("text", lastAiMessage).Msg("AI yanıtı seslendiriliyor...")
-	h.playText(l, state.Event, lastAiMessage, true)
-	state.CurrentState = StateListening
-	return state, nil
-}
-
 func (h *EventHandler) recordAudio(ctx context.Context, state *CallState) ([]byte, error) {
 	l := h.log.With().Str("call_id", state.CallID).Logger()
 	grpcCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", state.TraceID)
@@ -391,6 +329,63 @@ func (h *EventHandler) recordAudio(ctx context.Context, state *CallState) ([]byt
 			}
 		}
 	}
+}
+
+func (h *EventHandler) stateFnWelcoming(ctx context.Context, state *CallState) (*CallState, error) {
+	l := h.log.With().Str("call_id", state.CallID).Logger()
+	h.playAnnouncement(l, state.Event, "ANNOUNCE_SYSTEM_CONNECTING", true)
+	welcomeText, err := h.generateWelcomeText(l, state.Event)
+	if err != nil {
+		return state, err
+	}
+	state.Conversation = append(state.Conversation, map[string]string{"ai": welcomeText})
+	h.playText(l, state.Event, welcomeText, true)
+	state.CurrentState = StateListening
+	return state, nil
+}
+func (h *EventHandler) stateFnListening(ctx context.Context, state *CallState) (*CallState, error) {
+	l := h.log.With().Str("call_id", state.CallID).Logger()
+	l.Info().Msg("Kullanıcıdan ses bekleniyor...")
+	audioData, err := h.recordAudio(ctx, state)
+	if err != nil {
+		return state, fmt.Errorf("ses kaydı alınamadı: %w", err)
+	}
+	if len(audioData) == 0 {
+		l.Warn().Msg("Kullanıcı konuşmadı veya boş ses verisi alındı. Tekrar dinleniyor.")
+		return state, nil
+	}
+	transcribedText, err := h.transcribeAudio(ctx, state, audioData)
+	if err != nil {
+		return state, fmt.Errorf("ses metne çevrilemedi: %w", err)
+	}
+	state.Conversation = append(state.Conversation, map[string]string{"user": transcribedText})
+	state.CurrentState = StateThinking
+	return state, nil
+}
+func (h *EventHandler) stateFnThinking(ctx context.Context, state *CallState) (*CallState, error) {
+	l := h.log.With().Str("call_id", state.CallID).Logger()
+	l.Info().Msg("LLM'den yanıt üretiliyor...")
+	prompt := h.buildLlmPrompt(state.Conversation)
+	select {
+	case <-ctx.Done():
+		return nil, context.Canceled
+	default:
+	}
+	llmRespText, err := h.generateLlmResponse(ctx, state, prompt)
+	if err != nil {
+		return state, fmt.Errorf("LLM yanıtı üretilemedi: %w", err)
+	}
+	state.Conversation = append(state.Conversation, map[string]string{"ai": llmRespText})
+	state.CurrentState = StateSpeaking
+	return state, nil
+}
+func (h *EventHandler) stateFnSpeaking(ctx context.Context, state *CallState) (*CallState, error) {
+	l := h.log.With().Str("call_id", state.CallID).Logger()
+	lastAiMessage := state.Conversation[len(state.Conversation)-1]["ai"]
+	l.Info().Str("text", lastAiMessage).Msg("AI yanıtı seslendiriliyor...")
+	h.playText(l, state.Event, lastAiMessage, true)
+	state.CurrentState = StateListening
+	return state, nil
 }
 
 var ulawToPcmTable [256]int16
@@ -576,13 +571,16 @@ func (h *EventHandler) playText(l zerolog.Logger, event *CallEvent, textToPlay s
 	rtpTarget := mediaInfo["caller_rtp_addr"].(string)
 	serverPort := uint32(mediaInfo["server_rtp_port"].(float64))
 	playReq := &mediav1.PlayAudioRequest{RtpTargetAddr: rtpTarget, ServerRtpPort: serverPort, AudioUri: audioURI}
-	playCtx, playCancel := context.WithTimeout(ctx, 60*time.Second)
+	playCtx, playCancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer playCancel()
 	if waitForCompletion {
 		_, err = h.mediaClient.PlayAudio(playCtx, playReq)
 	} else {
 		go func() {
-			_, err := h.mediaClient.PlayAudio(context.Background(), playReq)
+			bgCtx := metadata.AppendToOutgoingContext(context.Background(), "x-trace-id", event.TraceID)
+			playCtx, playCancel := context.WithTimeout(bgCtx, 5*time.Minute)
+			defer playCancel()
+			_, err := h.mediaClient.PlayAudio(playCtx, playReq)
 			if err != nil {
 				l.Error().Err(err).Msg("Hata: Arka plan TTS sesi çalınamadı")
 			}
