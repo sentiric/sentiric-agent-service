@@ -680,16 +680,3 @@ func (h *EventHandler) generateWelcomeText(l zerolog.Logger, event *CallEvent) (
 	}
 	return h.generateLlmResponse(context.Background(), &CallState{TraceID: event.TraceID}, prompt)
 }
-func (h *EventHandler) buildLlmPrompt(conversation []map[string]string) string {
-	var promptBuilder strings.Builder
-	promptBuilder.WriteString("Aşağıdaki diyaloğa devam et:\n")
-	for _, msg := range conversation {
-		if text, ok := msg["user"]; ok {
-			promptBuilder.WriteString(fmt.Sprintf("Kullanıcı: %s\n", text))
-		} else if text, ok := msg["ai"]; ok {
-			promptBuilder.WriteString(fmt.Sprintf("Asistan: %s\n", text))
-		}
-	}
-	promptBuilder.WriteString("Asistan: ")
-	return promptBuilder.String()
-}
