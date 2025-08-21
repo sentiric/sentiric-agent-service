@@ -1,38 +1,46 @@
-networks:
-  sentiric-net:
-    name: ${NETWORK_NAME:-sentiric-net}
-    driver: bridge
+# docker-compose.service.yml
 
+networks:
+  sentiric-net: { name: "${NETWORK_NAME:-sentiric-net}", driver: bridge }
+  
 volumes:
   postgres_data:
   rabbitmq_data:
   redis_data:
+  stt-model-cache:
 
 services:
+  # --- VERİ KATMANI ---
   postgres:
     image: postgres:16-alpine
-    env_file:
-      - ./.env.docker
+    env_file: ["${ENV_FILE_PATH}"]
+    ports: ["5432:5432"]
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ../sentiric-config/postgres-init:/docker-entrypoint-initdb.d
-    networks:
-      - sentiric-net
+      - ${CONFIG_REPO_PATH}/postgres-init:/docker-entrypoint-initdb.d
+    networks: [sentiric-net]
     restart: always
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
 
+  pgadmin:
+    image: dpage/pgadmin4
+    env_file: ["${ENV_FILE_PATH}"]
+    environment: { PGADMIN_DEFAULT_EMAIL: admin@example.com, PGADMIN_DEFAULT_PASSWORD: admin }
+    ports: ["8081:80"]
+    networks: [sentiric-net]
+    depends_on: { postgres: { condition: service_healthy } }
+    restart: always      
+
   rabbitmq:
     image: rabbitmq:4.1.0-management-alpine
-    env_file:
-      - ./.env.docker
-    volumes:
-      - rabbitmq_data:/var/lib/rabbitmq/
-    networks:
-      - sentiric-net
+    env_file: ["${ENV_FILE_PATH}"]
+    ports: ["15672:15672", "5672:5672"]
+    volumes: [rabbitmq_data:/var/lib/rabbitmq/]
+    networks: [sentiric-net]
     restart: always
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "ping"]
@@ -42,7 +50,9 @@ services:
   
   redis:
     image: redis:7-alpine
-    container_name: sentiric-redis-for-agent
+    env_file: ["${ENV_FILE_PATH}"]  
+    ports: ["6379:6379"]
+    volumes: [redis_data:/data]
     networks: [sentiric-net]
     restart: always
     healthcheck:
@@ -51,112 +61,41 @@ services:
       timeout: 5s
       retries: 5
 
-  agent-service:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        SERVICE_NAME: sentiric-agent-service
-    env_file:
-      - ./.env.docker
-    volumes:
-      - ../sentiric-config/tls/certs:/etc/sentiric/tls:ro
-    ports:
-      - "${METRICS_PORT_AGENT:-9091}:${METRICS_PORT_AGENT:-9091}"
-    networks:
-      - sentiric-net
-    restart: always
-    depends_on:
-      postgres:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      # KRİTİK DÜZELTME: agent-service, bu servislerin sağlıklı olmasını beklemeli
-      media-service:
-        condition: service_healthy
-      user-service:
-        condition: service_healthy
-      tts-gateway:
-        condition: service_healthy
-      stt-service:
-        condition: service_healthy
-      llm-service:
-        condition: service_healthy
-
-  # --- DİĞER SERVİSLER (AGENT'IN BAĞIMLI OLDUĞU) ---
-  
-  # YENİ: media-service ve user-service'i de bu profile ekliyoruz.
-  # Onlar olmadan agent başlayamaz.
-  media-service:
-    build:
-      context: ../sentiric-media-service
-    env_file: [".env.docker"]
-    volumes:
-      - ../sentiric-config/tls/certs:/etc/sentiric/tls:ro
-    networks: [sentiric-net]
-    restart: always
-    healthcheck:
-        test: ["CMD", "nc", "-z", "localhost", "50052"]
-        interval: 10s
-        timeout: 5s
-        retries: 5
-        start_period: 10s
-
+  # --- UYGULAMA SERVİSLERİ ---
   user-service:
-    build:
-      context: ../sentiric-user-service
-    env_file: [".env.docker"]
-    volumes:
-      - ../sentiric-config/tls/certs:/etc/sentiric/tls:ro
+    build: { context: ../sentiric-user-service }
+    env_file: ["${ENV_FILE_PATH}"]
+    volumes: ["${CONFIG_REPO_PATH}/tls/certs:/etc/sentiric/tls:ro"]
     networks: [sentiric-net]
     restart: always
+    depends_on: { postgres: { condition: service_healthy } }
     healthcheck:
-        test: ["CMD", "nc", "-z", "localhost", "50053"]
-        interval: 10s
-        timeout: 5s
-        retries: 5
-        start_period: 10s
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-  tts-gateway:
-    build: 
-      context: ../sentiric-tts-gateway-service
-    container_name: sentiric-tts-gateway-1
-    env_file: [".env.docker"]
-    networks: [sentiric-net]
-    restart: always
-    depends_on:
-      tts-coqui-service:
-        condition: service_healthy
-      tts-edge-service:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "50051"]
+      test: ["CMD", "nc", "-z", "localhost", "50053"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s    
 
-  tts-coqui-service:
-    build: { context: ../sentiric-tts-coqui-service }
-    container_name: sentiric-coqui-tts-1
-    env_file: [".env.docker"]
+  # --- TELEKOM & MEDYA KATMANI ---
+  media-service:
+    build: { context: ../sentiric-media-service }
+    env_file: ["${ENV_FILE_PATH}"]
+    volumes: ["${CONFIG_REPO_PATH}/tls/certs:/etc/sentiric/tls:ro"]
+    ports: ["${RTP_SERVICE_PORT_MIN}-${RTP_SERVICE_PORT_MAX}:${RTP_SERVICE_PORT_MIN}-${RTP_SERVICE_PORT_MAX}/udp"]
     networks: [sentiric-net]
     restart: always
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5002/health"]
-      interval: 30s
-      timeout: 10s
+      test: ["CMD", "nc", "-z", "localhost", "50052"]
+      interval: 10s
+      timeout: 5s
       retries: 5
-      start_period: 5m
+      start_period: 10s    
 
+  # --- SES ORKESTRASYON KATMANI ---
   tts-edge-service:
     build: { context: ../sentiric-tts-edge-service }
-    container_name: sentiric-edge-tts-1
-    env_file: [".env.docker"]
+    env_file: ["${ENV_FILE_PATH}"]
+    ports: ["${TTS_EDGE_SERVICE_PORT:-5006}:5006"]
     networks: [sentiric-net]
     restart: always
     healthcheck:
@@ -164,24 +103,42 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 30s    
+
+  tts-gateway:
+    build: { context: ../sentiric-tts-gateway-service }
+    env_file: ["${ENV_FILE_PATH}"]
+    volumes: ["${CONFIG_REPO_PATH}/tls/certs:/etc/sentiric/tls:ro"]
+    ports: ["${TTS_GATEWAY_PORT:-50051}:50051"]
+    networks: [sentiric-net]
+    restart: always
+    depends_on: { tts-edge-service: { condition: service_healthy } }
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "50051"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s    
 
   stt-service:
     build: { context: ../sentiric-stt-service }
-    container_name: sentiric-stt-1
-    env_file: [".env.docker"]
+    env_file: ["${ENV_FILE_PATH}"]
+    volumes: [stt-model-cache:/root/.cache]
+    ports: ["${STT_SERVICE_PORT:-5001}:5001"]
     networks: [sentiric-net]
     restart: always
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 2m
+      retries: 5
+      start_period: 3m        
 
+  # --- AI SERVİSLERİ ---
   llm-service:
     build: { context: ../sentiric-llm-service }
-    container_name: sentiric-llm-1
-    env_file: [".env.docker"]
+    env_file: ["${ENV_FILE_PATH}"]
+    ports: ["${LLM_SERVICE_PORT:-7860}:7860"]
     networks: [sentiric-net]
     restart: always
     healthcheck:
@@ -189,4 +146,24 @@ services:
         interval: 30s
         timeout: 10s
         retries: 5
-        start_period: 2m
+        start_period: 3m            
+
+  # --- PLATFORMUN BEYNİ: AGENT SERVICE ---
+  agent-service:
+    build: { context: ../sentiric-agent-service }
+    env_file: ["${ENV_FILE_PATH}"]
+    volumes: ["${CONFIG_REPO_PATH}/tls/certs:/etc/sentiric/tls:ro"]
+    ports: ["${METRICS_PORT_AGENT:-9091}:${METRICS_PORT_AGENT:-9091}"]
+    networks: [sentiric-net]
+    restart: always
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      media-service: { condition: service_healthy }
+      user-service: { condition: service_healthy }
+      tts-gateway: { condition: service_healthy }
+      stt-service: { condition: service_healthy }
+      llm-service: { condition: service_healthy }
+
+

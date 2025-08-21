@@ -16,7 +16,7 @@ COPY . .
 
 # Çıktı binary'sinin adını dinamik olarak almak için ARG kullanıyoruz.
 ARG SERVICE_NAME
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /app/bin/${SERVICE_NAME} ./cmd/agent-service
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /app/bin/sentiric-agent-service ./cmd/agent-service
 
 # --- ÇALIŞTIRMA AŞAMASI (ALPINE) ---
 FROM alpine:latest
