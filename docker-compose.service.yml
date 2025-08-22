@@ -10,9 +10,8 @@ volumes:
   stt-model-cache:
 
 services:
-  # --- VERİ KATMANI ---
   postgres:
-    image: postgres:16-alpine
+    build: { context: ../sentiric-postgres }
     env_file: ["${ENV_FILE_PATH}"]
     ports: ["5432:5432"]
     volumes:
@@ -27,16 +26,15 @@ services:
       retries: 5
 
   pgadmin:
-    image: dpage/pgadmin4
+    build: { context: ../sentiric-pgadmin }
     env_file: ["${ENV_FILE_PATH}"]
-    environment: { PGADMIN_DEFAULT_EMAIL: admin@example.com, PGADMIN_DEFAULT_PASSWORD: admin }
     ports: ["8081:80"]
     networks: [sentiric-net]
     depends_on: { postgres: { condition: service_healthy } }
-    restart: always      
+    restart: always  
 
   rabbitmq:
-    image: rabbitmq:4.1.0-management-alpine
+    build: { context: ../sentiric-rabbitmq }
     env_file: ["${ENV_FILE_PATH}"]
     ports: ["15672:15672", "5672:5672"]
     volumes: [rabbitmq_data:/var/lib/rabbitmq/]
@@ -49,7 +47,7 @@ services:
       retries: 3
   
   redis:
-    image: redis:7-alpine
+    build: { context: ../sentiric-redis }
     env_file: ["${ENV_FILE_PATH}"]  
     ports: ["6379:6379"]
     volumes: [redis_data:/data]

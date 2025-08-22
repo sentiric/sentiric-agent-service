@@ -8,14 +8,14 @@ WORKDIR /app
 
 # Sadece bağımlılıkları indir ve cache'le
 COPY go.mod go.sum ./
+
 RUN go mod download
+
 RUN go mod verify
 
 # Tüm kaynak kodunu kopyala
 COPY . .
 
-# Çıktı binary'sinin adını dinamik olarak almak için ARG kullanıyoruz.
-ARG SERVICE_NAME
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /app/bin/sentiric-agent-service ./cmd/agent-service
 
 # --- ÇALIŞTIRMA AŞAMASI (ALPINE) ---
@@ -24,14 +24,9 @@ FROM alpine:latest
 # TLS doğrulaması için ca-certificates gerekli
 RUN apk add --no-cache ca-certificates
 
-ARG SERVICE_NAME
 WORKDIR /app
 
 # Sadece derlenmiş binary'yi kopyala
-COPY --from=builder /app/bin/${SERVICE_NAME} .
-
-# Güvenlik için root olmayan bir kullanıcıyla çalıştır
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
-USER appuser
+COPY --from=builder /app/bin/sentiric-agent-service .
 
 ENTRYPOINT ["./sentiric-agent-service"]
