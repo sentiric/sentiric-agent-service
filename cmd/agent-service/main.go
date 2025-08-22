@@ -1,3 +1,4 @@
+// File: cmd/agent-service/main.go
 package main
 
 import (
@@ -18,11 +19,11 @@ import (
 	"github.com/sentiric/sentiric-agent-service/internal/logger"
 	"github.com/sentiric/sentiric-agent-service/internal/metrics"
 	"github.com/sentiric/sentiric-agent-service/internal/queue"
+	"github.com/sentiric/sentiric-agent-service/internal/state"
 )
 
 const serviceName = "agent-service"
 
-// YENİ: connectToRedisWithRetry fonksiyonu
 func connectToRedisWithRetry(cfg *config.Config, log zerolog.Logger) *redis.Client {
 	var rdb *redis.Client
 	var err error
@@ -42,7 +43,7 @@ func connectToRedisWithRetry(cfg *config.Config, log zerolog.Logger) *redis.Clie
 			return rdb
 		}
 
-		log.Warn().Err(err).Int("attempt", i+1).Int("max_attempts", 10).Msg("Redis'e bağlanılamadı, 5 saniye sonra tekrar denenecek...")
+		log.Warn().Err(err).Int("attempt", i+1).Msg("Redis'e bağlanılamadı, 5 saniye sonra tekrar denenecek...")
 		time.Sleep(5 * time.Second)
 	}
 
@@ -67,28 +68,40 @@ func main() {
 	}
 	defer db.Close()
 
-	// DÜZELTME: Yeni dayanıklı fonksiyonu kullanıyoruz
 	redisClient := connectToRedisWithRetry(cfg, appLog)
 
+	// gRPC İstemcileri
 	mediaClient, err := client.NewMediaServiceClient(cfg)
 	if err != nil {
 		appLog.Fatal().Err(err).Msg("Media Service gRPC istemcisi oluşturulamadı")
 	}
-
 	userClient, err := client.NewUserServiceClient(cfg)
 	if err != nil {
 		appLog.Fatal().Err(err).Msg("User Service gRPC istemcisi oluşturulamadı")
 	}
-
 	ttsClient, err := client.NewTTSServiceClient(cfg)
 	if err != nil {
 		appLog.Fatal().Err(err).Msg("TTS Gateway gRPC istemcisi oluşturulamadı")
 	}
 
+	// Modüler bileşenleri oluştur
+	stateManager := state.NewManager(redisClient)
+	llmClient := client.NewLlmClient(cfg.LlmServiceURL, appLog)
+	sttClient := client.NewSttClient(cfg.SttServiceURL, appLog)
+
+	// Sadeleştirilmiş EventHandler'ı yeni imzasıyla oluştur
 	eventHandler := handler.NewEventHandler(
-		db, redisClient, mediaClient, userClient, ttsClient,
-		cfg.LlmServiceURL, cfg.SttServiceURL, appLog,
-		metrics.EventsProcessed, metrics.EventsFailed,
+		db,
+		stateManager,
+		mediaClient,
+		userClient,
+		ttsClient,
+		llmClient,
+		sttClient,
+		appLog,
+		metrics.EventsProcessed,
+		metrics.EventsFailed, // EventsFailed metriğini de buraya ekliyoruz
+		cfg.SttServiceTargetSampleRate,
 	)
 
 	rabbitCh, closeChan := queue.Connect(cfg.RabbitMQURL, appLog)

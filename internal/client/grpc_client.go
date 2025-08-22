@@ -1,3 +1,4 @@
+// File: internal/client/grpc_client.go
 // AÇIKLAMA: Bu paket, diğer servislere gRPC istemci bağlantıları oluşturmaktan sorumludur.
 package client
 
@@ -18,7 +19,6 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	// "google.golang.org/grpc/credentials/insecure" // DÜZELTME: Bu import artık kullanılmıyor.
 )
 
 // NewMediaServiceClient, Media servisi için bir gRPC istemcisi oluşturur.
@@ -41,8 +41,6 @@ func NewUserServiceClient(cfg *config.Config) (userv1.UserServiceClient, error) 
 
 // NewTTSServiceClient, TTS Gateway servisi için bir gRPC istemcisi oluşturur.
 func NewTTSServiceClient(cfg *config.Config) (ttsv1.TextToSpeechServiceClient, error) {
-	// DÜZELTME: Güvensiz (insecure) bağlantı yerine, diğer servislerle tutarlı olarak
-	// mTLS kullanan güvenli bağlantı metodunu çağırıyoruz.
 	conn, err := createSecureGrpcClient(cfg, cfg.TtsServiceGrpcURL)
 	if err != nil {
 		return nil, fmt.Errorf("tts gateway istemcisi için bağlantı oluşturulamadı: %w", err)
@@ -69,24 +67,15 @@ func createSecureGrpcClient(cfg *config.Config, addr string) (*grpc.ClientConn, 
 	creds := credentials.NewTLS(&tls.Config{
 		Certificates: []tls.Certificate{clientCert},
 		RootCAs:      caCertPool,
-		// ServerName, sunucunun sertifikasındaki CN/SAN ile eşleşmelidir.
-		// Docker'da bu genellikle servis adıdır.
-		ServerName: strings.Split(addr, ":")[0],
-		MinVersion: tls.VersionTLS12,
+		ServerName:   strings.Split(addr, ":")[0],
+		MinVersion:   tls.VersionTLS12,
 	})
 
-	// Bağlantı için 10 saniyelik bir timeout ile context oluştur.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// --- KRİTİK DEĞİŞİKLİK BURADA ---
-	// 'passthrough' şeması, gRPC'nin kendi DNS çözümleyicisini atlayıp
-	// doğrudan verilen adrese bağlanmasını sağlar. Bu, Docker ortamlarında
-	// 'context deadline exceeded' hatalarını çözmede çok etkilidir.
 	target := fmt.Sprintf("passthrough:///%s", addr)
 
-	// grpc.Dial yerine grpc.DialContext kullanarak timeout'u uygula
-	// ve WithBlock ile bağlantının kurulmasını bekle.
 	conn, err := grpc.DialContext(ctx, target, grpc.WithTransportCredentials(creds), grpc.WithBlock())
 	if err != nil {
 		return nil, fmt.Errorf("gRPC sunucusuna (%s) bağlanılamadı: %w", addr, err)
