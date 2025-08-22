@@ -2,6 +2,7 @@
 package dialog
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/base64"
@@ -10,8 +11,6 @@ import (
 	"net/url"
 	"strings"
 	"time"
-
-	"bytes" // bytes import'unu eklemeyi unutmuşum, şimdi eklendi
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
@@ -55,10 +54,13 @@ func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallSta
 
 	audioData, err := recordAudio(ctx, deps, st)
 	if err != nil {
-		if status.Code(err) == codes.Canceled || err == context.Canceled {
+		// Eğer context ana döngü tarafından iptal edildiyse, hatayı yukarı taşı
+		if err == context.Canceled || status.Code(err) == codes.Canceled {
 			return st, context.Canceled
 		}
-		return st, fmt.Errorf("ses kaydı alınamadı: %w", err)
+		// Diğer hatalar loglanır ama döngüyü kırmaz
+		l.Error().Err(err).Msg("Ses kaydı sırasında bir hata oluştu, tekrar dinleniyor.")
+		return st, nil // Hata durumunda tekrar dinlemeye geç
 	}
 	if len(audioData) == 0 {
 		l.Warn().Msg("Kullanıcı konuşmadı veya boş ses verisi alındı. Tekrar dinleniyor.")
@@ -177,6 +179,9 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 	}
 }
 
+// #############################################################################
+// ###                      NİHAİ VE DÜZELTİLMİŞ FONKSİYON                     ###
+// #############################################################################
 func recordAudio(ctx context.Context, deps *Dependencies, st *state.CallState) ([]byte, error) {
 	l := deps.Log.With().Str("call_id", st.CallID).Logger()
 	grpcCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", st.TraceID)
@@ -186,85 +191,70 @@ func recordAudio(ctx context.Context, deps *Dependencies, st *state.CallState) (
 		TargetSampleRate: &deps.SttTargetSampleRate,
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("media service ile stream oluşturulamadı: %w", err)
 	}
+
 	l.Info().Uint32("target_sample_rate", deps.SttTargetSampleRate).Msg("Ses kaydı stream'i açıldı, VAD döngüsü başlıyor...")
 
 	const listeningTimeout = 15 * time.Second
-	const silenceThresholdDuration = 1 * time.Second
+	const silenceThresholdDuration = 1*time.Second + 200*time.Millisecond // 1.2 saniye
+
+	// Fonksiyonun her durumda sonlanmasını garantilemek için genel bir zaman aşımı
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, listeningTimeout)
+	defer cancel()
+
 	var audioData bytes.Buffer
-	var speechStarted bool
-	silenceTimer := time.NewTimer(silenceThresholdDuration)
-	if !silenceTimer.Stop() {
-		<-silenceTimer.C
-	}
-	timeoutTimer := time.NewTimer(listeningTimeout)
-	defer timeoutTimer.Stop()
-
-	type streamResult struct {
-		chunk *mediav1.RecordAudioResponse
-		err   error
-	}
-	resultChan := make(chan streamResult)
-
-	go func() {
-		for {
-			chunk, err := stream.Recv()
-			select {
-			case resultChan <- streamResult{chunk: chunk, err: err}:
-				if err != nil {
-					return
-				}
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
+	var lastAudioTime = time.Now()
+	var speechStarted = false
 
 	for {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-timeoutTimer.C:
-			if speechStarted {
-				l.Info().Msg("Genel zaman aşımı sırasında konuşma algılandığı için kayıt tamamlandı.")
+		// Ana context'in iptal edilip edilmediğini her döngünün başında kontrol et
+		if err := ctxWithTimeout.Err(); err != nil {
+			if audioData.Len() > 0 {
+				l.Info().Msg("Genel zaman aşımına ulaşıldı, kayıt tamamlandı.")
 				return audioData.Bytes(), nil
 			}
 			l.Warn().Msg("Dinleme zaman aşımına uğradı, kullanıcı hiç konuşmadı.")
-			return nil, nil
-		case <-silenceTimer.C:
+			return nil, nil // Bu bir hata değil, sadece zaman aşımı
+		}
+
+		// Sessizlik süresinin dolup dolmadığını kontrol et
+		if speechStarted && time.Since(lastAudioTime) > silenceThresholdDuration {
 			l.Info().Msg("Sessizlik eşiğine ulaşıldı, kayıt tamamlandı.")
 			return audioData.Bytes(), nil
-		case res := <-resultChan:
-			if res.err == io.EOF {
+		}
+
+		chunk, err := stream.Recv()
+		if err != nil {
+			if err == io.EOF {
 				l.Info().Msg("Media-service stream'i kapattı (EOF).")
 				return audioData.Bytes(), nil
 			}
-			if res.err != nil {
-				st, _ := status.FromError(res.err)
-				if st.Code() == codes.Canceled || res.err == context.Canceled {
-					l.Warn().Msg("Ses kaydı stream'i context iptali nedeniyle sonlandı.")
-					return nil, context.Canceled
-				}
-				return nil, fmt.Errorf("stream'den okuma hatası: %w", res.err)
+			stErr, _ := status.FromError(err)
+			if stErr.Code() == codes.Canceled {
+				return nil, context.Canceled // Ana döngü tarafından iptal edildi
 			}
-			audioData.Write(res.chunk.AudioData)
-			if len(res.chunk.AudioData) > 0 {
-				if !speechStarted {
-					l.Info().Msg("Konuşma aktivitesi tespit edildi.")
-					speechStarted = true
-				}
-				if !silenceTimer.Stop() {
-					select {
-					case <-silenceTimer.C:
-					default:
-					}
-				}
-				silenceTimer.Reset(silenceThresholdDuration)
+			// Diğer tüm gRPC hataları loglanır ama akışı kırmaz, bir sonraki denemeyi bekler
+			l.Warn().Err(err).Msg("Stream'den okuma hatası, görmezden geliniyor.")
+			time.Sleep(20 * time.Millisecond) // Hata durumunda kısa bir bekleme
+			continue
+		}
+
+		if chunk != nil && len(chunk.AudioData) > 0 {
+			audioData.Write(chunk.AudioData)
+			lastAudioTime = time.Now()
+			if !speechStarted {
+				l.Info().Msg("Konuşma aktivitesi tespit edildi.")
+				speechStarted = true
 			}
+		} else {
+			// Boş chunk veya hiç chunk gelmemesi durumunda kısa bir bekleme
+			time.Sleep(20 * time.Millisecond)
 		}
 	}
 }
+
+// #############################################################################
 
 func getLanguageCode(event *state.CallEvent) string {
 	if event.Dialplan != nil && event.Dialplan.MatchedUser != nil && event.Dialplan.MatchedUser.PreferredLanguageCode != nil && *event.Dialplan.MatchedUser.PreferredLanguageCode != "" {
@@ -317,7 +307,6 @@ func generateWelcomeText(ctx context.Context, deps *Dependencies, l zerolog.Logg
 	return deps.LLMClient.Generate(ctx, prompt, st.TraceID)
 }
 
-// DÜZELTME: Fonksiyon imzasından `waitForCompletion` kaldırıldı.
 func PlayAnnouncement(deps *Dependencies, l zerolog.Logger, st *state.CallState, announcementID string) {
 	languageCode := getLanguageCode(st.Event)
 	audioPath, err := database.GetAnnouncementPathFromDB(deps.DB, announcementID, st.TenantID, languageCode)
