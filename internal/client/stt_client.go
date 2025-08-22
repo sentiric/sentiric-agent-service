@@ -9,6 +9,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/textproto" // Gerekli yeni import
 	"time"
 
 	"github.com/rs/zerolog"
@@ -36,16 +37,23 @@ func (c *SttClient) Transcribe(ctx context.Context, audioData []byte, language, 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 
+	// Dil alanını ekle
 	if err := writer.WriteField("language", language); err != nil {
 		return "", fmt.Errorf("failed to write language field: %w", err)
 	}
 
-	// --- KRİTİK DÜZELTME BURADA ---
-	// FastAPI'nin dosyayı doğru tanıması için Content-Type'ı manuel olarak belirtiyoruz.
-	part, err := writer.CreateFormFile("audio_file", "stream.wav")
+	// --- KRİTİK VE NİHAİ DÜZELTME BURADA ---
+	// CreateFormFile yerine CreatePart kullanarak başlıkları manuel olarak oluşturuyoruz.
+	// Bu, Content-Type'ı "audio/wav" olarak göndermeyi garanti eder.
+	h := make(textproto.MIMEHeader)
+	h.Set("Content-Disposition", `form-data; name="audio_file"; filename="stream.wav"`)
+	h.Set("Content-Type", "audio/wav")
+
+	part, err := writer.CreatePart(h)
 	if err != nil {
-		return "", fmt.Errorf("failed to create form file: %w", err)
+		return "", fmt.Errorf("failed to create form part: %w", err)
 	}
+	// --- DÜZELTME SONU ---
 
 	if _, err := io.Copy(part, bytes.NewReader(audioData)); err != nil {
 		return "", fmt.Errorf("failed to copy audio data to form: %w", err)
@@ -57,7 +65,6 @@ func (c *SttClient) Transcribe(ctx context.Context, audioData []byte, language, 
 	if err != nil {
 		return "", fmt.Errorf("failed to create stt request: %w", err)
 	}
-	// Content-Type'ı multipart writer'dan alıyoruz, bu en doğrusu.
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("X-Trace-ID", traceID)
 
