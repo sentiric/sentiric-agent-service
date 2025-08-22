@@ -55,14 +55,16 @@ func Connect(url string, log zerolog.Logger) (*sql.DB, error) {
 }
 
 // Bu servise özgü veritabanı fonksiyonları burada kalmaya devam eder.
-func GetAnnouncementPathFromDB(db *sql.DB, announcementID, tenantID string) (string, error) {
+func GetAnnouncementPathFromDB(db *sql.DB, announcementID, tenantID, languageCode string) (string, error) {
 	var audioPath string
-	// SORGUNU GÜNCELLE: tenant_id'yi de içerecek şekilde
-	query := `SELECT audio_path FROM announcements WHERE id = $1 AND (tenant_id = $2 OR tenant_id = 'system') ORDER BY tenant_id DESC LIMIT 1`
-	err := db.QueryRow(query, announcementID, tenantID).Scan(&audioPath)
+	query := `
+        SELECT audio_path FROM announcements 
+        WHERE id = $1 AND language_code = $2 AND (tenant_id = $3 OR tenant_id = 'system')
+        ORDER BY tenant_id DESC LIMIT 1`
+	err := db.QueryRow(query, announcementID, languageCode, tenantID).Scan(&audioPath)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return "", fmt.Errorf("anons bulunamadı: id=%s, tenant=%s", announcementID, tenantID)
+			return "", fmt.Errorf("anons bulunamadı: id=%s, tenant=%s, lang=%s", announcementID, tenantID, languageCode)
 		}
 		return "", fmt.Errorf("anons sorgusu başarısız: %w", err)
 	}

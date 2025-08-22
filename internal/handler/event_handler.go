@@ -250,18 +250,25 @@ func (h *EventHandler) runDialogLoop(ctx context.Context, initialState *CallStat
 		}
 	}
 }
+
 func (h *EventHandler) stateFnWelcoming(ctx context.Context, state *CallState) (*CallState, error) {
 	l := h.log.With().Str("call_id", state.CallID).Logger()
+	// DÜZELTME: Artık "_TR" eki olmadan, temel ID'yi çağırıyoruz.
 	h.playAnnouncement(l, state, "ANNOUNCE_SYSTEM_CONNECTING", true)
+
 	welcomeText, err := h.generateWelcomeText(l, state)
 	if err != nil {
 		return state, err
 	}
+
 	state.Conversation = append(state.Conversation, map[string]string{"ai": welcomeText})
+	// DÜZELTME: Bu playText çağrısını da state ile yapalım.
 	h.playText(l, state, welcomeText, false)
+
 	state.CurrentState = StateListening
 	return state, nil
 }
+
 func (h *EventHandler) stateFnListening(ctx context.Context, state *CallState) (*CallState, error) {
 	l := h.log.With().Str("call_id", state.CallID).Logger()
 	l.Info().Msg("Kullanıcıdan ses bekleniyor...")
@@ -624,22 +631,24 @@ func (h *EventHandler) playText(l zerolog.Logger, state *CallState, textToPlay s
 	}
 }
 
-// DÜZELTME: Fonksiyon artık event yerine state'i parametre olarak alıyor.
 func (h *EventHandler) playAnnouncement(l zerolog.Logger, state *CallState, announcementIDBase string, waitForCompletion bool) {
 	languageCode := h.getLanguageCode(state.Event)
-	announcementID := fmt.Sprintf("%s_%s", announcementIDBase, strings.ToUpper(languageCode))
-	// DÜZELTME: Artık state'ten gelen TenantID'yi kullanıyoruz.
-	audioPath, err := database.GetAnnouncementPathFromDB(h.db, announcementID, state.TenantID)
+	// --- KRİTİK DÜZELTME ---
+	// Artık ID'nin sonuna dil kodu eklemiyoruz.
+	// 'id' ve 'language_code' ayrı sütunlar olarak sorgulanacak.
+	announcementID := announcementIDBase
+
+	audioPath, err := database.GetAnnouncementPathFromDB(h.db, announcementID, state.TenantID, languageCode)
 	if err != nil {
 		l.Error().Err(err).Str("announcement_id", announcementID).Msg("Anons yolu alınamadı, fallback deneniyor")
-		announcementID = fmt.Sprintf("%s_EN", announcementIDBase)
-		// DÜZELTME: Fallback için de TenantID'yi kullanıyoruz.
-		audioPath, err = database.GetAnnouncementPathFromDB(h.db, announcementID, state.TenantID)
+		// Fallback için de doğru şekilde çağrı yapıyoruz.
+		audioPath, err = database.GetAnnouncementPathFromDB(h.db, announcementID, state.TenantID, "en") // fallback dili 'en'
 		if err != nil {
 			l.Error().Err(err).Msg("KRİTİK HATA: Sistem fallback anonsu dahi yüklenemedi.")
 			return
 		}
 	}
+
 	audioURI := fmt.Sprintf("file:///%s", audioPath)
 	mediaInfo := state.Event.Media
 	rtpTarget := mediaInfo["caller_rtp_addr"].(string)
@@ -652,7 +661,10 @@ func (h *EventHandler) playAnnouncement(l zerolog.Logger, state *CallState, anno
 		_, err = h.mediaClient.PlayAudio(playCtx, playReq)
 	} else {
 		go func() {
-			_, err := h.mediaClient.PlayAudio(ctx, playReq)
+			bgCtx := metadata.AppendToOutgoingContext(context.Background(), "x-trace-id", state.TraceID)
+			playCtx, cancel := context.WithTimeout(bgCtx, 30*time.Second)
+			defer cancel()
+			_, err := h.mediaClient.PlayAudio(playCtx, playReq)
 			if err != nil {
 				l.Error().Err(err).Str("audio_uri", audioURI).Msg("Hata: Arka plan anonsu çalınamadı")
 			}
