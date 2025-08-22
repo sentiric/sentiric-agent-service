@@ -69,15 +69,24 @@ func createSecureGrpcClient(cfg *config.Config, addr string) (*grpc.ClientConn, 
 	creds := credentials.NewTLS(&tls.Config{
 		Certificates: []tls.Certificate{clientCert},
 		RootCAs:      caCertPool,
-		ServerName:   strings.Split(addr, ":")[0],
-		MinVersion:   tls.VersionTLS12,
+		// ServerName, sunucunun sertifikasındaki CN/SAN ile eşleşmelidir.
+		// Docker'da bu genellikle servis adıdır.
+		ServerName: strings.Split(addr, ":")[0],
+		MinVersion: tls.VersionTLS12,
 	})
 
+	// Bağlantı için 10 saniyelik bir timeout ile context oluştur.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// --- KRİTİK DEĞİŞİKLİK BURADA ---
+	// 'passthrough' şeması, gRPC'nin kendi DNS çözümleyicisini atlayıp
+	// doğrudan verilen adrese bağlanmasını sağlar. Bu, Docker ortamlarında
+	// 'context deadline exceeded' hatalarını çözmede çok etkilidir.
 	target := fmt.Sprintf("passthrough:///%s", addr)
 
+	// grpc.Dial yerine grpc.DialContext kullanarak timeout'u uygula
+	// ve WithBlock ile bağlantının kurulmasını bekle.
 	conn, err := grpc.DialContext(ctx, target, grpc.WithTransportCredentials(creds), grpc.WithBlock())
 	if err != nil {
 		return nil, fmt.Errorf("gRPC sunucusuna (%s) bağlanılamadı: %w", addr, err)
