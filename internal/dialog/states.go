@@ -197,34 +197,39 @@ func recordAudio(ctx context.Context, deps *Dependencies, st *state.CallState) (
 	l.Info().Uint32("target_sample_rate", deps.SttTargetSampleRate).Msg("Ses kaydı stream'i açıldı, VAD döngüsü başlıyor...")
 
 	const listeningTimeout = 15 * time.Second
-	const silenceThresholdDuration = 1*time.Second + 200*time.Millisecond // 1.2 saniye
+	const silenceThresholdDuration = 1*time.Second + 200*time.Millisecond
+	const vadStartupGracePeriod = 200 * time.Millisecond // Konuşmanın başında olabilecek kısa sessizlikler için tolerans
 
-	// Fonksiyonun her durumda sonlanmasını garantilemek için genel bir zaman aşımı
 	ctxWithTimeout, cancel := context.WithTimeout(ctx, listeningTimeout)
 	defer cancel()
 
 	var audioData bytes.Buffer
-	var lastAudioTime = time.Now()
-	var speechStarted = false
+	var speechStarted bool
+	var lastAudioTime time.Time
 
 	for {
-		// Ana context'in iptal edilip edilmediğini her döngünün başında kontrol et
-		if err := ctxWithTimeout.Err(); err != nil {
+		// Her döngüde ana context'in bitip bitmediğini kontrol et
+		select {
+		case <-ctxWithTimeout.Done():
 			if audioData.Len() > 0 {
 				l.Info().Msg("Genel zaman aşımına ulaşıldı, kayıt tamamlandı.")
 				return audioData.Bytes(), nil
 			}
 			l.Warn().Msg("Dinleme zaman aşımına uğradı, kullanıcı hiç konuşmadı.")
-			return nil, nil // Bu bir hata değil, sadece zaman aşımı
+			return nil, nil
+		default:
+			// Devam et
 		}
 
-		// Sessizlik süresinin dolup dolmadığını kontrol et
+		// Sessizlik kontrolü SADECE konuşma başladıktan sonra yapılır
 		if speechStarted && time.Since(lastAudioTime) > silenceThresholdDuration {
 			l.Info().Msg("Sessizlik eşiğine ulaşıldı, kayıt tamamlandı.")
 			return audioData.Bytes(), nil
 		}
 
+		// stream.Recv() bloklayıcıdır, bu yüzden bir goroutine'e gerek yok.
 		chunk, err := stream.Recv()
+
 		if err != nil {
 			if err == io.EOF {
 				l.Info().Msg("Media-service stream'i kapattı (EOF).")
@@ -232,23 +237,27 @@ func recordAudio(ctx context.Context, deps *Dependencies, st *state.CallState) (
 			}
 			stErr, _ := status.FromError(err)
 			if stErr.Code() == codes.Canceled {
-				return nil, context.Canceled // Ana döngü tarafından iptal edildi
+				return nil, context.Canceled
 			}
-			// Diğer tüm gRPC hataları loglanır ama akışı kırmaz, bir sonraki denemeyi bekler
-			l.Warn().Err(err).Msg("Stream'den okuma hatası, görmezden geliniyor.")
-			time.Sleep(20 * time.Millisecond) // Hata durumunda kısa bir bekleme
+			// Diğer hatalar (örn. network), akışı sonlandırmamalı
+			l.Warn().Err(err).Msg("Stream'den okuma hatası, 20ms sonra devam edilecek.")
+			time.Sleep(20 * time.Millisecond)
 			continue
 		}
 
 		if chunk != nil && len(chunk.AudioData) > 0 {
 			audioData.Write(chunk.AudioData)
 			lastAudioTime = time.Now()
+
 			if !speechStarted {
-				l.Info().Msg("Konuşma aktivitesi tespit edildi.")
+				// İlk ses verisini aldıktan sonra kısa bir süre daha bekle,
+				// bu, "mer-....-haba" gibi kesik konuşmaların başlangıcını yakalamaya yardımcı olur.
+				time.Sleep(vadStartupGracePeriod)
 				speechStarted = true
+				l.Info().Msg("Konuşma aktivitesi tespit edildi.")
 			}
 		} else {
-			// Boş chunk veya hiç chunk gelmemesi durumunda kısa bir bekleme
+			// Boş chunk gelirse, döngüye devam et
 			time.Sleep(20 * time.Millisecond)
 		}
 	}

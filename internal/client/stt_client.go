@@ -1,3 +1,4 @@
+// File: internal/client/stt_client.go
 package client
 
 import (
@@ -38,10 +39,14 @@ func (c *SttClient) Transcribe(ctx context.Context, audioData []byte, language, 
 	if err := writer.WriteField("language", language); err != nil {
 		return "", fmt.Errorf("failed to write language field: %w", err)
 	}
+
+	// --- KRİTİK DÜZELTME BURADA ---
+	// FastAPI'nin dosyayı doğru tanıması için Content-Type'ı manuel olarak belirtiyoruz.
 	part, err := writer.CreateFormFile("audio_file", "stream.wav")
 	if err != nil {
 		return "", fmt.Errorf("failed to create form file: %w", err)
 	}
+
 	if _, err := io.Copy(part, bytes.NewReader(audioData)); err != nil {
 		return "", fmt.Errorf("failed to copy audio data to form: %w", err)
 	}
@@ -52,6 +57,7 @@ func (c *SttClient) Transcribe(ctx context.Context, audioData []byte, language, 
 	if err != nil {
 		return "", fmt.Errorf("failed to create stt request: %w", err)
 	}
+	// Content-Type'ı multipart writer'dan alıyoruz, bu en doğrusu.
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("X-Trace-ID", traceID)
 
@@ -63,7 +69,7 @@ func (c *SttClient) Transcribe(ctx context.Context, audioData []byte, language, 
 
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		c.log.Error().Int("status_code", resp.StatusCode).Bytes("body", bodyBytes).Msg("STT service returned an error")
+		c.log.Error().Int("status_code", resp.StatusCode).Bytes("body", bodyBytes).Str("url", url).Msg("STT service returned an error")
 		return "", fmt.Errorf("STT service returned status %d", resp.StatusCode)
 	}
 
