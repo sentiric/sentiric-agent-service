@@ -64,6 +64,8 @@ func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallSta
 	}
 	if len(audioData) == 0 {
 		l.Warn().Msg("Kullanıcı konuşmadı veya boş ses verisi alındı. Tekrar dinleniyor.")
+		// DÜZELTME: Kullanıcı konuşmadığında bir anons çalalım.
+		PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_CANT_HEAR_YOU")
 		return st, nil
 	}
 
@@ -74,6 +76,7 @@ func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallSta
 	}
 	if transcribedText == "" {
 		l.Warn().Msg("STT boş metin döndürdü, tekrar dinleniyor.")
+		PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_CANT_UNDERSTAND")
 		return st, nil
 	}
 
@@ -321,9 +324,10 @@ func PlayAnnouncement(deps *Dependencies, l zerolog.Logger, st *state.CallState,
 	audioPath, err := database.GetAnnouncementPathFromDB(deps.DB, announcementID, st.TenantID, languageCode)
 	if err != nil {
 		l.Error().Err(err).Str("announcement_id", announcementID).Msg("Anons yolu alınamadı, fallback deneniyor")
-		audioPath, err = database.GetAnnouncementPathFromDB(deps.DB, announcementID, st.TenantID, "en")
+		// Fallback to English if the primary language fails
+		audioPath, err = database.GetAnnouncementPathFromDB(deps.DB, announcementID, "system", "en")
 		if err != nil {
-			l.Error().Err(err).Msg("KRİTİK HATA: Sistem fallback anonsu dahi yüklenemedi.")
+			l.Error().Err(err).Str("announcement_id", announcementID).Msg("KRİTİK HATA: Sistem fallback anonsu dahi yüklenemedi.")
 			return
 		}
 	}

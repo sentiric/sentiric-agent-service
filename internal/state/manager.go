@@ -65,10 +65,11 @@ func (m *Manager) Get(ctx context.Context, callID string) (*CallState, error) {
 
 func (m *Manager) Set(ctx context.Context, state *CallState) error {
 	key := "callstate:" + state.CallID
-	val, err := json.Marshal(state) // DÜZELTME: val artık kullanılıyor
+	// DÜZELTME: Nesneyi önce JSON byte dizisine dönüştür.
+	val, err := json.Marshal(state)
 	if err != nil {
 		return err
 	}
-	// DÜZELTME: Eksik olan 'val' argümanı eklendi.
+	// DÜZELTME: Dönüştürülmüş byte dizisini Redis'e gönder.
 	return m.rdb.Set(ctx, key, val, 2*time.Hour).Err()
 }
