@@ -115,6 +115,13 @@ func StateFnSpeaking(ctx context.Context, deps *Dependencies, st *state.CallStat
 	lastAiMessage := st.Conversation[len(st.Conversation)-1]["ai"]
 	l.Info().Str("text", lastAiMessage).Msg("AI yanıtı seslendiriliyor...")
 	playText(ctx, deps, l, st, lastAiMessage)
+
+	// --- KRİTİK DÜZELTME BURADA ---
+	// Sistemin kendi sesinin yankısını duymaması için kısa bir bekleme ekliyoruz.
+	// Bu, ağ ve ses kartı gecikmelerini telafi eder.
+	time.Sleep(250 * time.Millisecond)
+	// --- DÜZELTME SONU ---
+
 	st.CurrentState = state.StateListening
 	return st, nil
 }
