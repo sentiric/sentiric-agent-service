@@ -9,7 +9,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
-	"net/textproto" // Gerekli yeni import
+	"net/textproto"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -37,14 +37,10 @@ func (c *SttClient) Transcribe(ctx context.Context, audioData []byte, language, 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 
-	// Dil alanını ekle
 	if err := writer.WriteField("language", language); err != nil {
 		return "", fmt.Errorf("failed to write language field: %w", err)
 	}
 
-	// --- KRİTİK VE NİHAİ DÜZELTME BURADA ---
-	// CreateFormFile yerine CreatePart kullanarak başlıkları manuel olarak oluşturuyoruz.
-	// Bu, Content-Type'ı "audio/wav" olarak göndermeyi garanti eder.
 	h := make(textproto.MIMEHeader)
 	h.Set("Content-Disposition", `form-data; name="audio_file"; filename="stream.wav"`)
 	h.Set("Content-Type", "audio/wav")
@@ -53,7 +49,6 @@ func (c *SttClient) Transcribe(ctx context.Context, audioData []byte, language, 
 	if err != nil {
 		return "", fmt.Errorf("failed to create form part: %w", err)
 	}
-	// --- DÜZELTME SONU ---
 
 	if _, err := io.Copy(part, bytes.NewReader(audioData)); err != nil {
 		return "", fmt.Errorf("failed to copy audio data to form: %w", err)
@@ -61,6 +56,11 @@ func (c *SttClient) Transcribe(ctx context.Context, audioData []byte, language, 
 	writer.Close()
 
 	url := fmt.Sprintf("%s/api/v1/transcribe", c.baseURL)
+
+	// --- YENİ LOGLAMA ---
+	c.log.Info().Str("url", url).Int("audio_size_kb", len(audioData)/1024).Msg("STT'ye transkripsiyon isteği gönderiliyor...")
+	// --- LOGLAMA SONU ---
+
 	req, err := http.NewRequestWithContext(ctx, "POST", url, &body)
 	if err != nil {
 		return "", fmt.Errorf("failed to create stt request: %w", err)
@@ -85,6 +85,9 @@ func (c *SttClient) Transcribe(ctx context.Context, audioData []byte, language, 
 		return "", fmt.Errorf("failed to decode stt response: %w", err)
 	}
 
+	// --- YENİ LOGLAMA ---
 	c.log.Info().Str("transcribed_text", sttResp.Text).Msg("Audio transcribed successfully")
+	// --- LOGLAMA SONU ---
+
 	return sttResp.Text, nil
 }

@@ -40,6 +40,11 @@ func (c *LlmClient) Generate(ctx context.Context, prompt, traceID string) (strin
 	payloadBytes, _ := json.Marshal(payload)
 	url := fmt.Sprintf("%s/generate", c.baseURL)
 
+	// --- YENİ LOGLAMA ---
+	c.log.Info().Str("url", url).Int("prompt_size", len(prompt)).Msg("LLM'e istek gönderiliyor...")
+	c.log.Debug().Str("prompt", prompt).Msg("Gönderilen tam LLM prompt'u")
+	// --- LOGLAMA SONU ---
+
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(payloadBytes))
 	if err != nil {
 		return "", fmt.Errorf("failed to create llm request: %w", err)
@@ -64,6 +69,10 @@ func (c *LlmClient) Generate(ctx context.Context, prompt, traceID string) (strin
 		return "", fmt.Errorf("failed to decode llm response: %w", err)
 	}
 
-	// Trim quotes and whitespace that models sometimes add
-	return strings.Trim(llmResp.Text, "\" \n\r"), nil
+	// --- YENİ LOGLAMA ---
+	cleanedText := strings.Trim(llmResp.Text, "\" \n\r")
+	c.log.Info().Int("response_size", len(cleanedText)).Str("response_text", cleanedText).Msg("LLM'den yanıt başarıyla alındı.")
+	// --- LOGLAMA SONU ---
+
+	return cleanedText, nil
 }
