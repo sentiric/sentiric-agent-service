@@ -214,19 +214,18 @@ func recordAudio(ctx context.Context, deps *Dependencies, st *state.CallState) (
 
 	l.Info().Uint32("target_sample_rate", deps.SttTargetSampleRate).Msg("Ses kaydı stream'i açıldı, VAD döngüsü başlıyor...")
 
-	const listeningTimeout = 15 * time.Second
-	const silenceThresholdDuration = 1*time.Second + 200*time.Millisecond
-	const vadStartupGracePeriod = 200 * time.Millisecond // Konuşmanın başında olabilecek kısa sessizlikler için tolerans
+	const listeningTimeout = 20 * time.Second        // DİKKAT: Toplam dinleme süresini artırdık.
+	const silenceThresholdDuration = 2 * time.Second // DİKKAT: Sessizlik eşiğini artırdık.
+	const vadStartupGracePeriod = 300 * time.Millisecond
 
 	ctxWithTimeout, cancel := context.WithTimeout(ctx, listeningTimeout)
 	defer cancel()
 
 	var audioData bytes.Buffer
 	var speechStarted bool
-	var lastAudioTime time.Time
+	var lastAudioTime time.Time = time.Now() // DİKKAT: Başlangıç zamanını şimdi olarak ayarlıyoruz.
 
 	for {
-		// Her döngüde ana context'in bitip bitmediğini kontrol et
 		select {
 		case <-ctxWithTimeout.Done():
 			if audioData.Len() > 0 {
@@ -240,18 +239,16 @@ func recordAudio(ctx context.Context, deps *Dependencies, st *state.CallState) (
 			if audioData.Len() > 0 {
 				return audioData.Bytes(), nil
 			}
-			return nil, context.Canceled // Ana döngüye iptal sinyali gönder
+			return nil, context.Canceled
 		default:
-			// Devam et
 		}
 
-		// Sessizlik kontrolü SADECE konuşma başladıktan sonra yapılır
+		// DİKKAT: Sessizlik kontrolünü döngünün başına taşıdık.
 		if speechStarted && time.Since(lastAudioTime) > silenceThresholdDuration {
 			l.Info().Msg("Sessizlik eşiğine ulaşıldı, kayıt tamamlandı.")
 			return audioData.Bytes(), nil
 		}
 
-		// stream.Recv() bloklayıcıdır, bu yüzden bir goroutine'e gerek yok.
 		chunk, err := stream.Recv()
 
 		if err != nil {
@@ -264,7 +261,6 @@ func recordAudio(ctx context.Context, deps *Dependencies, st *state.CallState) (
 				l.Info().Msg("RecordAudio stream'i iptal edildi.")
 				return nil, context.Canceled
 			}
-			// Diğer hatalar (örn. network), akışı sonlandırmamalı
 			l.Warn().Err(err).Msg("Stream'den okuma hatası, 20ms sonra devam edilecek.")
 			time.Sleep(20 * time.Millisecond)
 			continue
@@ -280,6 +276,7 @@ func recordAudio(ctx context.Context, deps *Dependencies, st *state.CallState) (
 				l.Info().Msg("Konuşma aktivitesi tespit edildi.")
 			}
 		} else {
+			// Boş chunk gelirse, döngüye devam et ama timeout'u bekletme
 			time.Sleep(20 * time.Millisecond)
 		}
 	}
