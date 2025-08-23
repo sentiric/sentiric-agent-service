@@ -89,7 +89,8 @@ func main() {
 	llmClient := client.NewLlmClient(cfg.LlmServiceURL, appLog)
 	sttClient := client.NewSttClient(cfg.SttServiceURL, appLog)
 
-	// Sadeleştirilmiş EventHandler'ı yeni imzasıyla oluştur
+	// --- DEĞİŞİKLİK BURADA BAŞLIYOR ---
+	// EventHandler'ı oluştururken EventsFailed metriğini de veriyoruz.
 	eventHandler := handler.NewEventHandler(
 		db,
 		stateManager,
@@ -100,9 +101,10 @@ func main() {
 		sttClient,
 		appLog,
 		metrics.EventsProcessed,
-		metrics.EventsFailed, // EventsFailed metriğini de buraya ekliyoruz
+		metrics.EventsFailed, // Bu satır önemli!
 		cfg.SttServiceTargetSampleRate,
 	)
+	// --- DEĞİŞİKLİK BURADA BİTİYOR ---
 
 	rabbitCh, closeChan := queue.Connect(cfg.RabbitMQURL, appLog)
 	if rabbitCh != nil {

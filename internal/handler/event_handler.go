@@ -39,7 +39,7 @@ func NewEventHandler(
 	llmC *client.LlmClient,
 	sttC *client.SttClient,
 	log zerolog.Logger,
-	processed, failed *prometheus.CounterVec,
+	processed, failed *prometheus.CounterVec, // failed metriği zaten alınıyor
 	sttSampleRate uint32,
 ) *EventHandler {
 	dialogDeps := &dialog.Dependencies{
@@ -50,6 +50,7 @@ func NewEventHandler(
 		STTClient:           sttC,
 		Log:                 log,
 		SttTargetSampleRate: sttSampleRate,
+		EventsFailed:        failed, // <-- BU SATIRI EKLEYİN!
 	}
 	return &EventHandler{
 		stateManager:    sm,
