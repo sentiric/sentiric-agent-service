@@ -131,7 +131,6 @@ func StateFnSpeaking(ctx context.Context, deps *Dependencies, st *state.CallStat
 // === YARDIMCI AKIŞ FONKSİYONLARI (HELPER FLOW FUNCTIONS) =====================
 // =============================================================================
 
-// recordAudio, VAD (Voice Activity Detection) mantığıyla ses kaydı yapar.
 func recordAudio(ctx context.Context, deps *Dependencies, st *state.CallState) ([]byte, error) {
 	l := deps.Log.With().Str("call_id", st.CallID).Logger()
 	grpcCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", st.TraceID)
@@ -146,9 +145,10 @@ func recordAudio(ctx context.Context, deps *Dependencies, st *state.CallState) (
 
 	l.Info().Uint32("target_sample_rate", deps.SttTargetSampleRate).Msg("Ses kaydı stream'i açıldı, VAD döngüsü başlıyor...")
 
-	const listeningTimeout = 20 * time.Second
-	const silenceThresholdDuration = 2 * time.Second
-	const vadStartupGracePeriod = 300 * time.Millisecond
+	// --- DEĞİŞTİRİLEN KISIM BAŞLANGICI ---
+	const listeningTimeout = 20 * time.Second            // Kullanıcının konuşmaya başlaması için toplam bekleme süresi
+	const silenceThresholdDuration = 2 * time.Second     // Konuşma bittikten sonra ne kadar sessizlik bekleneceği
+	const vadStartupGracePeriod = 300 * time.Millisecond // Konuşmanın başındaki kırpmaları önlemek için ek süre
 
 	ctxWithTimeout, cancel := context.WithTimeout(ctx, listeningTimeout)
 	defer cancel()
@@ -175,6 +175,7 @@ func recordAudio(ctx context.Context, deps *Dependencies, st *state.CallState) (
 		default:
 		}
 
+		// Konuşma başladıktan sonra belirli bir süre sessizlik olursa döngüyü sonlandır.
 		if speechStarted && time.Since(lastAudioTime) > silenceThresholdDuration {
 			l.Info().Msg("Sessizlik eşiğine ulaşıldı, kayıt tamamlandı.")
 			return audioData.Bytes(), nil
@@ -191,6 +192,7 @@ func recordAudio(ctx context.Context, deps *Dependencies, st *state.CallState) (
 				l.Info().Msg("RecordAudio stream'i iptal edildi.")
 				return nil, context.Canceled
 			}
+			// Stream'den okuma hatalarında kısa bir bekleme, sürekli CPU kullanımını önler.
 			l.Warn().Err(err).Msg("Stream'den okuma hatası, 20ms sonra devam edilecek.")
 			time.Sleep(20 * time.Millisecond)
 			continue
@@ -200,18 +202,29 @@ func recordAudio(ctx context.Context, deps *Dependencies, st *state.CallState) (
 			audioData.Write(chunk.AudioData)
 			lastAudioTime = time.Now()
 			if !speechStarted {
+				// Konuşmanın ilk anını kaçırmamak için kısa bir bekleme
 				time.Sleep(vadStartupGracePeriod)
 				speechStarted = true
 				l.Info().Msg("Konuşma aktivitesi tespit edildi.")
 			}
 		} else {
+			// Ses verisi gelmediğinde CPU'yu yormamak için kısa bir bekleme
 			time.Sleep(20 * time.Millisecond)
 		}
 	}
+	// --- DEĞİŞTİRİLEN KISIM SONU ---
 }
 
 // playText, bir metni TTS ile sese çevirir ve media-service aracılığıyla çalar.
 func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *state.CallState, textToPlay string) {
+	// --- YENİ EKLENEN KISIM BAŞLANGICI ---
+	// Asıl sesi çalmadan önce, NAT (Ağ Adresi Çevirimi) bağlantısını "uyandırmak" için
+	// çok kısa bir anons çalıyoruz. Bu, uzun sessizliklerden sonra sesin kullanıcıya
+	// ulaşmama sorununu çözer.
+	l.Info().Msg("NAT bağlantısını uyandırmak için kısa bir anons çalınıyor...")
+	PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_NAT_WARMER")
+	// --- YENİ EKLENEN KISIM SONU
+
 	l.Info().Str("text", textToPlay).Msg("Metin sese dönüştürülüyor...")
 	speakerURL, useCloning := st.Event.Dialplan.Action.ActionData.Data["speaker_wav_url"]
 	voiceSelector, useVoiceSelector := st.Event.Dialplan.Action.ActionData.Data["voice_selector"]
