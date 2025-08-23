@@ -6,7 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
-	"encoding/binary" // YENİ IMPORT
+	"encoding/binary"
 	"fmt"
 	"io"
 	"net/url"
@@ -37,6 +37,11 @@ type Dependencies struct {
 	EventsFailed        *prometheus.CounterVec
 }
 
+// =============================================================================
+// === ANA DURUM FONKSİYONLARI (STATE FUNCTIONS) ===============================
+// =============================================================================
+
+// StateFnWelcoming, çağrının başlangıcında kullanıcıyı karşılar.
 func StateFnWelcoming(ctx context.Context, deps *Dependencies, st *state.CallState) (*state.CallState, error) {
 	l := deps.Log.With().Str("call_id", st.CallID).Logger()
 	welcomeText, err := generateWelcomeText(ctx, deps, l, st)
@@ -49,50 +54,48 @@ func StateFnWelcoming(ctx context.Context, deps *Dependencies, st *state.CallSta
 	return st, nil
 }
 
-// func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallState) (*state.CallState, error) {
-// 	l := deps.Log.With().Str("call_id", st.CallID).Logger()
-// 	l.Info().Msg("Kullanıcıdan ses bekleniyor...")
+// StateFnListening, kullanıcıdan sesli girdi bekler, kaydeder ve metne çevirir.
+func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallState) (*state.CallState, error) {
+	l := deps.Log.With().Str("call_id", st.CallID).Logger()
+	l.Info().Msg("Kullanıcıdan ses bekleniyor...")
 
-// 	// Bu fonksiyon artık ham, başlıksız PCM verisi döndürüyor.
-// 	pcmData, err := recordAudio(ctx, deps, st)
-// 	if err != nil {
-// 		if err == context.Canceled || status.Code(err) == codes.Canceled {
-// 			return st, context.Canceled
-// 		}
-// 		l.Error().Err(err).Msg("Ses kaydı sırasında bir hata oluştu, tekrar dinleniyor.")
-// 		return st, nil
-// 	}
-// 	if len(pcmData) == 0 {
-// 		l.Warn().Msg("Kullanıcı konuşmadı veya boş ses verisi alındı. Tekrar dinleniyor.")
-// 		PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_CANT_HEAR_YOU")
-// 		return st, nil
-// 	}
+	pcmData, err := recordAudio(ctx, deps, st)
+	if err != nil {
+		if err == context.Canceled || status.Code(err) == codes.Canceled {
+			return st, context.Canceled
+		}
+		l.Error().Err(err).Msg("Ses kaydı sırasında bir hata oluştu, tekrar dinleniyor.")
+		return st, nil
+	}
+	if len(pcmData) == 0 {
+		l.Warn().Msg("Kullanıcı konuşmadı veya boş ses verisi alındı. Tekrar dinleniyor.")
+		PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_CANT_HEAR_YOU")
+		return st, nil
+	}
 
-// 	// --- YENİ ADIM: Ham PCM verisine WAV başlığı ekliyoruz ---
-// 	wavData, err := addWavHeader(pcmData, deps.SttTargetSampleRate)
-// 	if err != nil {
-// 		return st, fmt.Errorf("wav başlığı oluşturulamadı: %w", err)
-// 	}
-// 	l.Info().Int("pcm_size", len(pcmData)).Int("wav_size", len(wavData)).Msg("WAV başlığı eklendi.")
-// 	// --- YENİ ADIM SONU ---
+	wavData, err := addWavHeader(pcmData, deps.SttTargetSampleRate)
+	if err != nil {
+		return st, fmt.Errorf("wav başlığı oluşturulamadı: %w", err)
+	}
+	l.Info().Int("pcm_size_kb", len(pcmData)/1024).Int("wav_size_kb", len(wavData)/1024).Msg("WAV başlığı eklendi.")
 
-// 	languageCode := getLanguageCode(st.Event)
-// 	// STT client'ına artık geçerli bir WAV dosyası gönderiyoruz.
-// 	transcribedText, err := deps.STTClient.Transcribe(ctx, wavData, languageCode, st.TraceID)
-// 	if err != nil {
-// 		return st, fmt.Errorf("ses metne çevrilemedi: %w", err)
-// 	}
-// 	if transcribedText == "" {
-// 		l.Warn().Msg("STT boş metin döndürdü, tekrar dinleniyor.")
-// 		PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_CANT_UNDERSTAND")
-// 		return st, nil
-// 	}
+	languageCode := getLanguageCode(st.Event)
+	transcribedText, err := deps.STTClient.Transcribe(ctx, wavData, languageCode, st.TraceID)
+	if err != nil {
+		return st, fmt.Errorf("ses metne çevrilemedi: %w", err)
+	}
+	if transcribedText == "" {
+		l.Warn().Msg("STT boş metin döndürdü, tekrar dinleniyor.")
+		PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_CANT_UNDERSTAND")
+		return st, nil
+	}
 
-// 	st.Conversation = append(st.Conversation, map[string]string{"user": transcribedText})
-// 	st.CurrentState = state.StateThinking
-// 	return st, nil
-// }
+	st.Conversation = append(st.Conversation, map[string]string{"user": transcribedText})
+	st.CurrentState = state.StateThinking
+	return st, nil
+}
 
+// StateFnThinking, LLM kullanarak bir yanıt üretir.
 func StateFnThinking(ctx context.Context, deps *Dependencies, st *state.CallState) (*state.CallState, error) {
 	l := deps.Log.With().Str("call_id", st.CallID).Logger()
 	l.Info().Msg("LLM'den yanıt üretiliyor...")
@@ -110,31 +113,104 @@ func StateFnThinking(ctx context.Context, deps *Dependencies, st *state.CallStat
 	return st, nil
 }
 
+// StateFnSpeaking, üretilen yanıtı seslendirir ve döngüyü yeniden başlatır.
 func StateFnSpeaking(ctx context.Context, deps *Dependencies, st *state.CallState) (*state.CallState, error) {
 	l := deps.Log.With().Str("call_id", st.CallID).Logger()
 	lastAiMessage := st.Conversation[len(st.Conversation)-1]["ai"]
 	l.Info().Str("text", lastAiMessage).Msg("AI yanıtı seslendiriliyor...")
 	playText(ctx, deps, l, st, lastAiMessage)
 
-	// --- KRİTİK DÜZELTME BURADA ---
-	// Sistemin kendi sesinin yankısını duymaması için kısa bir bekleme ekliyoruz.
-	// Bu, ağ ve ses kartı gecikmelerini telafi eder.
+	// Sistemin kendi sesinin yankısını duymasını önlemek için kısa bir bekleme.
 	time.Sleep(250 * time.Millisecond)
-	// --- DÜZELTME SONU ---
 
 	st.CurrentState = state.StateListening
 	return st, nil
 }
 
-// --- Helper Functions ---
+// =============================================================================
+// === YARDIMCI AKIŞ FONKSİYONLARI (HELPER FLOW FUNCTIONS) =====================
+// =============================================================================
 
-var allowedSpeakerDomains = map[string]bool{"sentiric.github.io": true}
+// recordAudio, VAD (Voice Activity Detection) mantığıyla ses kaydı yapar.
+func recordAudio(ctx context.Context, deps *Dependencies, st *state.CallState) ([]byte, error) {
+	l := deps.Log.With().Str("call_id", st.CallID).Logger()
+	grpcCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", st.TraceID)
 
-func isAllowedSpeakerURL(rawURL string) bool {
-	u, e := url.Parse(rawURL)
-	return e == nil && (u.Scheme == "http" || u.Scheme == "https") && allowedSpeakerDomains[u.Hostname()]
+	stream, err := deps.MediaClient.RecordAudio(grpcCtx, &mediav1.RecordAudioRequest{
+		ServerRtpPort:    uint32(st.Event.Media["server_rtp_port"].(float64)),
+		TargetSampleRate: &deps.SttTargetSampleRate,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("media service ile stream oluşturulamadı: %w", err)
+	}
+
+	l.Info().Uint32("target_sample_rate", deps.SttTargetSampleRate).Msg("Ses kaydı stream'i açıldı, VAD döngüsü başlıyor...")
+
+	const listeningTimeout = 20 * time.Second
+	const silenceThresholdDuration = 2 * time.Second
+	const vadStartupGracePeriod = 300 * time.Millisecond
+
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, listeningTimeout)
+	defer cancel()
+
+	var audioData bytes.Buffer
+	var speechStarted bool
+	var lastAudioTime = time.Now()
+
+	for {
+		select {
+		case <-ctxWithTimeout.Done():
+			if audioData.Len() > 0 {
+				l.Info().Msg("Genel zaman aşımına ulaşıldı, kayıt tamamlandı.")
+				return audioData.Bytes(), nil
+			}
+			l.Warn().Msg("Dinleme zaman aşımına uğradı, kullanıcı hiç konuşmadı.")
+			return nil, nil
+		case <-stream.Context().Done():
+			l.Warn().Err(stream.Context().Err()).Msg("gRPC stream context'i sonlandı (muhtemelen çağrı kapandı).")
+			if audioData.Len() > 0 {
+				return audioData.Bytes(), nil
+			}
+			return nil, context.Canceled
+		default:
+		}
+
+		if speechStarted && time.Since(lastAudioTime) > silenceThresholdDuration {
+			l.Info().Msg("Sessizlik eşiğine ulaşıldı, kayıt tamamlandı.")
+			return audioData.Bytes(), nil
+		}
+
+		chunk, err := stream.Recv()
+		if err != nil {
+			if err == io.EOF {
+				l.Info().Msg("Media-service stream'i kapattı (EOF). Kayıt tamamlandı.")
+				return audioData.Bytes(), nil
+			}
+			stErr, _ := status.FromError(err)
+			if stErr.Code() == codes.Canceled {
+				l.Info().Msg("RecordAudio stream'i iptal edildi.")
+				return nil, context.Canceled
+			}
+			l.Warn().Err(err).Msg("Stream'den okuma hatası, 20ms sonra devam edilecek.")
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+
+		if chunk != nil && len(chunk.AudioData) > 0 {
+			audioData.Write(chunk.AudioData)
+			lastAudioTime = time.Now()
+			if !speechStarted {
+				time.Sleep(vadStartupGracePeriod)
+				speechStarted = true
+				l.Info().Msg("Konuşma aktivitesi tespit edildi.")
+			}
+		} else {
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
 }
 
+// playText, bir metni TTS ile sese çevirir ve media-service aracılığıyla çalar.
 func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *state.CallState, textToPlay string) {
 	l.Info().Str("text", textToPlay).Msg("Metin sese dönüştürülüyor...")
 	speakerURL, useCloning := st.Event.Dialplan.Action.ActionData.Data["speaker_wav_url"]
@@ -183,7 +259,6 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 	defer playCancel()
 
 	_, err = deps.MediaClient.PlayAudio(playCtx, playReq)
-
 	if err != nil {
 		stErr, ok := status.FromError(err)
 		if ok && stErr.Code() == codes.Canceled {
@@ -197,142 +272,7 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 	}
 }
 
-// #############################################################################
-// ###                      NİHAİ VE DÜZELTİLMİŞ FONKSİYON                     ###
-// #############################################################################
-func recordAudio(ctx context.Context, deps *Dependencies, st *state.CallState) ([]byte, error) {
-	l := deps.Log.With().Str("call_id", st.CallID).Logger()
-	grpcCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", st.TraceID)
-
-	stream, err := deps.MediaClient.RecordAudio(grpcCtx, &mediav1.RecordAudioRequest{
-		ServerRtpPort:    uint32(st.Event.Media["server_rtp_port"].(float64)),
-		TargetSampleRate: &deps.SttTargetSampleRate,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("media service ile stream oluşturulamadı: %w", err)
-	}
-
-	l.Info().Uint32("target_sample_rate", deps.SttTargetSampleRate).Msg("Ses kaydı stream'i açıldı, VAD döngüsü başlıyor...")
-
-	const listeningTimeout = 20 * time.Second        // DİKKAT: Toplam dinleme süresini artırdık.
-	const silenceThresholdDuration = 2 * time.Second // DİKKAT: Sessizlik eşiğini artırdık.
-	const vadStartupGracePeriod = 300 * time.Millisecond
-
-	ctxWithTimeout, cancel := context.WithTimeout(ctx, listeningTimeout)
-	defer cancel()
-
-	var audioData bytes.Buffer
-	var speechStarted bool
-	var lastAudioTime time.Time = time.Now() // DİKKAT: Başlangıç zamanını şimdi olarak ayarlıyoruz.
-
-	for {
-		select {
-		case <-ctxWithTimeout.Done():
-			if audioData.Len() > 0 {
-				l.Info().Msg("Genel zaman aşımına ulaşıldı, kayıt tamamlandı.")
-				return audioData.Bytes(), nil
-			}
-			l.Warn().Msg("Dinleme zaman aşımına uğradı, kullanıcı hiç konuşmadı.")
-			return nil, nil
-		case <-stream.Context().Done():
-			l.Warn().Err(stream.Context().Err()).Msg("gRPC stream context'i sonlandı (muhtemelen çağrı kapandı).")
-			if audioData.Len() > 0 {
-				return audioData.Bytes(), nil
-			}
-			return nil, context.Canceled
-		default:
-		}
-
-		// DİKKAT: Sessizlik kontrolünü döngünün başına taşıdık.
-		if speechStarted && time.Since(lastAudioTime) > silenceThresholdDuration {
-			l.Info().Msg("Sessizlik eşiğine ulaşıldı, kayıt tamamlandı.")
-			return audioData.Bytes(), nil
-		}
-
-		chunk, err := stream.Recv()
-
-		if err != nil {
-			if err == io.EOF {
-				l.Info().Msg("Media-service stream'i kapattı (EOF). Kayıt tamamlandı.")
-				return audioData.Bytes(), nil
-			}
-			stErr, _ := status.FromError(err)
-			if stErr.Code() == codes.Canceled {
-				l.Info().Msg("RecordAudio stream'i iptal edildi.")
-				return nil, context.Canceled
-			}
-			l.Warn().Err(err).Msg("Stream'den okuma hatası, 20ms sonra devam edilecek.")
-			time.Sleep(20 * time.Millisecond)
-			continue
-		}
-
-		if chunk != nil && len(chunk.AudioData) > 0 {
-			audioData.Write(chunk.AudioData)
-			lastAudioTime = time.Now()
-
-			if !speechStarted {
-				time.Sleep(vadStartupGracePeriod)
-				speechStarted = true
-				l.Info().Msg("Konuşma aktivitesi tespit edildi.")
-			}
-		} else {
-			// Boş chunk gelirse, döngüye devam et ama timeout'u bekletme
-			time.Sleep(20 * time.Millisecond)
-		}
-	}
-}
-
-func getLanguageCode(event *state.CallEvent) string {
-	if event.Dialplan != nil && event.Dialplan.MatchedUser != nil && event.Dialplan.MatchedUser.PreferredLanguageCode != nil && *event.Dialplan.MatchedUser.PreferredLanguageCode != "" {
-		return *event.Dialplan.MatchedUser.PreferredLanguageCode
-	}
-	if event.Dialplan != nil && event.Dialplan.GetInboundRoute() != nil && event.Dialplan.GetInboundRoute().DefaultLanguageCode != "" {
-		return event.Dialplan.GetInboundRoute().DefaultLanguageCode
-	}
-	return "tr"
-}
-
-func buildLlmPrompt(ctx context.Context, deps *Dependencies, st *state.CallState) (string, error) {
-	languageCode := getLanguageCode(st.Event)
-	systemPrompt, err := database.GetTemplateFromDB(deps.DB, "PROMPT_SYSTEM_DEFAULT", languageCode, st.TenantID)
-	if err != nil {
-		deps.Log.Error().Err(err).Str("call_id", st.CallID).Msg("Sistem prompt'u alınamadı, fallback kullanılıyor.")
-		systemPrompt = "Aşağıdaki diyaloğa devam et. Cevapların kısa olsun."
-	}
-	var promptBuilder strings.Builder
-	promptBuilder.WriteString(systemPrompt)
-	promptBuilder.WriteString("\n\n--- KONUŞMA GEÇMİŞİ ---\n")
-	for _, msg := range st.Conversation {
-		if text, ok := msg["user"]; ok {
-			promptBuilder.WriteString(fmt.Sprintf("Kullanıcı: %s\n", text))
-		} else if text, ok := msg["ai"]; ok {
-			promptBuilder.WriteString(fmt.Sprintf("Asistan: %s\n", text))
-		}
-	}
-	promptBuilder.WriteString("Asistan:")
-	return promptBuilder.String(), nil
-}
-
-func generateWelcomeText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *state.CallState) (string, error) {
-	languageCode := getLanguageCode(st.Event)
-	var promptID string
-	if st.Event.Dialplan.MatchedUser != nil && st.Event.Dialplan.MatchedUser.Name != nil {
-		promptID = "PROMPT_WELCOME_KNOWN_USER"
-	} else {
-		promptID = "PROMPT_WELCOME_GUEST"
-	}
-	promptTemplate, err := database.GetTemplateFromDB(deps.DB, promptID, languageCode, st.TenantID)
-	if err != nil {
-		l.Error().Err(err).Msg("Prompt şablonu veritabanından alınamadı.")
-		return "Merhaba, hoş geldiniz.", err
-	}
-	prompt := promptTemplate
-	if st.Event.Dialplan.MatchedUser != nil && st.Event.Dialplan.MatchedUser.Name != nil {
-		prompt = strings.Replace(prompt, "{user_name}", *st.Event.Dialplan.MatchedUser.Name, -1)
-	}
-	return deps.LLMClient.Generate(ctx, prompt, st.TraceID)
-}
-
+// PlayAnnouncement, veritabanından önceden tanımlanmış bir ses dosyasını çalar.
 func PlayAnnouncement(deps *Dependencies, l zerolog.Logger, st *state.CallState, announcementID string) {
 	languageCode := getLanguageCode(st.Event)
 	audioPath, err := database.GetAnnouncementPathFromDB(deps.DB, announcementID, st.TenantID, languageCode)
@@ -366,7 +306,54 @@ func PlayAnnouncement(deps *Dependencies, l zerolog.Logger, st *state.CallState,
 	}
 }
 
-// --- YENİ YARDIMCI FONKSİYON: addWavHeader ---
+// =============================================================================
+// === VERİ HAZIRLAMA VE İŞLEME FONKSİYONLARI ==================================
+// =============================================================================
+
+// generateWelcomeText, LLM kullanarak kullanıcıya özel bir karşılama metni oluşturur.
+func generateWelcomeText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *state.CallState) (string, error) {
+	languageCode := getLanguageCode(st.Event)
+	var promptID string
+	if st.Event.Dialplan.MatchedUser != nil && st.Event.Dialplan.MatchedUser.Name != nil {
+		promptID = "PROMPT_WELCOME_KNOWN_USER"
+	} else {
+		promptID = "PROMPT_WELCOME_GUEST"
+	}
+	promptTemplate, err := database.GetTemplateFromDB(deps.DB, promptID, languageCode, st.TenantID)
+	if err != nil {
+		l.Error().Err(err).Msg("Prompt şablonu veritabanından alınamadı.")
+		return "Merhaba, hoş geldiniz.", err
+	}
+	prompt := promptTemplate
+	if st.Event.Dialplan.MatchedUser != nil && st.Event.Dialplan.MatchedUser.Name != nil {
+		prompt = strings.Replace(prompt, "{user_name}", *st.Event.Dialplan.MatchedUser.Name, -1)
+	}
+	return deps.LLMClient.Generate(ctx, prompt, st.TraceID)
+}
+
+// buildLlmPrompt, konuşma geçmişini ve sistem prompt'unu birleştirerek LLM için bir bağlam oluşturur.
+func buildLlmPrompt(ctx context.Context, deps *Dependencies, st *state.CallState) (string, error) {
+	languageCode := getLanguageCode(st.Event)
+	systemPrompt, err := database.GetTemplateFromDB(deps.DB, "PROMPT_SYSTEM_DEFAULT", languageCode, st.TenantID)
+	if err != nil {
+		deps.Log.Error().Err(err).Str("call_id", st.CallID).Msg("Sistem prompt'u alınamadı, fallback kullanılıyor.")
+		systemPrompt = "Aşağıdaki diyaloğa devam et. Cevapların kısa olsun."
+	}
+	var promptBuilder strings.Builder
+	promptBuilder.WriteString(systemPrompt)
+	promptBuilder.WriteString("\n\n--- KONUŞMA GEÇMİŞİ ---\n")
+	for _, msg := range st.Conversation {
+		if text, ok := msg["user"]; ok {
+			promptBuilder.WriteString(fmt.Sprintf("Kullanıcı: %s\n", text))
+		} else if text, ok := msg["ai"]; ok {
+			promptBuilder.WriteString(fmt.Sprintf("Asistan: %s\n", text))
+		}
+	}
+	promptBuilder.WriteString("Asistan:")
+	return promptBuilder.String(), nil
+}
+
+// addWavHeader, ham PCM verisine geçerli bir WAV başlığı ekler.
 func addWavHeader(pcmData []byte, sampleRate uint32) ([]byte, error) {
 	const numChannels uint16 = 1
 	const bitsPerSample uint16 = 16
@@ -378,81 +365,42 @@ func addWavHeader(pcmData []byte, sampleRate uint32) ([]byte, error) {
 
 	byteRate := sampleRate * uint32(numChannels) * (uint32(bitsPerSample) / 8)
 	blockAlign := numChannels * (bitsPerSample / 8)
-
 	fileSize := 36 + dataSize
 
 	var header bytes.Buffer
-
-	// RIFF Header
 	header.WriteString("RIFF")
 	binary.Write(&header, binary.LittleEndian, fileSize)
 	header.WriteString("WAVE")
-
-	// fmt chunk
 	header.WriteString("fmt ")
-	binary.Write(&header, binary.LittleEndian, uint32(16)) // Sub-chunk size (16 for PCM)
-	binary.Write(&header, binary.LittleEndian, uint16(1))  // Audio format (1 for PCM)
+	binary.Write(&header, binary.LittleEndian, uint32(16))
+	binary.Write(&header, binary.LittleEndian, uint16(1))
 	binary.Write(&header, binary.LittleEndian, numChannels)
 	binary.Write(&header, binary.LittleEndian, sampleRate)
 	binary.Write(&header, binary.LittleEndian, byteRate)
 	binary.Write(&header, binary.LittleEndian, blockAlign)
 	binary.Write(&header, binary.LittleEndian, bitsPerSample)
-
-	// data chunk
 	header.WriteString("data")
 	binary.Write(&header, binary.LittleEndian, dataSize)
-
-	// Başlığı ve PCM verisini birleştir
 	header.Write(pcmData)
 
 	return header.Bytes(), nil
 }
 
-// Artık bu fonksiyonlara gerek yok, binary.Write daha güvenli.
-// func uint32ToBytes(val uint32) []byte { ... }
-// func uint16ToBytes(val uint16) []byte { ... }
-
-// StateFnListening fonksiyonunu da güncelleyelim
-func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallState) (*state.CallState, error) {
-	l := deps.Log.With().Str("call_id", st.CallID).Logger()
-	l.Info().Msg("Kullanıcıdan ses bekleniyor...")
-
-	pcmData, err := recordAudio(ctx, deps, st)
-	if err != nil {
-		if err == context.Canceled || status.Code(err) == codes.Canceled {
-			return st, context.Canceled
-		}
-		l.Error().Err(err).Msg("Ses kaydı sırasında bir hata oluştu, tekrar dinleniyor.")
-		return st, nil
+// getLanguageCode, çağrı için kullanılacak dili belirler.
+func getLanguageCode(event *state.CallEvent) string {
+	if event.Dialplan != nil && event.Dialplan.MatchedUser != nil && event.Dialplan.MatchedUser.PreferredLanguageCode != nil && *event.Dialplan.MatchedUser.PreferredLanguageCode != "" {
+		return *event.Dialplan.MatchedUser.PreferredLanguageCode
 	}
-	if len(pcmData) == 0 {
-		l.Warn().Msg("Kullanıcı konuşmadı veya boş ses verisi alındı. Tekrar dinleniyor.")
-		PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_CANT_HEAR_YOU")
-		return st, nil
+	if event.Dialplan != nil && event.Dialplan.GetInboundRoute() != nil && event.Dialplan.GetInboundRoute().DefaultLanguageCode != "" {
+		return event.Dialplan.GetInboundRoute().DefaultLanguageCode
 	}
-
-	wavData, err := addWavHeader(pcmData, deps.SttTargetSampleRate)
-	if err != nil {
-		return st, fmt.Errorf("wav başlığı oluşturulamadı: %w", err)
-	}
-	l.Info().Int("pcm_size", len(pcmData)).Int("wav_size", len(wavData)).Msg("WAV başlığı eklendi.")
-
-	languageCode := getLanguageCode(st.Event)
-	transcribedText, err := deps.STTClient.Transcribe(ctx, wavData, languageCode, st.TraceID)
-	if err != nil {
-		return st, fmt.Errorf("ses metne çevrilemedi: %w", err)
-	}
-	if transcribedText == "" {
-		l.Warn().Msg("STT boş metin döndürdü, tekrar dinleniyor.")
-		PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_CANT_UNDERSTAND")
-		return st, nil
-	}
-
-	st.Conversation = append(st.Conversation, map[string]string{"user": transcribedText})
-	st.CurrentState = state.StateThinking
-	return st, nil
+	return "tr"
 }
 
-// Diğer fonksiyonlar (StateFnThinking, StateFnSpeaking, playText, vb.) aynı kalacak.
-// Sadece `IncompatibleAssign` hatasını gidermek için `addWavHeader` içindeki `uint...ToBytes`
-// fonksiyonlarını `encoding/binary` paketiyle değiştiriyorum, bu daha standart ve güvenli bir yöntem.
+// isAllowedSpeakerURL, SSRF saldırılarını önlemek için speaker_wav_url'yi kontrol eder.
+var allowedSpeakerDomains = map[string]bool{"sentiric.github.io": true}
+
+func isAllowedSpeakerURL(rawURL string) bool {
+	u, e := url.Parse(rawURL)
+	return e == nil && (u.Scheme == "http" || u.Scheme == "https") && allowedSpeakerDomains[u.Hostname()]
+}
