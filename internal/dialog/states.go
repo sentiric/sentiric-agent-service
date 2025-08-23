@@ -52,25 +52,32 @@ func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallSta
 	l := deps.Log.With().Str("call_id", st.CallID).Logger()
 	l.Info().Msg("Kullanıcıdan ses bekleniyor...")
 
-	audioData, err := recordAudio(ctx, deps, st)
+	// Bu fonksiyon artık ham, başlıksız PCM verisi döndürüyor.
+	pcmData, err := recordAudio(ctx, deps, st)
 	if err != nil {
-		// Eğer context ana döngü tarafından iptal edildiyse, hatayı yukarı taşı
 		if err == context.Canceled || status.Code(err) == codes.Canceled {
 			return st, context.Canceled
 		}
-		// Diğer hatalar loglanır ama döngüyü kırmaz
 		l.Error().Err(err).Msg("Ses kaydı sırasında bir hata oluştu, tekrar dinleniyor.")
-		return st, nil // Hata durumunda tekrar dinlemeye geç
+		return st, nil
 	}
-	if len(audioData) == 0 {
+	if len(pcmData) == 0 {
 		l.Warn().Msg("Kullanıcı konuşmadı veya boş ses verisi alındı. Tekrar dinleniyor.")
-		// DÜZELTME: Kullanıcı konuşmadığında bir anons çalalım.
 		PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_CANT_HEAR_YOU")
 		return st, nil
 	}
 
+	// --- YENİ ADIM: Ham PCM verisine WAV başlığı ekliyoruz ---
+	wavData, err := addWavHeader(pcmData, deps.SttTargetSampleRate)
+	if err != nil {
+		return st, fmt.Errorf("wav başlığı oluşturulamadı: %w", err)
+	}
+	l.Info().Int("pcm_size", len(pcmData)).Int("wav_size", len(wavData)).Msg("WAV başlığı eklendi.")
+	// --- YENİ ADIM SONU ---
+
 	languageCode := getLanguageCode(st.Event)
-	transcribedText, err := deps.STTClient.Transcribe(ctx, audioData, languageCode, st.TraceID)
+	// STT client'ına artık geçerli bir WAV dosyası gönderiyoruz.
+	transcribedText, err := deps.STTClient.Transcribe(ctx, wavData, languageCode, st.TraceID)
 	if err != nil {
 		return st, fmt.Errorf("ses metne çevrilemedi: %w", err)
 	}
@@ -182,9 +189,6 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 	}
 }
 
-// #############################################################################
-// ###                      NİHAİ VE DÜZELTİLMİŞ FONKSİYON                     ###
-// #############################################################################
 func recordAudio(ctx context.Context, deps *Dependencies, st *state.CallState) ([]byte, error) {
 	l := deps.Log.With().Str("call_id", st.CallID).Logger()
 	grpcCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", st.TraceID)
@@ -201,7 +205,7 @@ func recordAudio(ctx context.Context, deps *Dependencies, st *state.CallState) (
 
 	const listeningTimeout = 15 * time.Second
 	const silenceThresholdDuration = 1*time.Second + 200*time.Millisecond
-	const vadStartupGracePeriod = 200 * time.Millisecond // Konuşmanın başında olabilecek kısa sessizlikler için tolerans
+	const vadStartupGracePeriod = 200 * time.Millisecond
 
 	ctxWithTimeout, cancel := context.WithTimeout(ctx, listeningTimeout)
 	defer cancel()
@@ -211,7 +215,6 @@ func recordAudio(ctx context.Context, deps *Dependencies, st *state.CallState) (
 	var lastAudioTime time.Time
 
 	for {
-		// Her döngüde ana context'in bitip bitmediğini kontrol et
 		select {
 		case <-ctxWithTimeout.Done():
 			if audioData.Len() > 0 {
@@ -221,16 +224,13 @@ func recordAudio(ctx context.Context, deps *Dependencies, st *state.CallState) (
 			l.Warn().Msg("Dinleme zaman aşımına uğradı, kullanıcı hiç konuşmadı.")
 			return nil, nil
 		default:
-			// Devam et
 		}
 
-		// Sessizlik kontrolü SADECE konuşma başladıktan sonra yapılır
 		if speechStarted && time.Since(lastAudioTime) > silenceThresholdDuration {
 			l.Info().Msg("Sessizlik eşiğine ulaşıldı, kayıt tamamlandı.")
 			return audioData.Bytes(), nil
 		}
 
-		// stream.Recv() bloklayıcıdır, bu yüzden bir goroutine'e gerek yok.
 		chunk, err := stream.Recv()
 
 		if err != nil {
@@ -242,7 +242,6 @@ func recordAudio(ctx context.Context, deps *Dependencies, st *state.CallState) (
 			if stErr.Code() == codes.Canceled {
 				return nil, context.Canceled
 			}
-			// Diğer hatalar (örn. network), akışı sonlandırmamalı
 			l.Warn().Err(err).Msg("Stream'den okuma hatası, 20ms sonra devam edilecek.")
 			time.Sleep(20 * time.Millisecond)
 			continue
@@ -253,20 +252,15 @@ func recordAudio(ctx context.Context, deps *Dependencies, st *state.CallState) (
 			lastAudioTime = time.Now()
 
 			if !speechStarted {
-				// İlk ses verisini aldıktan sonra kısa bir süre daha bekle,
-				// bu, "mer-....-haba" gibi kesik konuşmaların başlangıcını yakalamaya yardımcı olur.
 				time.Sleep(vadStartupGracePeriod)
 				speechStarted = true
 				l.Info().Msg("Konuşma aktivitesi tespit edildi.")
 			}
 		} else {
-			// Boş chunk gelirse, döngüye devam et
 			time.Sleep(20 * time.Millisecond)
 		}
 	}
 }
-
-// #############################################################################
 
 func getLanguageCode(event *state.CallEvent) string {
 	if event.Dialplan != nil && event.Dialplan.MatchedUser != nil && event.Dialplan.MatchedUser.PreferredLanguageCode != nil && *event.Dialplan.MatchedUser.PreferredLanguageCode != "" {
@@ -324,7 +318,6 @@ func PlayAnnouncement(deps *Dependencies, l zerolog.Logger, st *state.CallState,
 	audioPath, err := database.GetAnnouncementPathFromDB(deps.DB, announcementID, st.TenantID, languageCode)
 	if err != nil {
 		l.Error().Err(err).Str("announcement_id", announcementID).Msg("Anons yolu alınamadı, fallback deneniyor")
-		// Fallback to English if the primary language fails
 		audioPath, err = database.GetAnnouncementPathFromDB(deps.DB, announcementID, "system", "en")
 		if err != nil {
 			l.Error().Err(err).Str("announcement_id", announcementID).Msg("KRİTİK HATA: Sistem fallback anonsu dahi yüklenemedi.")
@@ -351,4 +344,64 @@ func PlayAnnouncement(deps *Dependencies, l zerolog.Logger, st *state.CallState,
 			deps.EventsFailed.WithLabelValues(st.Event.EventType, "play_announcement_failed").Inc()
 		}
 	}
+}
+
+// --- YENİ YARDIMCI FONKSİYON: addWavHeader ---
+func addWavHeader(pcmData []byte, sampleRate uint32) ([]byte, error) {
+	// DÜZELTME: Sabitleri doğru tiple tanımlıyoruz.
+	const numChannels uint16 = 1
+	const bitsPerSample uint16 = 16
+
+	dataSize := uint32(len(pcmData))
+	if dataSize == 0 {
+		return nil, fmt.Errorf("PCM verisi boş, WAV başlığı eklenemez")
+	}
+
+	byteRate := sampleRate * uint32(numChannels) * (uint32(bitsPerSample) / 8)
+	blockAlign := numChannels * (bitsPerSample / 8)
+
+	fileSize := 36 + dataSize
+
+	var header bytes.Buffer
+
+	// RIFF Header
+	header.WriteString("RIFF")
+	header.Write(uint32ToBytes(fileSize))
+	header.WriteString("WAVE")
+
+	// fmt chunk
+	header.WriteString("fmt ")
+	header.Write(uint32ToBytes(16)) // Sub-chunk size (16 for PCM)
+	header.Write(uint16ToBytes(1))  // Audio format (1 for PCM)
+	header.Write(uint16ToBytes(numChannels))
+	header.Write(uint32ToBytes(sampleRate))
+	header.Write(uint32ToBytes(byteRate))
+	// DÜZELTME: Değişkenleri doğru tipe dönüştürüyoruz.
+	header.Write(uint16ToBytes(blockAlign))
+	header.Write(uint16ToBytes(bitsPerSample))
+
+	// data chunk
+	header.WriteString("data")
+	header.Write(uint32ToBytes(dataSize))
+
+	// Başlığı ve PCM verisini birleştir
+	header.Write(pcmData)
+
+	return header.Bytes(), nil
+}
+
+func uint32ToBytes(val uint32) []byte {
+	buf := make([]byte, 4)
+	buf[0] = byte(val)
+	buf[1] = byte(val >> 8)
+	buf[2] = byte(val >> 16)
+	buf[3] = byte(val >> 24)
+	return buf
+}
+
+func uint16ToBytes(val uint16) []byte {
+	buf := make([]byte, 2)
+	buf[0] = byte(val)
+	buf[1] = byte(val >> 8)
+	return buf
 }
