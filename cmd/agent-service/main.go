@@ -93,6 +93,7 @@ func main() {
 	// EventHandler'ı oluştururken EventsFailed metriğini de veriyoruz.
 	eventHandler := handler.NewEventHandler(
 		db,
+		cfg, // YENİ: Config nesnesini EventHandler'a geçir
 		stateManager,
 		mediaClient,
 		userClient,

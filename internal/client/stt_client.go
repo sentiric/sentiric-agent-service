@@ -33,6 +33,12 @@ func NewSttClient(baseURL string, log zerolog.Logger) *SttClient {
 	}
 }
 
+// --- YENİ GETTER METODU ---
+// Bu metod, private olan baseURL alanına dışarıdan güvenli bir şekilde erişilmesini sağlar.
+func (c *SttClient) BaseURL() string {
+	return c.baseURL
+}
+
 func (c *SttClient) Transcribe(ctx context.Context, audioData []byte, language, traceID string) (string, error) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -57,9 +63,7 @@ func (c *SttClient) Transcribe(ctx context.Context, audioData []byte, language, 
 
 	url := fmt.Sprintf("%s/api/v1/transcribe", c.baseURL)
 
-	// --- YENİ LOGLAMA ---
 	c.log.Info().Str("url", url).Int("audio_size_kb", len(audioData)/1024).Msg("STT'ye transkripsiyon isteği gönderiliyor...")
-	// --- LOGLAMA SONU ---
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, &body)
 	if err != nil {
@@ -85,9 +89,7 @@ func (c *SttClient) Transcribe(ctx context.Context, audioData []byte, language, 
 		return "", fmt.Errorf("failed to decode stt response: %w", err)
 	}
 
-	// --- YENİ LOGLAMA ---
 	c.log.Info().Str("transcribed_text", sttResp.Text).Msg("Audio transcribed successfully")
-	// --- LOGLAMA SONU ---
 
 	return sttResp.Text, nil
 }

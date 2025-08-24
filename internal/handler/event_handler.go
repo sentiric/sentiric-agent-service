@@ -10,6 +10,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 	"github.com/sentiric/sentiric-agent-service/internal/client"
+	"github.com/sentiric/sentiric-agent-service/internal/config"
 	"github.com/sentiric/sentiric-agent-service/internal/dialog"
 	"github.com/sentiric/sentiric-agent-service/internal/state"
 	mediav1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/media/v1"
@@ -17,6 +18,7 @@ import (
 	userv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/user/v1"
 )
 
+// YENİ
 var activeCallContexts = struct {
 	sync.RWMutex
 	m map[string]context.CancelFunc
@@ -32,6 +34,7 @@ type EventHandler struct {
 
 func NewEventHandler(
 	db *sql.DB,
+	cfg *config.Config, // YENİ
 	sm *state.Manager,
 	mc mediav1.MediaServiceClient,
 	uc userv1.UserServiceClient,
@@ -44,6 +47,7 @@ func NewEventHandler(
 ) *EventHandler {
 	dialogDeps := &dialog.Dependencies{
 		DB:                  db,
+		Config:              cfg, // YENİ
 		MediaClient:         mc,
 		TTSClient:           tc,
 		LLMClient:           llmC,
