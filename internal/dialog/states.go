@@ -31,11 +31,11 @@ import (
 // Dependencies, diyalog fonksiyonlarının ihtiyaç duyduğu tüm bağımlılıkları içeren bir yapıdır.
 type Dependencies struct {
 	DB                  *sql.DB
-	Config              *config.Config // YENİ: Tam config nesnesini ekle
+	Config              *config.Config
 	MediaClient         mediav1.MediaServiceClient
 	TTSClient           ttsv1.TextToSpeechServiceClient
 	LLMClient           *client.LlmClient
-	STTClient           *client.SttClient // Artık kullanılmıyor ama uyumluluk için kalabilir
+	STTClient           *client.SttClient
 	Log                 zerolog.Logger
 	SttTargetSampleRate uint32
 	EventsFailed        *prometheus.CounterVec
@@ -58,28 +58,40 @@ func StateFnWelcoming(ctx context.Context, deps *Dependencies, st *state.CallSta
 	return st, nil
 }
 
-// StateFnListening, ARTIK DAHA BASİT. Sadece akışı başlatır ve sonucu bekler.
+// StateFnListening, kullanıcıyı dinler, döngüleri kontrol eder ve bir sonraki adıma geçer.
 func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallState) (*state.CallState, error) {
 	l := deps.Log.With().Str("call_id", st.CallID).Logger()
+
+	// --- YENİ: Döngü Kırma Kontrolü ---
+	if st.ConsecutiveFailures >= 2 {
+		l.Warn().Int("failures", st.ConsecutiveFailures).Msg("Art arda çok fazla anlama hatası. Alternatif akış tetikleniyor.")
+		PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_MAX_FAILURES") // "Üzgünüm, yardımcı olamıyorum, lütfen daha sonra tekrar deneyin." anonsunu çal
+		st.CurrentState = state.StateTerminated                       // Çağrıyı sonlandır
+		return st, nil
+	}
+	// --- KONTROL SONU ---
+
 	l.Info().Msg("Kullanıcıdan ses bekleniyor (gerçek zamanlı akış modu)...")
 
-	// Artık tüm karmaşıklık bu fonksiyonda
 	transcribedText, err := streamAndTranscribe(ctx, deps, st)
 	if err != nil {
 		if err == context.Canceled || status.Code(err) == codes.Canceled {
 			return st, context.Canceled
 		}
-		// Hata zaten loglandı, anlayamadım de ve devam et.
 		PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_ERROR")
-		return st, nil
+		st.ConsecutiveFailures++ // Hata durumunda sayacı artır
+		return st, nil           // Tekrar dinlemeye git
 	}
 
 	if transcribedText == "" {
 		l.Warn().Msg("STT boş metin döndürdü, tekrar dinleniyor.")
 		PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_CANT_UNDERSTAND")
-		return st, nil
+		st.ConsecutiveFailures++ // Boş metin durumunda sayacı artır
+		return st, nil           // Tekrar dinlemeye git
 	}
 
+	// Başarılı bir transkripsiyon olduğunda sayacı sıfırla
+	st.ConsecutiveFailures = 0
 	st.Conversation = append(st.Conversation, map[string]string{"user": transcribedText})
 	st.CurrentState = state.StateThinking
 	return st, nil
@@ -110,7 +122,6 @@ func StateFnSpeaking(ctx context.Context, deps *Dependencies, st *state.CallStat
 	l.Info().Str("text", lastAiMessage).Msg("AI yanıtı seslendiriliyor...")
 	playText(ctx, deps, l, st, lastAiMessage)
 
-	// Sistemin kendi sesinin yankısını duymasını önlemek için kısa bir bekleme.
 	time.Sleep(250 * time.Millisecond)
 
 	st.CurrentState = state.StateListening
@@ -121,29 +132,23 @@ func StateFnSpeaking(ctx context.Context, deps *Dependencies, st *state.CallStat
 // === YARDIMCI AKIŞ FONKSİYONLARI (HELPER FLOW FUNCTIONS) =====================
 // =============================================================================
 
-// BU FONKSİYONU TAMAMEN DEĞİŞTİRİYORUZ
 func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.CallState) (string, error) {
 	l := deps.Log.With().Str("call_id", st.CallID).Logger()
 
-	// --- NİHAİ DÜZELTME: Güvenli Tip Kontrolü ---
-	// st.Event.Media haritasında "server_rtp_port" anahtarının var olup olmadığını ve
-	// tipinin float64 olup olmadığını güvenli bir şekilde kontrol et.
 	portVal, ok := st.Event.Media["server_rtp_port"]
 	if !ok {
 		return "", fmt.Errorf("kritik hata: CallState içinde 'server_rtp_port' bulunamadı")
 	}
 	serverRtpPortFloat, ok := portVal.(float64)
 	if !ok {
-		// Eğer tip float64 değilse, ne olduğunu loglayalım ki anlayalım.
 		l.Error().Interface("value", portVal).Msg("Kritik hata: 'server_rtp_port' beklenen float64 tipinde değil.")
 		return "", fmt.Errorf("kritik hata: 'server_rtp_port' tipi geçersiz")
 	}
-	// --- DÜZELTME SONU ---
 
 	grpcCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", st.TraceID)
 
 	mediaStream, err := deps.MediaClient.RecordAudio(grpcCtx, &mediav1.RecordAudioRequest{
-		ServerRtpPort:    uint32(serverRtpPortFloat), // Artık güvenli olan değeri kullan
+		ServerRtpPort:    uint32(serverRtpPortFloat),
 		TargetSampleRate: &deps.SttTargetSampleRate,
 	})
 	if err != nil {
@@ -161,6 +166,14 @@ func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.Call
 	q.Set("language", getLanguageCode(st.Event))
 	q.Set("logprob_threshold", fmt.Sprintf("%f", deps.Config.SttServiceLogprobThreshold))
 	q.Set("no_speech_threshold", fmt.Sprintf("%f", deps.Config.SttServiceNoSpeechThreshold))
+
+	// --- YENİ: VAD Seviyesini Dinamik Olarak Ayarla ---
+	// Şimdilik varsayılan olarak en hoşgörülü seviyeyi (1) kullanıyoruz.
+	// Gelecekte bu değer Dialplan'den gelebilir.
+	vadLevel := "1"
+	q.Set("vad_aggressiveness", vadLevel)
+	// --- YENİ KISIM SONU ---
+
 	sttURL.RawQuery = q.Encode()
 
 	l.Info().Str("url", sttURL.String()).Msg("STT-Service'e WebSocket bağlantısı kuruluyor...")
@@ -179,8 +192,6 @@ func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.Call
 	// Goroutine 1: Media Service'ten gelen sesi STT'ye aktar
 	go func() {
 		defer func() {
-			// Bu goroutine bittiğinde (akış sonlandığında veya hata olduğunda),
-			// WebSocket bağlantısını kapatarak STT'ye sinyal gönder.
 			wsConn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 		}()
 
@@ -191,14 +202,12 @@ func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.Call
 			default:
 				chunk, err := mediaStream.Recv()
 				if err != nil {
-					// Hata veya akışın normal sonlanması durumunda döngüden çık
 					if err != io.EOF && status.Code(err) != codes.Canceled {
 						errChan <- fmt.Errorf("media stream'den okuma hatası: %w", err)
 					}
 					return
 				}
 				if err := wsConn.WriteMessage(websocket.BinaryMessage, chunk.AudioData); err != nil {
-					// WebSocket yazma hatası durumunda döngüden çık
 					if !websocket.IsCloseError(err) {
 						errChan <- fmt.Errorf("websocket'e yazma hatası: %w", err)
 					}
@@ -219,9 +228,6 @@ func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.Call
 			var result map[string]interface{}
 			if err := json.Unmarshal(message, &result); err == nil {
 				if resultType, ok := result["type"].(string); ok && resultType == "final" {
-					// --- İŞTE NİHAİ DÜZELTME ---
-					// Metin boş ("") olsa bile, bu STT'nin işini bitirdiği anlamına gelir.
-					// Bu sonucu al ve döngüyü sonlandır.
 					if text, ok := result["text"].(string); ok {
 						transcriptChan <- text
 						return

@@ -31,12 +31,13 @@ type CallEvent struct {
 }
 
 type CallState struct {
-	CallID       string
-	TraceID      string
-	TenantID     string
-	CurrentState DialogState
-	Event        *CallEvent
-	Conversation []map[string]string
+	CallID              string
+	TraceID             string
+	TenantID            string
+	CurrentState        DialogState
+	Event               *CallEvent
+	Conversation        []map[string]string
+	ConsecutiveFailures int // Anlayamama sayacı eklendi
 }
 
 type Manager struct {
@@ -65,11 +66,10 @@ func (m *Manager) Get(ctx context.Context, callID string) (*CallState, error) {
 
 func (m *Manager) Set(ctx context.Context, state *CallState) error {
 	key := "callstate:" + state.CallID
-	// DÜZELTME: Nesneyi önce JSON byte dizisine dönüştür.
-	val, err := json.Marshal(state)
+	val, err := json.Marshal(state) // 'val' burada oluşturuluyor
 	if err != nil {
 		return err
 	}
-	// DÜZELTME: Dönüştürülmüş byte dizisini Redis'e gönder.
+	// DÜZELTME: 'val' değişkeni Redis'e gönderilecek veri olarak buraya eklendi.
 	return m.rdb.Set(ctx, key, val, 2*time.Hour).Err()
 }
