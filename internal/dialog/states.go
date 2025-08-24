@@ -2,11 +2,9 @@
 package dialog
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -169,8 +167,12 @@ func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.Call
 
 	// --- YENİ: VAD Seviyesini Dinamik Olarak Ayarla ---
 	// Şimdilik varsayılan olarak en hoşgörülü seviyeyi (1) kullanıyoruz.
-	// Gelecekte bu değer Dialplan'den gelebilir.
 	vadLevel := "1"
+	if st.Event.Dialplan != nil && st.Event.Dialplan.Action != nil && st.Event.Dialplan.Action.ActionData != nil {
+		if val, ok := st.Event.Dialplan.Action.ActionData.Data["stt_vad_level"]; ok {
+			vadLevel = val
+		}
+	}
 	q.Set("vad_aggressiveness", vadLevel)
 	// --- YENİ KISIM SONU ---
 
@@ -249,7 +251,7 @@ func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.Call
 	case err := <-errChan:
 		l.Error().Err(err).Msg("Akış sırasında hata oluştu.")
 		return "", err
-	case <-time.After(20 * time.Second):
+	case <-time.After(30 * time.Second): // DEĞİŞTİRİLDİ: Zaman aşımı 30 saniyeye yükseltildi.
 		l.Warn().Msg("Transkripsiyon için zaman aşımına ulaşıldı.")
 		return "", nil
 	}
@@ -399,39 +401,6 @@ func buildLlmPrompt(ctx context.Context, deps *Dependencies, st *state.CallState
 	}
 	promptBuilder.WriteString("Asistan:")
 	return promptBuilder.String(), nil
-}
-
-// addWavHeader, ham PCM verisine geçerli bir WAV başlığı ekler. (ARTIK KULLANILMIYOR)
-func addWavHeader(pcmData []byte, sampleRate uint32) ([]byte, error) {
-	const numChannels uint16 = 1
-	const bitsPerSample uint16 = 16
-
-	dataSize := uint32(len(pcmData))
-	if dataSize == 0 {
-		return nil, fmt.Errorf("PCM verisi boş, WAV başlığı eklenemez")
-	}
-
-	byteRate := sampleRate * uint32(numChannels) * (uint32(bitsPerSample) / 8)
-	blockAlign := numChannels * (bitsPerSample / 8)
-	fileSize := 36 + dataSize
-
-	var header bytes.Buffer
-	header.WriteString("RIFF")
-	binary.Write(&header, binary.LittleEndian, fileSize)
-	header.WriteString("WAVE")
-	header.WriteString("fmt ")
-	binary.Write(&header, binary.LittleEndian, uint32(16))
-	binary.Write(&header, binary.LittleEndian, uint16(1))
-	binary.Write(&header, binary.LittleEndian, numChannels)
-	binary.Write(&header, binary.LittleEndian, sampleRate)
-	binary.Write(&header, binary.LittleEndian, byteRate)
-	binary.Write(&header, binary.LittleEndian, blockAlign)
-	binary.Write(&header, binary.LittleEndian, bitsPerSample)
-	header.WriteString("data")
-	binary.Write(&header, binary.LittleEndian, dataSize)
-	header.Write(pcmData)
-
-	return header.Bytes(), nil
 }
 
 // getLanguageCode, çağrı için kullanılacak dili belirler.
