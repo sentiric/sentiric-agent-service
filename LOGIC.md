@@ -11,7 +11,7 @@
 **Bu servis sayesinde platform:**
 1.  **Dayanıklı Olur:** Bir AI servisi (LLM/STT/TTS) yavaş yanıt verse bile, bu durum çağrıyı kuran `sip-signaling` servisini meşgul etmez. Her çağrı kendi izole sürecinde (goroutine) yönetilir.
 2.  **Akıllı Olur:** `dialplan`'den gelen "Ne yap?" komutunu (`action`), "Nasıl yap?" adımlarına (`media`, `stt`, `llm`, `tts` servislerini çağırma) dönüştürür.
-3.  **Durum Yönetimi Sağlar:** Her çağrının diyalog geçmişini ve mevcut durumunu (`WELCOMING`, `LISTENING` vb.) Redis üzerinde tutarak konuşmanın bağlamını korur.
+3.  **Bağlamsal Zeka Sağlar:** **`knowledge-service` (Kurumsal Hafıza)** ile **`llm-service` (Beyin)** arasında köprü görevi görerek, LLM'in doğru ve güncel bilgilerle yanıt vermesini sağlar.
 
 ---
 
@@ -25,43 +25,39 @@ Servis, `RabbitMQ`'dan gelen olayları dinleyen bir "tüketici" (consumer) olara
 
 ---
 
-## 3. Uçtan Uca Diyalog Akışı: Bir Konuşma Döngüsü
+## 3. Uçtan Uca Diyalog Akışı: RAG Destekli Bir Konuşma Döngüsü
 
-Bir çağrı başladıktan sonra `agent-service`'in yönettiği tipik bir konuşma döngüsü şöyledir:
+Bir çağrı başladıktan sonra `agent-service`'in yönettiği, **`knowledge-service`'i de içeren** tipik bir konuşma döngüsü şöyledir:
 
 ```mermaid
 sequenceDiagram
-    participant RabbitMQ
+    participant User as Kullanıcı
     participant AgentService as Agent Service (Orkestratör)
-    participant Redis
     participant STTService as STT Service
+    participant KnowledgeService as Knowledge Service
     participant LLMService as LLM Service
     participant TTSGateway as TTS Gateway
     participant MediaService as Media Service
 
-    RabbitMQ->>AgentService: `call.started` olayı
-    AgentService->>Redis: Yeni `CallState` oluştur (State: WELCOMING)
+    Note over AgentService: Karşılama ve ilk dinleme adımları tamamlandı...
+
+    User->>AgentService: (Sesli olarak) "VIP Check-up paketi hakkında bilgi alabilir miyim?"
+
+    AgentService->>STTService: Sesi metne çevir
+    STTService-->>AgentService: "VIP Check-up paketi hakkında bilgi alabilir miyim?"
+
+    Note right of AgentService: Niyetin "bilgi talebi" olduğunu anlar. <br> **RAG akışını başlatır.**
     
-    Note over AgentService: **Karşılama Aşaması**
-    AgentService->>LLMService: Karşılama metni üret
-    LLMService-->>AgentService: "Merhaba Azmi, nasıl yardımcı olabilirim?"
+    AgentService->>KnowledgeService: Sorgu: "VIP Check-up paketi"
+    KnowledgeService-->>AgentService: İlgili dokümanlar (context)
+
+    Note right of AgentService: LLM için prompt'u zenginleştirir.
+
+    AgentService->>LLMService: Prompt: (Dokümanlar + Kullanıcı Sorusu)
+    LLMService-->>AgentService: "VIP Check-up paketimiz kan tahlilleri, EKG..."
+    
     AgentService->>TTSGateway: Metni sese çevir
     TTSGateway-->>AgentService: Ses verisi (.wav)
-    AgentService->>MediaService: Sesi kullanıcıya çal (PlayAudio)
-    AgentService->>Redis: Durumu güncelle (State: LISTENING)
 
-    Note over AgentService: **Dinleme & Anlama Aşaması**
-    AgentService->>MediaService: Kullanıcı sesini dinle (RecordAudio stream)
-    MediaService-->>AgentService: Anlık ses akışı (PCM data)
-    AgentService->>STTService: Sesi metne çevir (WebSocket stream)
-    STTService-->>AgentService: "Randevu almak istiyorum"
-    AgentService->>Redis: Durumu güncelle (State: THINKING)
-
-    Note over AgentService: **Düşünme & Yanıtlama Aşaması**
-    AgentService->>LLMService: Bağlam + "Randevu almak istiyorum"
-    LLMService-->>AgentService: "Elbette, hangi tarih için?"
-    AgentService->>TTSGateway: Metni sese çevir
-    TTSGateway-->>AgentService: Ses verisi (.wav)
     AgentService->>MediaService: Sesi kullanıcıya çal
-    AgentService->>Redis: Durumu güncelle (State: LISTENING)
 ```
