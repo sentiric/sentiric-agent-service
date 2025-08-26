@@ -13,6 +13,13 @@ Bu faz, servisin temel olayları dinleyip basit, önceden tanımlanmış eylemle
 -   [x] **Temel Eylem Yönetimi:** `dialplan` kararına göre `PlayAudio` veya `CreateUser` gibi temel gRPC çağrılarını yapabilme.
 -   [x] **HTTP İstemcisi:** `llm-service` ve `tts-service`'e basit REST istekleri atabilme.
 
+-   [ ] **Görev ID: AGENT-006 - Zaman Aşımlı ve Dayanıklı İstemciler (KRİTİK)**
+    -   **Açıklama:** Harici AI servislerine (STT, LLM, TTS) yapılan tüm gRPC ve HTTP çağrılarına makul zaman aşımları (timeout) ekle.
+    -   **Kabul Kriterleri:**
+        -   [ ] Tüm istemci çağrıları `context.WithTimeout` ile sarılmalı (örn: 15 saniye).
+        -   [ ] Bir servis zaman aşımına uğradığında veya hata döndürdüğünde, bu durum loglanmalı ve diyalog döngüsü güvenli bir şekilde sonlandırılmalı.
+        -   [ ] Hata durumunda, `media-service` üzerinden `ANNOUNCE_SYSTEM_ERROR` anonsu çalınmalı.
+
 ---
 
 ### Faz 2: Akıllı Diyalog Yönetimi (Sıradaki Öncelik)
@@ -20,11 +27,11 @@ Bu faz, servisin temel olayları dinleyip basit, önceden tanımlanmış eylemle
 Bu faz, servisi basit bir eylem tetikleyiciden, tam bir diyalog yöneticisine dönüştürmeyi hedefler.
 
 -   [ ] **Görev ID: AGENT-001 - Durum Makinesi (State Machine) Entegrasyonu**
-    -   **Açıklama:** Her bir aktif çağrının durumunu (örn: `WELCOMING`, `LISTENING`, `EXECUTING_TASK`) yönetmek için Redis tabanlı bir durum makinesi implemente et.
+    -   **Açıklama:** Her bir aktif çağrının durumunu (`WELCOMING`, `LISTENING`, `EXECUTING_TASK`) yönetmek için Redis tabanlı bir durum makinesi implemente et.
     -   **Durum:** ⬜ Planlandı.
 
 -   [ ] **Görev ID: AGENT-002 - Tam Diyalog Döngüsü**
-    -   **Açıklama:** STT -> LLM -> TTS döngüsünü tam olarak implemente et. `media-service`'ten gelen ses verisini `stt-service`'e gönder, dönen metni `llm-service`'e gönder, dönen yanıtı `tts-service` ile sese çevir ve `media-service`'e geri çal.
+    -   **Açıklama:** STT -> LLM -> TTS döngüsünü tam olarak implemente et. `media-service`'ten gelen ses verisini `stt-service`'e gönder, dönen metni `llm-service`'e gönder, dönen yanıtı `tts-gateway` ile sese çevir ve `media-service`'e geri çal.
     -   **Durum:** ⬜ Planlandı.
 
 -   [ ] **Görev ID: AGENT-003 - Akıllı AI Orkestratörü**
