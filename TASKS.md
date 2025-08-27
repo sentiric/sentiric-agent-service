@@ -13,6 +13,7 @@ Bu faz, servisin temel olayları dinleyip basit, önceden tanımlanmış eylemle
 -   [x] **Temel Eylem Yönetimi:** `dialplan` kararına göre `PlayAudio` veya `CreateUser` gibi temel gRPC çağrılarını yapabilme.
 -   [x] **HTTP İstemcisi:** `llm-service` ve `tts-service`'e basit REST istekleri atabilme.
 
+
 - [ ] **Görev ID: AGT-015 - AI Kararıyla Çağrıyı Sonlandırma (KRİTİK)**
     -   **Açıklama:** Diyalog döngüsünün belirli bir noktasında (örneğin, kullanıcı vedalaştığında, art arda anlama hatası olduğunda veya işlem tamamlandığında) çağrıyı proaktif olarak sonlandırma yeteneği ekle. Bu, `sip-signaling-service`'in yeni eklenen uzaktan sonlandırma özelliğini kullanacak.
     -   **Bağımlılık:** `sip-signaling-service` (Görev `SIG-005`)
@@ -37,12 +38,12 @@ Bu faz, servisin temel olayları dinleyip basit, önceden tanımlanmış eylemle
         -   [ ] `RunDialogLoop` içinde, döngü sonlandığında bu yeni olay `RabbitMQ`'ya gönderilmelidir.
         -   [ ] Olay, `sip-signaling-service`'in işleyebileceği standart bir formata sahip olmalıdır.
 
-- [ ] **Görev ID: AGENT-008 - Misafir Kullanıcı Oluşturma Mantığı (`PROCESS_GUEST_CALL`)**
+- [x] **Görev ID: AGENT-008 - Misafir Kullanıcı Oluşturma Mantığı (`PROCESS_GUEST_CALL`)**
     -   **Açıklama:** `dialplan`'den `PROCESS_GUEST_CALL` eylemi geldiğinde, `agent-service`'in bu "misafir" arayan için `user-service` üzerinde yeni bir kullanıcı ve iletişim kanalı oluşturmasını sağlayan mantığı implemente et.
     -   **Kabul Kriterleri:**
-        -   [ ] `agent-service`, `call.started` olayındaki `from` bilgisini ayrıştırarak arayanın numarasını almalıdır.
-        -   [ ] `user-service`'in `CreateUser` RPC'sini, `tenant_id` (dialplan'den gelen), `user_type='caller'` ve arayanın numarası ile çağırmalıdır.
-        -   [ ] Kullanıcı oluşturulduktan sonra, standart `START_AI_CONVERSATION` akışına devam edilmelidir.
+        -   [x] `agent-service`, `call.started` olayındaki `from` bilgisini ayrıştırarak arayanın numarasını almalıdır.
+        -   [x] `user-service`'in `CreateUser` RPC'sini, `tenant_id` (dialplan'den gelen), `user_type='caller'` ve arayanın numarası ile çağırmalıdır.
+        -   [x] Kullanıcı oluşturulduktan sonra, standart `START_AI_CONVERSATION` akışına devam edilmelidir.
         
 -   [ ] **Görev ID: AGENT-006 - Zaman Aşımlı ve Dayanıklı İstemciler (KRİTİK)**
     -   **Açıklama:** Harici AI servislerine (STT, LLM, TTS) yapılan tüm gRPC ve HTTP çağrılarına makul zaman aşımları (timeout) ekle.
@@ -51,11 +52,25 @@ Bu faz, servisin temel olayları dinleyip basit, önceden tanımlanmış eylemle
         -   [ ] Bir servis zaman aşımına uğradığında veya hata döndürdüğünde, bu durum loglanmalı ve diyalog döngüsü güvenli bir şekilde sonlandırılmalı.
         -   [ ] Hata durumunda, `media-service` üzerinden `ANNOUNCE_SYSTEM_ERROR` anonsu çalınmalı.
 
+
 ---
 
 ### Faz 2: Akıllı Diyalog Yönetimi (Sıradaki Öncelik)
 
 Bu faz, servisi basit bir eylem tetikleyiciden, tam bir diyalog yöneticisine dönüştürmeyi hedefler.
+# 🧠 Sentiric Agent Service - Görev Listesi
+
+-   [ ] **Görev ID: AGENT-001 - Misafir Arayanlar İçin Otomatik Kullanıcı Oluşturma**
+    -   **Açıklama:** `dialplan-service`'in bir misafir arayan tespit ettiğinde, bu kullanıcıyı sisteme otomatik olarak kaydet. Bu, "Genesis Bloğu" felsefesinin temel bir uygulamasıdır.
+    -   **Durum:** ⬜ **Planlandı**
+    -   **Ön Koşul:** `sentiric-contracts` v1.8.4+ sürümünün yayınlanmış olması.
+    -   **Kabul Kriterleri:**
+        -   [ ] RabbitMQ'dan gelen `call.started` olayları, yeni `CallStartedEvent` protobuf mesajı olarak çözümlenmeli.
+        -   [ ] Eğer `event.ResolvedAction.Action` alanı `PROCESS_GUEST_CALL` ise:
+        -   [ ] `user-service`'in `CreateUser` RPC'si, `event.From` (arayan numara) ve `event.TenantId` bilgileriyle çağrılmalı.
+        -   [ ] `CreateUser` başarılı olursa, loglara yeni `user_id` yazılmalı ve standart diyalog akışına devam edilmeli.
+        -   [ ] `CreateUser` başarısız olursa, hata loglanmalı ve çağrı için bir hata anonsu çalınmalıdır.
+
 
 -   [ ] **Görev ID: AGENT-001 - Durum Makinesi (State Machine) Entegrasyonu**
     -   **Açıklama:** Her bir aktif çağrının durumunu (`WELCOMING`, `LISTENING`, `EXECUTING_TASK`) yönetmek için Redis tabanlı bir durum makinesi implemente et.
