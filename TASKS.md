@@ -13,6 +13,24 @@ Bu faz, servisin temel olayları dinleyip basit, önceden tanımlanmış eylemle
 -   [x] **Temel Eylem Yönetimi:** `dialplan` kararına göre `PlayAudio` veya `CreateUser` gibi temel gRPC çağrılarını yapabilme.
 -   [x] **HTTP İstemcisi:** `llm-service` ve `tts-service`'e basit REST istekleri atabilme.
 
+- [ ] **Görev ID: AGT-015 - AI Kararıyla Çağrıyı Sonlandırma (KRİTİK)**
+    -   **Açıklama:** Diyalog döngüsünün belirli bir noktasında (örneğin, kullanıcı vedalaştığında, art arda anlama hatası olduğunda veya işlem tamamlandığında) çağrıyı proaktif olarak sonlandırma yeteneği ekle. Bu, `sip-signaling-service`'in yeni eklenen uzaktan sonlandırma özelliğini kullanacak.
+    -   **Bağımlılık:** `sip-signaling-service` (Görev `SIG-005`)
+    -   **Teknik Gereksinimler:**
+        -   `agent-service`'in RabbitMQ bağlantısını kullanarak `sentiric_events` exchange'ine mesaj yayınlayabilen bir fonksiyon oluşturulmalı.
+        -   Bu fonksiyon, `call.terminate.request` routing key'ini kullanarak aşağıdaki formatta bir JSON mesajı göndermelidir:
+            ```json
+            {
+              "callId": "sonlandırılacak-çağrının-id'si"
+            }
+            ```
+        -   Diyalog yöneticisi (`dialogue_manager.rs`), `State::TERMINATED` veya benzeri bir son duruma ulaştığında bu yeni fonksiyonu çağırmalıdır.
+    -   **Kabul Kriterleri:**
+        -   [ ] `agent-service`, diyalog akışını sonlandırma kararı aldığında RabbitMQ'ya doğru formatta ve doğru routing key ile bir `call.terminate.request` olayı yayınlamalıdır.
+        -   [ ] `sip-signaling-service` loglarında bu isteğin alındığı ve bir `BYE` paketinin gönderildiği görülmelidir.
+        -   [ ] Kullanıcının telefonu (SIP istemcisi) çağrının sonlandığını görmelidir.
+        -   [ ] Çağrı sonlandıktan sonra `agent-service`'in `call.ended` olayını işlemesi ve state'i temizlemesi mevcut akışı bozmamalıdır.
+        
 - [ ] **Görev ID: AGENT-007 - Çağrı Sonlandırma İsteği Yayınlama (KRİTİK)**
     -   **Açıklama:** Bir diyalog, `StateTerminated` durumuna ulaştığında (örneğin art arda anlama hatası nedeniyle), `RabbitMQ`'ya `call.terminate.request` tipinde bir olay yayınla. Bu olay, sonlandırılacak `call_id`'yi içermelidir.
     -   **Kabul Kriterleri:**
