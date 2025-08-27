@@ -13,9 +13,19 @@ Bu faz, servisin temel olayları dinleyip basit, önceden tanımlanmış eylemle
 -   [x] **Temel Eylem Yönetimi:** `dialplan` kararına göre `PlayAudio` veya `CreateUser` gibi temel gRPC çağrılarını yapabilme.
 -   [x] **HTTP İstemcisi:** `llm-service` ve `tts-service`'e basit REST istekleri atabilme.
 
--   [ ] **Görev ID: AGENT-007 - Çağrı Sonlandırma İsteği Yayınlama**
-    - **Açıklama:** Bir diyalog TERMINATED durumuna ulaştığında, RabbitMQ'ya call.terminate.request tipinde bir olay yayınla. Bu olay, sonlandırılacak call_id'yi içermelidir.
+- [ ] **Görev ID: AGENT-007 - Çağrı Sonlandırma İsteği Yayınlama (KRİTİK)**
+    -   **Açıklama:** Bir diyalog, `StateTerminated` durumuna ulaştığında (örneğin art arda anlama hatası nedeniyle), `RabbitMQ`'ya `call.terminate.request` tipinde bir olay yayınla. Bu olay, sonlandırılacak `call_id`'yi içermelidir.
+    -   **Kabul Kriterleri:**
+        -   [ ] `RunDialogLoop` içinde, döngü sonlandığında bu yeni olay `RabbitMQ`'ya gönderilmelidir.
+        -   [ ] Olay, `sip-signaling-service`'in işleyebileceği standart bir formata sahip olmalıdır.
 
+- [ ] **Görev ID: AGENT-008 - Misafir Kullanıcı Oluşturma Mantığı (`PROCESS_GUEST_CALL`)**
+    -   **Açıklama:** `dialplan`'den `PROCESS_GUEST_CALL` eylemi geldiğinde, `agent-service`'in bu "misafir" arayan için `user-service` üzerinde yeni bir kullanıcı ve iletişim kanalı oluşturmasını sağlayan mantığı implemente et.
+    -   **Kabul Kriterleri:**
+        -   [ ] `agent-service`, `call.started` olayındaki `from` bilgisini ayrıştırarak arayanın numarasını almalıdır.
+        -   [ ] `user-service`'in `CreateUser` RPC'sini, `tenant_id` (dialplan'den gelen), `user_type='caller'` ve arayanın numarası ile çağırmalıdır.
+        -   [ ] Kullanıcı oluşturulduktan sonra, standart `START_AI_CONVERSATION` akışına devam edilmelidir.
+        
 -   [ ] **Görev ID: AGENT-006 - Zaman Aşımlı ve Dayanıklı İstemciler (KRİTİK)**
     -   **Açıklama:** Harici AI servislerine (STT, LLM, TTS) yapılan tüm gRPC ve HTTP çağrılarına makul zaman aşımları (timeout) ekle.
     -   **Kabul Kriterleri:**
