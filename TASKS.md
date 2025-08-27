@@ -13,6 +13,9 @@ Bu faz, servisin temel olayları dinleyip basit, önceden tanımlanmış eylemle
 -   [x] **Temel Eylem Yönetimi:** `dialplan` kararına göre `PlayAudio` veya `CreateUser` gibi temel gRPC çağrılarını yapabilme.
 -   [x] **HTTP İstemcisi:** `llm-service` ve `tts-service`'e basit REST istekleri atabilme.
 
+-   [ ] **Görev ID: AGENT-007 - Çağrı Sonlandırma İsteği Yayınlama**
+    - **Açıklama:** Bir diyalog TERMINATED durumuna ulaştığında, RabbitMQ'ya call.terminate.request tipinde bir olay yayınla. Bu olay, sonlandırılacak call_id'yi içermelidir.
+
 -   [ ] **Görev ID: AGENT-006 - Zaman Aşımlı ve Dayanıklı İstemciler (KRİTİK)**
     -   **Açıklama:** Harici AI servislerine (STT, LLM, TTS) yapılan tüm gRPC ve HTTP çağrılarına makul zaman aşımları (timeout) ekle.
     -   **Kabul Kriterleri:**
