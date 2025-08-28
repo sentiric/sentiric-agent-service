@@ -18,6 +18,7 @@ import (
 	"github.com/sentiric/sentiric-agent-service/internal/client"
 	"github.com/sentiric/sentiric-agent-service/internal/config"
 	"github.com/sentiric/sentiric-agent-service/internal/database"
+	"github.com/sentiric/sentiric-agent-service/internal/queue" // <-- YENİ import
 	"github.com/sentiric/sentiric-agent-service/internal/state"
 	mediav1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/media/v1"
 	ttsv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/tts/v1"
@@ -26,10 +27,11 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// Dependencies, diyalog fonksiyonlarının ihtiyaç duyduğu tüm bağımlılıkları içeren bir yapıdır.
+// Dependencies yapısını GÜNCELLE
 type Dependencies struct {
 	DB                  *sql.DB
 	Config              *config.Config
+	Publisher           *queue.Publisher // <-- YENİ ALAN
 	MediaClient         mediav1.MediaServiceClient
 	TTSClient           ttsv1.TextToSpeechServiceClient
 	LLMClient           *client.LlmClient

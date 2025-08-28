@@ -1,4 +1,5 @@
 // File: cmd/agent-service/main.go
+
 package main
 
 import (
@@ -70,6 +71,13 @@ func main() {
 
 	redisClient := connectToRedisWithRetry(cfg, appLog)
 
+	rabbitCh, closeChan := queue.Connect(cfg.RabbitMQURL, appLog)
+	if rabbitCh != nil {
+		defer rabbitCh.Close()
+	}
+	// --- YENİ: Publisher'ı oluştur ---
+	publisher := queue.NewPublisher(rabbitCh, appLog)
+
 	// gRPC İstemcileri
 	mediaClient, err := client.NewMediaServiceClient(cfg)
 	if err != nil {
@@ -84,17 +92,15 @@ func main() {
 		appLog.Fatal().Err(err).Msg("TTS Gateway gRPC istemcisi oluşturulamadı")
 	}
 
-	// Modüler bileşenleri oluştur
 	stateManager := state.NewManager(redisClient)
 	llmClient := client.NewLlmClient(cfg.LlmServiceURL, appLog)
 	sttClient := client.NewSttClient(cfg.SttServiceURL, appLog)
 
-	// --- DEĞİŞİKLİK BURADA BAŞLIYOR ---
-	// EventHandler'ı oluştururken EventsFailed metriğini de veriyoruz.
 	eventHandler := handler.NewEventHandler(
 		db,
-		cfg, // YENİ: Config nesnesini EventHandler'a geçir
+		cfg,
 		stateManager,
+		publisher, // <-- YENİ: Publisher'ı enjekte et
 		mediaClient,
 		userClient,
 		ttsClient,
@@ -102,15 +108,9 @@ func main() {
 		sttClient,
 		appLog,
 		metrics.EventsProcessed,
-		metrics.EventsFailed, // Bu satır önemli!
+		metrics.EventsFailed,
 		cfg.SttServiceTargetSampleRate,
 	)
-	// --- DEĞİŞİKLİK BURADA BİTİYOR ---
-
-	rabbitCh, closeChan := queue.Connect(cfg.RabbitMQURL, appLog)
-	if rabbitCh != nil {
-		defer rabbitCh.Close()
-	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup

@@ -1,4 +1,5 @@
 // File: internal/handler/event_handler.go
+
 package handler
 
 import (
@@ -15,6 +16,7 @@ import (
 	"github.com/sentiric/sentiric-agent-service/internal/config"
 	"github.com/sentiric/sentiric-agent-service/internal/database"
 	"github.com/sentiric/sentiric-agent-service/internal/dialog"
+	"github.com/sentiric/sentiric-agent-service/internal/queue" // <-- queue importu eklendi
 	"github.com/sentiric/sentiric-agent-service/internal/state"
 	mediav1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/media/v1"
 	ttsv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/tts/v1"
@@ -26,6 +28,7 @@ import (
 
 type EventHandler struct {
 	stateManager    *state.Manager
+	publisher       *queue.Publisher // <-- YENİ alan
 	dialogDeps      *dialog.Dependencies
 	log             zerolog.Logger
 	eventsProcessed *prometheus.CounterVec
@@ -37,6 +40,7 @@ func NewEventHandler(
 	db *sql.DB,
 	cfg *config.Config,
 	sm *state.Manager,
+	pub *queue.Publisher, // <-- YENİ parametre
 	mc mediav1.MediaServiceClient,
 	uc userv1.UserServiceClient,
 	tc ttsv1.TextToSpeechServiceClient,
@@ -56,9 +60,11 @@ func NewEventHandler(
 		Log:                 log,
 		SttTargetSampleRate: sttSampleRate,
 		EventsFailed:        failed,
+		Publisher:           pub, // <-- YENİ: Publisher'ı dialogDeps'e ata
 	}
 	return &EventHandler{
 		stateManager:    sm,
+		publisher:       pub, // <-- YENİ: Publisher'ı EventHandler'a ata
 		dialogDeps:      dialogDeps,
 		log:             log,
 		eventsProcessed: processed,
