@@ -1,5 +1,4 @@
 // File: internal/handler/event_handler.go
-
 package handler
 
 import (
@@ -10,13 +9,14 @@ import (
 	"strings"
 	"time"
 
+	// <-- YENİ: redis importu eklendi
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 	"github.com/sentiric/sentiric-agent-service/internal/client"
 	"github.com/sentiric/sentiric-agent-service/internal/config"
 	"github.com/sentiric/sentiric-agent-service/internal/database"
 	"github.com/sentiric/sentiric-agent-service/internal/dialog"
-	"github.com/sentiric/sentiric-agent-service/internal/queue" // <-- queue importu eklendi
+	"github.com/sentiric/sentiric-agent-service/internal/queue"
 	"github.com/sentiric/sentiric-agent-service/internal/state"
 	mediav1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/media/v1"
 	ttsv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/tts/v1"
@@ -28,7 +28,7 @@ import (
 
 type EventHandler struct {
 	stateManager    *state.Manager
-	publisher       *queue.Publisher // <-- YENİ alan
+	publisher       *queue.Publisher
 	dialogDeps      *dialog.Dependencies
 	log             zerolog.Logger
 	eventsProcessed *prometheus.CounterVec
@@ -40,7 +40,7 @@ func NewEventHandler(
 	db *sql.DB,
 	cfg *config.Config,
 	sm *state.Manager,
-	pub *queue.Publisher, // <-- YENİ parametre
+	pub *queue.Publisher,
 	mc mediav1.MediaServiceClient,
 	uc userv1.UserServiceClient,
 	tc ttsv1.TextToSpeechServiceClient,
@@ -53,6 +53,7 @@ func NewEventHandler(
 	dialogDeps := &dialog.Dependencies{
 		DB:                  db,
 		Config:              cfg,
+		Publisher:           pub,
 		MediaClient:         mc,
 		TTSClient:           tc,
 		LLMClient:           llmC,
@@ -60,11 +61,10 @@ func NewEventHandler(
 		Log:                 log,
 		SttTargetSampleRate: sttSampleRate,
 		EventsFailed:        failed,
-		Publisher:           pub, // <-- YENİ: Publisher'ı dialogDeps'e ata
 	}
 	return &EventHandler{
 		stateManager:    sm,
-		publisher:       pub, // <-- YENİ: Publisher'ı EventHandler'a ata
+		publisher:       pub,
 		dialogDeps:      dialogDeps,
 		log:             log,
 		eventsProcessed: processed,
@@ -93,6 +93,25 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 }
 
 func (h *EventHandler) handleCallStarted(l zerolog.Logger, event *state.CallEvent) {
+	// --- YENİ: Yinelenen Çağrı İşlemesini Engelleme (DISTRIBUTED LOCK) ---
+	lockKey := "active_agent_lock:" + event.CallID
+	// SetNX (Set if Not Exists) atomik bir operasyondur.
+	// Bu anahtarı ilk oluşturan true alır, diğerleri false.
+	// 5 dakikalık bir TTL (Time To Live) ekleyerek, olası bir çökme durumunda
+	// anahtarın sonsuza dek Redis'te kalmasını engelliyoruz.
+	wasSet, err := h.stateManager.RedisClient().SetNX(context.Background(), lockKey, event.TraceID, 5*time.Minute).Result()
+	if err != nil {
+		l.Error().Err(err).Msg("Redis'e lock anahtarı yazılamadı.")
+		return
+	}
+
+	if !wasSet {
+		// Bu anahtar zaten vardı, yani başka bir işlem bu çağrıyı yönetiyor.
+		l.Warn().Msg("Bu çağrı için zaten aktif bir agent süreci var. Yinelenen 'call.started' olayı görmezden geliniyor.")
+		return
+	}
+	// --- KİLİTLEME MANTIĞI SONU ---
+
 	if event.Dialplan == nil || event.Dialplan.Action == nil {
 		l.Error().Msg("Dialplan veya action bilgisi eksik, çağrı işlenemiyor.")
 		h.eventsFailed.WithLabelValues(event.EventType, "missing_dialplan_action").Inc()
@@ -238,8 +257,17 @@ func (h *EventHandler) handleStartAIConversation(l zerolog.Logger, event *state.
 
 func (h *EventHandler) handleCallEnded(l zerolog.Logger, event *state.CallEvent) {
 	l.Info().Msg("Çağrı sonlandırma olayı işleniyor.")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
+	// --- YENİ: Çağrı bittiğinde Distributed Lock'u temizle ---
+	lockKey := "active_agent_lock:" + event.CallID
+	if err := h.stateManager.RedisClient().Del(ctx, lockKey).Err(); err != nil {
+		l.Error().Err(err).Msg("Redis'ten lock anahtarı silinemedi.")
+	} else {
+		l.Info().Msg("Aktif agent lock'ı başarıyla temizlendi.")
+	}
+	// --- TEMİZLEME SONU ---
 
 	st, err := h.stateManager.Get(ctx, event.CallID)
 	if err != nil {

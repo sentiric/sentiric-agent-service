@@ -37,7 +37,7 @@ type CallState struct {
 	CurrentState        DialogState
 	Event               *CallEvent
 	Conversation        []map[string]string
-	ConsecutiveFailures int // Anlayamama sayacı eklendi
+	ConsecutiveFailures int
 }
 
 type Manager struct {
@@ -47,6 +47,13 @@ type Manager struct {
 func NewManager(rdb *redis.Client) *Manager {
 	return &Manager{rdb: rdb}
 }
+
+// --- YENİ: RedisClient için public getter ---
+func (m *Manager) RedisClient() *redis.Client {
+	return m.rdb
+}
+
+// --- DEĞİŞİKLİK SONU ---
 
 func (m *Manager) Get(ctx context.Context, callID string) (*CallState, error) {
 	key := "callstate:" + callID
@@ -66,10 +73,9 @@ func (m *Manager) Get(ctx context.Context, callID string) (*CallState, error) {
 
 func (m *Manager) Set(ctx context.Context, state *CallState) error {
 	key := "callstate:" + state.CallID
-	val, err := json.Marshal(state) // 'val' burada oluşturuluyor
+	val, err := json.Marshal(state)
 	if err != nil {
 		return err
 	}
-	// DÜZELTME: 'val' değişkeni Redis'e gönderilecek veri olarak buraya eklendi.
 	return m.rdb.Set(ctx, key, val, 2*time.Hour).Err()
 }
