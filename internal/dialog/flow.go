@@ -1,10 +1,14 @@
 // File: internal/dialog/flow.go
-
 package dialog
 
 import (
 	"context"
+	"fmt" // YENİ: fmt importu eklendi
 	"strings"
+	"time" // YENİ: time importu eklendi
+
+	mediav1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/media/v1" // YENİ: mediav1 importu eklendi
+	"google.golang.org/grpc/metadata"                                         // YENİ: metadata importu eklendi
 
 	"github.com/sentiric/sentiric-agent-service/internal/state"
 )
@@ -18,7 +22,6 @@ var stateMap = map[state.DialogState]DialogFunc{
 	state.StateSpeaking:  StateFnSpeaking,
 }
 
-// TerminationRequest yapısını tanımla
 type TerminationRequest struct {
 	CallID string `json:"callId"`
 }
@@ -27,30 +30,63 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 	currentCallID := initialSt.CallID
 	l := deps.Log.With().Str("call_id", currentCallID).Str("trace_id", initialSt.TraceID).Logger()
 
-	// --- YENİ: defer ile döngü bittiğinde çağrıyı sonlandırma isteği gönder ---
+	// --- YENİ: Çağrı Kaydını Başlat ---
+	// Kayıt dosyasının adını oluşturuyoruz. Örn: s3:///kayitlar/tenant_id/2025-08-28_call_id.wav
+	// Şimdilik sadece wav formatını destekliyoruz.
+	recordingURI := fmt.Sprintf("s3:///%s/%s_%s.wav",
+		initialSt.TenantID,
+		time.Now().UTC().Format("2006-01-02"),
+		currentCallID,
+	)
+	l.Info().Str("uri", recordingURI).Msg("Çağrı kaydı başlatılıyor...")
+
+	startRecCtx, startRecCancel := context.WithTimeout(metadata.AppendToOutgoingContext(ctx, "x-trace-id", initialSt.TraceID), 10*time.Second)
+
+	_, err := deps.MediaClient.StartRecording(startRecCtx, &mediav1.StartRecordingRequest{
+		ServerRtpPort: uint32(initialSt.Event.Media["server_rtp_port"].(float64)),
+		OutputUri:     recordingURI,
+		SampleRate:    &deps.SttTargetSampleRate, // STT ile aynı kalitede kaydedelim
+		Format:        &[]string{"wav"}[0],       // String pointer için bu şekilde tanımlıyoruz
+	})
+	startRecCancel() // Context'i hemen iptal et, işimiz bitti.
+
+	if err != nil {
+		l.Error().Err(err).Msg("Media-service'e kayıt başlatma komutu gönderilemedi. Diyalog kayıtsız devam edecek.")
+		deps.EventsFailed.WithLabelValues(initialSt.Event.EventType, "start_recording_failed").Inc()
+	}
+	// --- DEĞİŞİKLİK SONU ---
+
 	defer func() {
-		// Panic durumunda da çalışması için recover ekleyebiliriz ama şimdilik basit tutalım.
+		// --- YENİ: Çağrı Kaydını Durdur ---
+		l.Info().Msg("Çağrı kaydı durduruluyor...")
+		stopRecCtx, stopRecCancel := context.WithTimeout(metadata.AppendToOutgoingContext(context.Background(), "x-trace-id", initialSt.TraceID), 10*time.Second)
+		defer stopRecCancel()
+
+		_, err := deps.MediaClient.StopRecording(stopRecCtx, &mediav1.StopRecordingRequest{
+			ServerRtpPort: uint32(initialSt.Event.Media["server_rtp_port"].(float64)),
+		})
+
+		if err != nil {
+			l.Error().Err(err).Msg("Media-service'e kayıt durdurma komutu gönderilemedi.")
+			deps.EventsFailed.WithLabelValues(initialSt.Event.EventType, "stop_recording_failed").Inc()
+		}
+		// --- DEĞİŞİKLİK SONU ---
+
 		finalState, err := stateManager.Get(context.Background(), currentCallID)
 		if err != nil || finalState == nil {
 			l.Error().Err(err).Msg("Döngü sonu durumu alınamadı, sonlandırma isteği gönderilemiyor.")
 			return
 		}
 
-		// Sadece diyalog bizim tarafımızdan sonlandırıldıysa (TERMINATED) isteği gönder.
-		// Eğer dışarıdan (call.ended ile) sonlandırıldıysa (ENDED), tekrar istek atmaya gerek yok.
 		if finalState.CurrentState == state.StateTerminated {
 			l.Info().Msg("Diyalog sonlandı, sip-signaling'e çağrıyı kapatma isteği gönderiliyor.")
-
 			terminationReq := TerminationRequest{CallID: currentCallID}
-
-			// Yeni oluşturduğumuz Publisher'ı kullanıyoruz.
 			err := deps.Publisher.PublishJSON(context.Background(), "call.terminate.request", terminationReq)
 			if err != nil {
 				l.Error().Err(err).Msg("Çağrı sonlandırma isteği yayınlanamadı.")
 			}
 		}
 	}()
-	// --- DEĞİŞİKLİK SONU ---
 
 	for {
 		select {
@@ -66,8 +102,14 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 			return
 		}
 
-		if st.CurrentState == state.StateEnded { // Sadece StateEnded kontrolü yeterli
+		if st.CurrentState == state.StateEnded {
 			l.Info().Str("final_state", string(st.CurrentState)).Msg("Diyalog döngüsü dış bir olayla (call.ended) sonlandırıldı.")
+			return
+		}
+
+		// Eğer durum zaten TERMINATED ise, döngüden çık.
+		if st.CurrentState == state.StateTerminated {
+			l.Info().Msg("Durum 'Terminated' olarak ayarlandı, döngü sonlandırılıyor.")
 			return
 		}
 
@@ -80,10 +122,8 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 			st, err = handlerFunc(ctx, deps, st)
 		}
 
-		// Eğer bir state fonksiyonu doğrudan sonlandırma kararı verdiyse, döngüyü kır.
 		if st.CurrentState == state.StateTerminated {
 			l.Info().Msg("Durum 'Terminated' olarak ayarlandı, döngü sonlandırılıyor.")
-			// Son durumu kaydetmeyi unutma!
 			if err := stateManager.Set(ctx, st); err != nil {
 				l.Error().Err(err).Msg("Son 'Terminated' durumu güncellenemedi.")
 			}
@@ -93,7 +133,7 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 		if err != nil {
 			if err == context.Canceled || strings.Contains(err.Error(), "context canceled") {
 				l.Warn().Msg("İşlem context iptali nedeniyle durduruldu. Döngü sonlanıyor.")
-				return // Context iptal olduysa döngüden çık
+				return
 			}
 			l.Error().Err(err).Msg("Durum işlenirken hata oluştu, sonlandırma deneniyor.")
 			PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_ERROR")
@@ -101,7 +141,7 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 			if err := stateManager.Set(ctx, st); err != nil {
 				l.Error().Err(err).Msg("Hata sonrası 'Terminated' durumu güncellenemedi.")
 			}
-			return // Hata sonrası döngüden çık
+			return
 		}
 
 		if err := stateManager.Set(ctx, st); err != nil {
