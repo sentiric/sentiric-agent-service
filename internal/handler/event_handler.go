@@ -5,14 +5,15 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 	"github.com/sentiric/sentiric-agent-service/internal/client"
 	"github.com/sentiric/sentiric-agent-service/internal/config"
+	"github.com/sentiric/sentiric-agent-service/internal/database"
 	"github.com/sentiric/sentiric-agent-service/internal/dialog"
 	"github.com/sentiric/sentiric-agent-service/internal/state"
 	userv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/user/v1"
@@ -23,10 +24,10 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-var activeCallContexts = struct {
-	sync.RWMutex
-	m map[string]context.CancelFunc
-}{m: make(map[string]context.CancelFunc)}
+// var activeCallContexts = struct {
+// 	sync.RWMutex
+// 	m map[string]context.CancelFunc
+// }{m: make(map[string]context.CancelFunc)}
 
 type EventHandler struct {
 	stateManager    *state.Manager
@@ -101,28 +102,35 @@ func (h *EventHandler) handleCallStarted(l zerolog.Logger, event *state.CallEven
 	l = l.With().Str("action", actionName).Logger()
 	l.Info().Msg("Dialplan eylemine göre çağrı yönlendiriliyor.")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	activeCallContexts.Lock()
-	if _, exists := activeCallContexts.m[event.CallID]; exists {
-		l.Warn().Msg("Bu çağrı için zaten aktif bir context var, yeni goroutine başlatılmıyor.")
-		activeCallContexts.Unlock()
-		cancel()
-		return
-	}
-	activeCallContexts.m[event.CallID] = cancel
-	activeCallContexts.Unlock()
-	defer func() {
-		activeCallContexts.Lock()
-		delete(activeCallContexts.m, event.CallID)
-		activeCallContexts.Unlock()
-		cancel()
-		l.Info().Msg("Çağrı context'i temizlendi.")
-	}()
+	// ctx, cancel := context.WithCancel(context.Background())
+	// activeCallContexts.Lock()
+	// if _, exists := activeCallContexts.m[event.CallID]; exists {
+	// 	l.Warn().Msg("Bu çağrı için zaten aktif bir context var, yeni goroutine başlatılmıyor.")
+	// 	activeCallContexts.Unlock()
+	// 	cancel()
+	// 	return
+	// }
+	// activeCallContexts.m[event.CallID] = cancel
+	// activeCallContexts.Unlock()
+	// defer func() {
+	// 	activeCallContexts.Lock()
+	// 	delete(activeCallContexts.m, event.CallID)
+	// 	activeCallContexts.Unlock()
+	// 	cancel()
+	// 	l.Info().Msg("Çağrı context'i temizlendi.")
+	// }()
+
+	// Bunun yerine basit bir context kullanın.
+	// Her handler kendi kısa ömürlü context'ini yönetmeli.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute) // Örneğin 2 dk'lık genel timeout
+	defer cancel()
 
 	switch actionName {
 	case "PROCESS_GUEST_CALL":
+		// Artık handleProcessGuestCall'a goroutine'siz, doğrudan context'i vererek çağırın.
 		h.handleProcessGuestCall(ctx, l, event)
 	case "START_AI_CONVERSATION":
+		// Artık handleStartAIConversation'a goroutine'siz, doğrudan context'i vererek çağırın.
 		h.handleStartAIConversation(ctx, l, event)
 	default:
 		l.Error().Msg("Bilinmeyen veya desteklenmeyen dialplan eylemi.")
@@ -214,24 +222,74 @@ func (h *EventHandler) handleStartAIConversation(ctx context.Context, l zerolog.
 		return
 	}
 
-	dialog.RunDialogLoop(ctx, h.dialogDeps, h.stateManager, initialState)
+	// --- YENİ ADIM: ANINDA GERİ BİLDİRİM ---
+	l.Info().Msg("Kullanıcıya 'bağlanıyor' anonsu çalınıyor...")
+	// `PlayAnnouncement` fonksiyonunu dialog paketinden handler'a taşıyabilir veya
+	// burada geçici olarak yeniden yazabiliriz.
+	// Bu, AI düşünürken kullanıcının hatta olduğunu anlamasını sağlar.
+	playInitialAnnouncement(ctx, h.dialogDeps, l, initialState, "ANNOUNCE_SYSTEM_CONNECTING")
+	// --- BİTTİ ---
+
+	// Ana diyalog döngüsünü bir goroutine içinde başlat
+	go dialog.RunDialogLoop(ctx, h.dialogDeps, h.stateManager, initialState)
 }
 
-func (h *EventHandler) handleCallEnded(l zerolog.Logger, event *state.CallEvent) {
-	activeCallContexts.Lock()
-	if cancel, ok := activeCallContexts.m[event.CallID]; ok {
-		l.Info().Msg("Aktif diyalog döngüsü için iptal sinyali gönderiliyor.")
-		cancel()
+// Bu yardımcı fonksiyonu event_handler.go dosyasının sonuna ekleyin
+func playInitialAnnouncement(ctx context.Context, deps *dialog.Dependencies, l zerolog.Logger, st *state.CallState, announcementID string) {
+	// Bu fonksiyon, dialog/states.go'daki PlayAnnouncement'ın bir kopyasıdır.
+	// Kod tekrarını önlemek için bu mantığı ortak bir yere taşımak en iyisidir.
+	languageCode := "tr" // Varsayılan veya event'ten gelen dil
+	if st.Event.Dialplan != nil && st.Event.Dialplan.GetInboundRoute() != nil {
+		languageCode = st.Event.Dialplan.GetInboundRoute().DefaultLanguageCode
 	}
-	activeCallContexts.Unlock()
 
-	st, err := h.stateManager.Get(context.Background(), event.CallID)
-	if err != nil || st == nil {
-		l.Warn().Err(err).Msg("Sonlanan çağrı için aktif bir durum bulunamadı.")
+	audioPath, err := database.GetAnnouncementPathFromDB(deps.DB, announcementID, st.TenantID, languageCode)
+	if err != nil {
+		l.Error().Err(err).Str("announcement_id", announcementID).Msg("Başlangıç anonsu yolu alınamadı")
 		return
 	}
+
+	audioURI := fmt.Sprintf("file://%s", audioPath)
+	mediaInfo := st.Event.Media
+	rtpTarget := mediaInfo["caller_rtp_addr"].(string)
+	serverPort := uint32(mediaInfo["server_rtp_port"].(float64))
+
+	playCtx, cancel := context.WithTimeout(metadata.AppendToOutgoingContext(ctx, "x-trace-id", st.TraceID), 30*time.Second)
+	defer cancel()
+
+	playReq := &mediav1.PlayAudioRequest{RtpTargetAddr: rtpTarget, ServerRtpPort: serverPort, AudioUri: audioURI}
+
+	_, err = deps.MediaClient.PlayAudio(playCtx, playReq)
+	if err != nil {
+		l.Error().Err(err).Str("announcement_id", announcementID).Msg("Başlangıç anonsu çalınamadı.")
+	} else {
+		l.Info().Str("announcement_id", announcementID).Msg("Başlangıç anonsu başarıyla çalındı.")
+	}
+}
+
+// handleCallEnded fonksiyonunu GÜNCELLEYİN:
+func (h *EventHandler) handleCallEnded(l zerolog.Logger, event *state.CallEvent) {
+	l.Info().Msg("Çağrı sonlandırma olayı işleniyor.")
+
+	// Context'i arka planda oluştur, çünkü bu işlem kısa sürecek.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	st, err := h.stateManager.Get(ctx, event.CallID)
+	if err != nil {
+		l.Error().Err(err).Msg("Sonlanan çağrı için durum Redis'ten alınamadı.")
+		return
+	}
+	if st == nil {
+		l.Warn().Msg("Sonlanan çağrı için aktif bir durum bulunamadı, işlem atlanıyor.")
+		return
+	}
+
+	// Sadece durumu güncelle. Aktif olan goroutine bunu bir sonraki döngüde görecek.
 	st.CurrentState = state.StateEnded
-	if err := h.stateManager.Set(context.Background(), st); err != nil {
+	if err := h.stateManager.Set(ctx, st); err != nil {
 		l.Error().Err(err).Msg("Redis'e 'Ended' durumu yazılamadı.")
+	} else {
+		l.Info().Msg("Çağrı durumu Redis'te 'Ended' olarak güncellendi.")
 	}
 }

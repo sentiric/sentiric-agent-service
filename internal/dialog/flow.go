@@ -38,6 +38,14 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 			return
 		}
 
+		// BU BLOKU EKLEYİN:
+		// Eğer başka bir yerden (handleCallEnded gibi) durum 'Ended' olarak set edildiyse,
+		// döngüyü temiz bir şekilde sonlandır.
+		if st.CurrentState == state.StateEnded || st.CurrentState == state.StateTerminated {
+			l.Info().Str("final_state", string(st.CurrentState)).Msg("Diyalog döngüsü sonlandırma durumuna ulaştı.")
+			return
+		}
+
 		if st.CurrentState == state.StateEnded || st.CurrentState == state.StateTerminated {
 			l.Info().Str("final_state", string(st.CurrentState)).Msg("Diyalog döngüsü sonlandırma durumuna ulaştı.")
 			return
