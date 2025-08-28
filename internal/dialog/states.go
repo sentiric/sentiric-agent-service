@@ -261,9 +261,6 @@ func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.Call
 
 // playText, bir metni TTS ile sese çevirir ve media-service aracılığıyla çalar.
 func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *state.CallState, textToPlay string) {
-	l.Info().Msg("NAT bağlantısını uyandırmak için kısa bir anons çalınıyor...")
-	PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_NAT_WARMER")
-
 	l.Info().Str("text", textToPlay).Msg("Metin sese dönüştürülüyor...")
 	speakerURL, useCloning := st.Event.Dialplan.Action.ActionData.Data["speaker_wav_url"]
 	voiceSelector, useVoiceSelector := st.Event.Dialplan.Action.ActionData.Data["voice_selector"]
@@ -284,40 +281,45 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 		ttsReq.VoiceSelector = &voiceSelector
 	}
 
+	// --- YENİ: TTS İsteği için Zaman Aşımı ---
 	ttsCtx, ttsCancel := context.WithTimeout(mdCtx, 20*time.Second)
 	defer ttsCancel()
+	// --- DEĞİŞİKLİK SONU ---
+
 	ttsResp, err := deps.TTSClient.Synthesize(ttsCtx, ttsReq)
 	if err != nil {
-		l.Error().Err(err).Msg("TTS Gateway'den yanıt alınamadı.")
+		l.Error().Err(err).Msg("TTS Gateway'den yanıt alınamadı (muhtemelen zaman aşımı).")
 		deps.EventsFailed.WithLabelValues(st.Event.EventType, "tts_gateway_failed").Inc()
+		// Hata durumunda kullanıcıya sistem hatası anonsu çal.
 		PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_ERROR")
 		return
 	}
 
 	audioBytes := ttsResp.GetAudioContent()
-	mediaType := "audio/mpeg"
-	if ttsResp.GetEngineUsed() != "sentiric-tts-edge-service" {
-		mediaType = "audio/wav"
-	}
-	encodedAudio := base64.StdEncoding.EncodeToString(audioBytes)
-	audioURI := fmt.Sprintf("data:%s;base64,%s", mediaType, encodedAudio)
+	// media-service'in WAV formatını daha iyi işlediğini varsayalım
+	audioURI := fmt.Sprintf("data:audio/wav;base64,%s", base64.StdEncoding.EncodeToString(audioBytes))
 
 	mediaInfo := st.Event.Media
 	rtpTarget := mediaInfo["caller_rtp_addr"].(string)
 	serverPort := uint32(mediaInfo["server_rtp_port"].(float64))
 	playReq := &mediav1.PlayAudioRequest{RtpTargetAddr: rtpTarget, ServerRtpPort: serverPort, AudioUri: audioURI}
 
+	// --- YENİ: Media Service İsteği için Zaman Aşımı ---
+	// Sesin çalınması uzun sürebilir, bu yüzden daha uzun bir timeout veriyoruz.
 	playCtx, playCancel := context.WithTimeout(mdCtx, 5*time.Minute)
 	defer playCancel()
+	// --- DEĞİŞİKLİK SONU ---
 
 	_, err = deps.MediaClient.PlayAudio(playCtx, playReq)
 	if err != nil {
 		stErr, ok := status.FromError(err)
-		if ok && stErr.Code() == codes.Canceled {
-			l.Info().Msg("PlayAudio işlemi başka bir komutla veya çağrı sonlandığı için iptal edildi.")
+		// Zaman aşımı hatasını da loglayalım
+		if ok && (stErr.Code() == codes.Canceled || stErr.Code() == codes.DeadlineExceeded) {
+			l.Info().Msg("PlayAudio işlemi başka bir komutla veya zaman aşımı nedeniyle iptal edildi.")
 		} else {
 			l.Error().Err(err).Msg("Hata: Dinamik ses (TTS) çalınamadı")
 			deps.EventsFailed.WithLabelValues(st.Event.EventType, "play_tts_audio_failed").Inc()
+			// Burada da hata anonsu çalmak iyi bir fikir olabilir ama zaten TTS hatasında çalıyoruz.
 		}
 	} else {
 		l.Info().Msg("Dinamik ses (TTS) başarıyla çalındı ve tamamlandı.")
