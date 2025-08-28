@@ -5,7 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt" // playInitialAnnouncement için fmt eklendi
+	"fmt"
 	"strings"
 	"time"
 
@@ -13,16 +13,16 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/sentiric/sentiric-agent-service/internal/client"
 	"github.com/sentiric/sentiric-agent-service/internal/config"
-	"github.com/sentiric/sentiric-agent-service/internal/database" // playInitialAnnouncement için database eklendi
+	"github.com/sentiric/sentiric-agent-service/internal/database"
 	"github.com/sentiric/sentiric-agent-service/internal/dialog"
 	"github.com/sentiric/sentiric-agent-service/internal/state"
 	mediav1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/media/v1"
 	ttsv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/tts/v1"
 	userv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/user/v1"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
-
-// activeCallContexts global değişkeni tamamen kaldırıldı.
 
 type EventHandler struct {
 	stateManager    *state.Manager
@@ -80,10 +80,8 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 
 	switch event.EventType {
 	case "call.started":
-		// handleCallStarted artık kendi goroutine'ini yönetiyor
 		h.handleCallStarted(l, &event)
 	case "call.ended":
-		// handleCallEnded kısa sürdüğü için goroutine içinde çağrılabilir
 		go h.handleCallEnded(l, &event)
 	}
 }
@@ -99,8 +97,6 @@ func (h *EventHandler) handleCallStarted(l zerolog.Logger, event *state.CallEven
 	l = l.With().Str("action", actionName).Logger()
 	l.Info().Msg("Dialplan eylemine göre çağrı yönlendiriliyor.")
 
-	// Context tanımı buradan kaldırıldı. Her goroutine kendi context'ini yönetecek.
-
 	switch actionName {
 	case "PROCESS_GUEST_CALL":
 		go h.handleProcessGuestCall(l, event)
@@ -112,12 +108,14 @@ func (h *EventHandler) handleCallStarted(l zerolog.Logger, event *state.CallEven
 	}
 }
 
+// =============================================================
+// === BU FONKSİYON TAMAMEN YENİLENDİ ===
+// =============================================================
 func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.CallEvent) {
-	// Bu fonksiyon artık kendi context'ini oluşturuyor.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	l.Info().Msg("Misafir kullanıcı oluşturma akışı başlatıldı.")
+	l.Info().Msg("Misafir kullanıcı akışı başlatıldı: Önce bul, yoksa oluştur.")
 
 	callerNumber := event.From
 	if strings.Contains(callerNumber, "<") {
@@ -128,50 +126,74 @@ func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.Cal
 			callerNumber = uriPart
 		}
 	}
-	l.Info().Str("caller_number", callerNumber).Msg("Arayan numara parse edildi.")
+	l = l.With().Str("caller_number", callerNumber).Logger()
+	l.Info().Msg("Arayan numara parse edildi.")
 
 	tenantID := "default"
 	if event.Dialplan.GetInboundRoute() != nil {
 		tenantID = event.Dialplan.GetInboundRoute().TenantId
 	}
 
-	createCtx, createCancel := context.WithTimeout(metadata.AppendToOutgoingContext(ctx, "x-trace-id", event.TraceID), 10*time.Second)
-	defer createCancel()
+	// 1. ADIM: Önce kullanıcıyı bu numarayla bulmayı dene
+	findCtx, findCancel := context.WithTimeout(metadata.AppendToOutgoingContext(ctx, "x-trace-id", event.TraceID), 10*time.Second)
+	defer findCancel()
 
-	createUserReq := &userv1.CreateUserRequest{
-		TenantId: tenantID,
-		UserType: "caller",
-		InitialContact: &userv1.CreateUserRequest_InitialContact{
-			ContactType:  "phone",
-			ContactValue: callerNumber,
-		},
+	findUserReq := &userv1.FindUserByContactRequest{
+		ContactType:  "phone",
+		ContactValue: callerNumber,
 	}
 
-	createdUser, err := h.userClient.CreateUser(createCtx, createUserReq)
-	if err != nil {
-		l.Error().Err(err).Msg("User-service'de misafir kullanıcı oluşturulamadı.")
-		h.eventsFailed.WithLabelValues(event.EventType, "guest_user_creation_failed").Inc()
-		// Hata durumunda, kullanıcıya bir hata anonsu çal ve akışı bitir.
-		playInitialAnnouncement(ctx, h.dialogDeps, l, &state.CallState{Event: event, TenantID: tenantID, TraceID: event.TraceID}, "ANNOUNCE_SYSTEM_ERROR")
-		return
+	foundUserRes, err := h.userClient.FindUserByContact(findCtx, findUserReq)
+
+	if err == nil && foundUserRes.User != nil {
+		// KULLANICI BULUNDU!
+		l.Info().Str("user_id", foundUserRes.User.Id).Msg("Mevcut kullanıcı bulundu, oluşturma adımı atlanıyor.")
+		event.Dialplan.MatchedUser = foundUserRes.User
+	} else {
+		// KULLANICI BULUNAMADI, şimdi oluştur.
+		st, _ := status.FromError(err)
+		if st.Code() == codes.NotFound {
+			l.Info().Msg("Kullanıcı bulunamadı, yeni bir misafir kullanıcı oluşturulacak.")
+
+			createCtx, createCancel := context.WithTimeout(metadata.AppendToOutgoingContext(ctx, "x-trace-id", event.TraceID), 10*time.Second)
+			defer createCancel()
+
+			createUserReq := &userv1.CreateUserRequest{
+				TenantId: tenantID,
+				UserType: "caller",
+				InitialContact: &userv1.CreateUserRequest_InitialContact{
+					ContactType:  "phone",
+					ContactValue: callerNumber,
+				},
+			}
+
+			createdUser, createErr := h.userClient.CreateUser(createCtx, createUserReq)
+			if createErr != nil {
+				l.Error().Err(createErr).Msg("User-service'de misafir kullanıcı oluşturulamadı.")
+				h.eventsFailed.WithLabelValues(event.EventType, "guest_user_creation_failed").Inc()
+				playInitialAnnouncement(ctx, h.dialogDeps, l, &state.CallState{Event: event, TenantID: tenantID, TraceID: event.TraceID}, "ANNOUNCE_SYSTEM_ERROR")
+				return
+			}
+			l.Info().Str("user_id", createdUser.User.Id).Msg("Misafir kullanıcı başarıyla oluşturuldu.")
+			event.Dialplan.MatchedUser = createdUser.User
+		} else {
+			// FindUserByContact başka bir hata döndürdü
+			l.Error().Err(err).Msg("Kullanıcı aranırken beklenmedik bir hata oluştu.")
+			h.eventsFailed.WithLabelValues(event.EventType, "find_user_failed").Inc()
+			playInitialAnnouncement(ctx, h.dialogDeps, l, &state.CallState{Event: event, TenantID: tenantID, TraceID: event.TraceID}, "ANNOUNCE_SYSTEM_ERROR")
+			return
+		}
 	}
 
-	l.Info().Str("user_id", createdUser.User.Id).Msg("Misafir kullanıcı başarıyla oluşturuldu.")
-	event.Dialplan.MatchedUser = createdUser.User
-
-	// Misafir oluşturulduktan sonra, asıl diyalog akışını başlat.
+	// Akışın sonunda, kullanıcı ya bulundu ya da oluşturuldu. Standart diyalog akışını başlat.
 	h.handleStartAIConversation(l, event)
 }
 
 func (h *EventHandler) handleStartAIConversation(l zerolog.Logger, event *state.CallEvent) {
-	// Bu fonksiyon, diyalog döngüsünün tüm ömrü boyunca yaşayacak olan ana context'i oluşturur.
 	ctx, cancel := context.WithCancel(context.Background())
-
-	// Diyalog döngüsü bittiğinde (ctx.Done() sinyali geldiğinde) context'i temizlemek
-	// için bir goroutine başlatıyoruz. Bu, kaynak sızıntısını önler.
 	go func() {
-		<-ctx.Done() // Diyalog döngüsünün bitmesini bekle
-		cancel()     // Kaynakları serbest bırak
+		<-ctx.Done()
+		cancel()
 		l.Info().Str("call_id", event.CallID).Msg("Diyalog context'i ve kaynakları başarıyla temizlendi.")
 	}()
 
@@ -204,11 +226,7 @@ func (h *EventHandler) handleStartAIConversation(l zerolog.Logger, event *state.
 		return
 	}
 
-	// Kullanıcıya anında geri bildirim ver: "bağlanıyor" anonsu
 	playInitialAnnouncement(ctx, h.dialogDeps, l, initialState, "ANNOUNCE_SYSTEM_CONNECTING")
-
-	// Artık ana diyalog döngüsünü başlatabiliriz. Bu fonksiyon bloklayıcıdır ve
-	// çağrı bitene kadar (veya hata alana kadar) çalışacaktır.
 	dialog.RunDialogLoop(ctx, h.dialogDeps, h.stateManager, initialState)
 }
 
@@ -235,15 +253,14 @@ func (h *EventHandler) handleCallEnded(l zerolog.Logger, event *state.CallEvent)
 	}
 }
 
-// Bu yardımcı fonksiyon, kullanıcıya anında bir sesli geri bildirim vermek için kullanılır.
 func playInitialAnnouncement(ctx context.Context, deps *dialog.Dependencies, l zerolog.Logger, st *state.CallState, announcementID string) {
-	// Bu fonksiyon, dialog/states.go'daki PlayAnnouncement'ın bir kopyasıdır.
-	// Kod tekrarını önlemek için bu mantık gelecekte ortak bir yardımcı pakete taşınabilir.
 	languageCode := "tr"
-	if st.Event != nil && st.Event.Dialplan != nil && st.Event.Dialplan.GetInboundRoute() != nil {
-		route := st.Event.Dialplan.GetInboundRoute()
-		if route.DefaultLanguageCode != "" {
-			languageCode = route.DefaultLanguageCode
+	if st.Event != nil && st.Event.Dialplan != nil {
+		// Düzeltme: MatchedUser veya InboundRoute'dan dil kodunu al
+		if st.Event.Dialplan.MatchedUser != nil && st.Event.Dialplan.MatchedUser.PreferredLanguageCode != nil {
+			languageCode = *st.Event.Dialplan.MatchedUser.PreferredLanguageCode
+		} else if st.Event.Dialplan.GetInboundRoute() != nil && st.Event.Dialplan.GetInboundRoute().DefaultLanguageCode != "" {
+			languageCode = st.Event.Dialplan.GetInboundRoute().DefaultLanguageCode
 		}
 	}
 
@@ -272,7 +289,6 @@ func playInitialAnnouncement(ctx context.Context, deps *dialog.Dependencies, l z
 	}
 
 	serverPort := uint32(serverPortFloat)
-
 	playCtx, cancel := context.WithTimeout(metadata.AppendToOutgoingContext(ctx, "x-trace-id", st.TraceID), 30*time.Second)
 	defer cancel()
 
