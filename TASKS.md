@@ -1,4 +1,4 @@
-# 🧠 Sentiric Agent Service - Görev Listesi (v5.0 - Dayanıklı Akış)
+# 🧠 Sentiric Agent Service - Görev Listesi (v5.1 - Dayanıklı Akış ve Akıllı Sonlandırma)
 
 Bu belge, `agent-service`'in geliştirme yol haritasını, tamamlanan görevleri ve bir sonraki öncelikleri tanımlar.
 
@@ -22,47 +22,50 @@ Bu belge, `agent-service`'in geliştirme yol haritasını, tamamlanan görevleri
 
 -   [x] **Görev ID: AGENT-CORE-04 - Anında Sesli Geri Bildirim**
     -   **Açıklama:** AI'ın ilk yanıtı hazırlanırken kullanıcının "ölü hava" duymasını engellemek için, çağrı başlar başlamaz bir "bağlanıyor" anonsu çalma yeteneği.
-    -   **Durum:** ✅ **Tamamlandı** (Son commit ile eklendi)
+    -   **Durum:** ✅ **Tamamlandı**
 
 -   [x] **Görev ID: AGENT-CORE-05 - Yarış Durumuna Karşı Dayanıklılık (Race Condition Fix)**
     -   **Açıklama:** `call.started` ve `call.ended` olayları aynı anda geldiğinde, `context canceled` hatası oluşmasını engelleyen, Redis tabanlı, daha dayanıklı bir durum yönetimi mimarisi.
-    -   **Durum:** ✅ **Tamamlandı** (Son commit ile çözüldü)
+    -   **Durum:** ✅ **Tamamlandı**
 
--   [x] **Görev ID: AGENT-BUG-01 - Çağrı Kaydı Tenant ID Düzeltmesi (YENİ EKLENDİ)**
+-   [x] **Görev ID: AGENT-BUG-01 - Çağrı Kaydı Tenant ID Düzeltmesi**
     -   **Açıklama:** Çağrı kaydı S3 yolunu oluştururken, `dialplan`'in `tenant_id`'si yerine çağrının geldiği `inbound_route`'un `tenant_id`'sini kullanarak veri izolasyonunu sağlama.
-    -   **Durum:** ✅ **Tamamlandı** (Veri sızıntısını önleyen kritik düzeltme)
+    -   **Durum:** ✅ **Tamamlandı**
 
 ---
 
-### **FAZ 2: Akıllı ve Güvenli Diyalog Yönetimi (Sıradaki Öncelik)**
+### **FAZ 2: Akıllı ve Güvenli Diyalog Yönetimi (Tamamlandı)**
 
 **Amaç:** Servisi, hataları yönetebilen, zaman aşımlarına duyarlı ve diyalog akışını akıllıca sonlandırabilen, üretime hazır bir orkestratöre dönüştürmek.
 
--   [ ] **Görev ID: AGENT-006 - Zaman Aşımlı ve Dayanıklı İstemciler (KRİTİK)**
-    -   **Açıklama:** Harici AI servislerine (STT, LLM, TTS) yapılan tüm gRPC ve HTTP çağrılarına makul zaman aşımları (timeout) ekle.
+-   [x] **Görev ID: AGENT-006 - Zaman Aşımlı ve Dayanıklı İstemciler (KRİTİK)**
+    -   **Açıklama:** Harici AI servislerine (STT, LLM, TTS) yapılan tüm gRPC ve HTTP çağrılarına makul zaman aşımları (timeout) eklendi.
+    -   **Durum:** ✅ **Tamamlandı**
     -   **Kabul Kriterleri:**
-        -   [ ] Tüm harici istemci çağrıları `context.WithTimeout` ile sarılmalı (örn: LLM için 20s, TTS için 20s, STT için 60s).
-        -   [ ] Bir servis zaman aşımına uğradığında veya hata döndürdüğünde, bu durum loglanmalı ve diyalog döngüsü güvenli bir şekilde sonlandırılmalı.
-        -   [ ] Hata durumunda, `media-service` üzerinden `ANNOUNCE_SYSTEM_ERROR` anonsu çalınmalı ve `StateTerminated` durumuna geçilmeli.
+        -   [x] Tüm harici istemci çağrıları `context.WithTimeout` ile sarıldı (örn: LLM için 20s, TTS için 20s, STT için 60s).
+        -   [x] Bir servis zaman aşımına uğradığında veya hata döndürdüğünde, bu durum loglandı ve diyalog döngüsü güvenli bir şekilde sonlandırıldı.
+        -   [x] Hata durumunda, `media-service` üzerinden `ANNOUNCE_SYSTEM_ERROR` anonsu çalınarak `StateTerminated` durumuna geçildi.
 
--   [ ] **Görev ID: AGENT-007 - AI Kararıyla Çağrıyı Sonlandırma (KRİTİK)**
-    -   **Açıklama:** Diyalog döngüsünün belirli bir noktasında (örn: kullanıcı vedalaştığında veya işlem tamamlandığında) çağrıyı proaktif olarak sonlandırma yeteneği ekle.
+-   [x] **Görev ID: AGENT-007 - AI Kararıyla Çağrıyı Sonlandırma (KRİTİK)**
+    -   **Açıklama:** Diyalog döngüsünün belirli bir noktasında (örn: kullanıcı vedalaştığında veya işlem tamamlandığında) çağrıyı proaktif olarak sonlandırma yeteneği eklendi.
     -   **Bağımlılık:** `sip-signaling-service`'in `call.terminate.request` olayını dinlemesi.
+    -   **Durum:** ✅ **Tamamlandı**
     -   **Kabul Kriterleri:**
-        -   [ ] `RunDialogLoop` içinde, `StateTerminated` durumuna ulaşıldığında, `RabbitMQ`'ya `call.terminate.request` tipinde ve `{"callId": "..."}` gövdesine sahip bir olay yayınlanmalıdır.
-        -   [ ] Bu olay, `sentiric_events` exchange'ine ve `call.terminate.request` routing key'ine gönderilmelidir.
+        -   [x] `RunDialogLoop` içinde, `StateTerminated` durumuna ulaşıldığında, `RabbitMQ`'ya `call.terminate.request` tipinde ve `{"callId": "..."}` gövdesine sahip bir olay yayınlandı.
+        -   [x] Bu olay, `sentiric_events` exchange'ine ve `call.terminate.request` routing key'ine gönderildi.
 
--   [ ] **Görev ID: AGENT-009 - Sonsuz Döngü Kırma Mekanizması (YENİ GÖREV)**
-    -   **Açıklama:** `StateListening` durumunda, art arda belirli sayıda (örn: 2 kez) STT'den boş metin dönmesi veya anlama hatası yaşanması durumunda, bir hata anonsu çalıp çağrıyı sonlandıran bir sayaç mekanizması ekle.
+-   [x] **Görev ID: AGENT-009 - Sonsuz Döngü Kırma Mekanizması**
+    -   **Açıklama:** `StateListening` durumunda, art arda belirli sayıda (örn: 2 kez) STT'den boş metin dönmesi veya anlama hatası yaşanması durumunda, bir hata anonsu çalıp çağrıyı sonlandıran bir sayaç mekanizması eklendi.
+    -   **Durum:** ✅ **Tamamlandı**
     -   **Kabul Kriterleri:**
-        -   [ ] `CallState` yapısına `consecutive_failures` adında bir sayaç eklenmeli.
-        -   [ ] `StateFnListening` içinde, STT'den boş metin döndüğünde veya hata alındığında bu sayaç artırılmalı.
-        -   [ ] Sayaç belirlenen eşiğe ulaştığında, `ANNOUNCE_SYSTEM_MAX_FAILURES` anonsu çalınmalı ve durum `StateTerminated`'e set edilmeli.
-        -   [ ] Başarılı bir transkripsiyon olduğunda sayaç sıfırlanmalıdır.
+        -   [x] `CallState` yapısına `consecutive_failures` adında bir sayaç eklendi.
+        -   [x] `StateFnListening` içinde, STT'den boş metin döndüğünde veya hata alındığında bu sayaç artırıldı.
+        -   [x] Sayaç belirlenen eşiğe ulaştığında, `ANNOUNCE_SYSTEM_MAX_FAILURES` anonsu çalınarak durum `StateTerminated`'e set edildi.
+        -   [x] Başarılı bir transkripsiyon olduğunda sayaç sıfırlandı.
 
 ---
 
-### **FAZ 3: Gelişmiş Orkestrasyon (Gelecek)**
+### **FAZ 3: Gelişmiş Orkestrasyon (Sıradaki Öncelik)**
 
 **Amaç:** Platformu, karmaşık ve çok adımlı iş akışlarını yönetebilen, daha zeki bir sisteme dönüştürmek.
 
@@ -74,4 +77,6 @@ Bu belge, `agent-service`'in geliştirme yol haritasını, tamamlanan görevleri
     -   **Açıklama:** `ADR-003`'te tanımlandığı gibi, çok adımlı işlemlerde veri bütünlüğünü garanti altına almak için SAGA orkestrasyon mantığını implemente et.
     -   **Durum:** ⬜ Planlandı.
 
--   [ ] **Görev ID: AGENT-0
+-   [ ] **Görev ID: AGENT-008 - Anlaşılır Hata Yönetimi**
+    -   **Açıklama:** `ANNOUNCE_SYSTEM_ERROR` yerine, hatanın kaynağına göre daha spesifik anonslar çal (örn: `ANNOUNCE_TTS_UNAVAILABLE`, `ANNOUNCE_LLM_TIMEOUT`).
+    -   **Durum:** ⬜ Planlandı.

@@ -64,9 +64,9 @@ func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallSta
 
 	// --- YENİ: Döngü Kırma Kontrolü ---
 	if st.ConsecutiveFailures >= 2 {
-		l.Warn().Int("failures", st.ConsecutiveFailures).Msg("Art arda çok fazla anlama hatası. Alternatif akış tetikleniyor.")
-		PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_MAX_FAILURES") // "Üzgünüm, yardımcı olamıyorum, lütfen daha sonra tekrar deneyin." anonsunu çal
-		st.CurrentState = state.StateTerminated                       // Çağrıyı sonlandır
+		l.Warn().Int("failures", st.ConsecutiveFailures).Msg("Art arda çok fazla anlama hatası. Çağrı sonlandırılıyor.")
+		PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_MAX_FAILURES")
+		st.CurrentState = state.StateTerminated // Çağrıyı sonlandır
 		return st, nil
 	}
 	// --- KONTROL SONU ---
@@ -259,7 +259,7 @@ func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.Call
 	}
 }
 
-// playText, bir metni TTS ile sese çevirir ve media-service aracılığıyla çalar.
+// playText fonksiyonunu tamamen güncelliyoruz
 func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *state.CallState, textToPlay string) {
 	l.Info().Str("text", textToPlay).Msg("Metin sese dönüştürülüyor...")
 	speakerURL, useCloning := st.Event.Dialplan.Action.ActionData.Data["speaker_wav_url"]
@@ -286,17 +286,15 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 	defer ttsCancel()
 	// --- DEĞİŞİKLİK SONU ---
 
-	ttsResp, err := deps.TTSClient.Synthesize(ttsCtx, ttsReq)
+	ttsResp, err := deps.TTSClient.Synthesize(ttsCtx, ttsReq) // ttsCtx'i kullan
 	if err != nil {
 		l.Error().Err(err).Msg("TTS Gateway'den yanıt alınamadı (muhtemelen zaman aşımı).")
 		deps.EventsFailed.WithLabelValues(st.Event.EventType, "tts_gateway_failed").Inc()
-		// Hata durumunda kullanıcıya sistem hatası anonsu çal.
 		PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_ERROR")
 		return
 	}
 
 	audioBytes := ttsResp.GetAudioContent()
-	// media-service'in WAV formatını daha iyi işlediğini varsayalım
 	audioURI := fmt.Sprintf("data:audio/wav;base64,%s", base64.StdEncoding.EncodeToString(audioBytes))
 
 	mediaInfo := st.Event.Media
@@ -310,16 +308,15 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 	defer playCancel()
 	// --- DEĞİŞİKLİK SONU ---
 
-	_, err = deps.MediaClient.PlayAudio(playCtx, playReq)
+	_, err = deps.MediaClient.PlayAudio(playCtx, playReq) // playCtx'i kullan
 	if err != nil {
 		stErr, ok := status.FromError(err)
 		// Zaman aşımı hatasını da loglayalım
 		if ok && (stErr.Code() == codes.Canceled || stErr.Code() == codes.DeadlineExceeded) {
-			l.Info().Msg("PlayAudio işlemi başka bir komutla veya zaman aşımı nedeniyle iptal edildi.")
+			l.Warn().Err(err).Msg("PlayAudio işlemi başka bir komutla veya zaman aşımı nedeniyle iptal edildi.")
 		} else {
 			l.Error().Err(err).Msg("Hata: Dinamik ses (TTS) çalınamadı")
 			deps.EventsFailed.WithLabelValues(st.Event.EventType, "play_tts_audio_failed").Inc()
-			// Burada da hata anonsu çalmak iyi bir fikir olabilir ama zaten TTS hatasında çalıyoruz.
 		}
 	} else {
 		l.Info().Msg("Dinamik ses (TTS) başarıyla çalındı ve tamamlandı.")

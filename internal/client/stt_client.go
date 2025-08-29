@@ -40,29 +40,21 @@ func (c *SttClient) BaseURL() string {
 }
 
 func (c *SttClient) Transcribe(ctx context.Context, audioData []byte, language, traceID string) (string, error) {
+
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-
-	if err := writer.WriteField("language", language); err != nil {
-		return "", fmt.Errorf("dil alanı yazılamadı: %w", err)
-	}
-
+	_ = writer.WriteField("language", language)
 	h := make(textproto.MIMEHeader)
 	h.Set("Content-Disposition", `form-data; name="audio_file"; filename="stream.wav"`)
 	h.Set("Content-Type", "audio/wav")
-	part, err := writer.CreatePart(h)
-	if err != nil {
-		return "", fmt.Errorf("form part'ı oluşturulamadı: %w", err)
-	}
-	if _, err := io.Copy(part, bytes.NewReader(audioData)); err != nil {
-		return "", fmt.Errorf("ses verisi forma kopyalanamadı: %w", err)
-	}
+	part, _ := writer.CreatePart(h)
+	_, _ = io.Copy(part, bytes.NewReader(audioData))
 	writer.Close()
 
 	url := fmt.Sprintf("%s/api/v1/transcribe", c.baseURL)
 	c.log.Info().Str("url", url).Int("audio_size_kb", len(audioData)/1024).Msg("STT'ye transkripsiyon isteği gönderiliyor...")
 
-	// --- YENİ: İsteğe özel zaman aşımı ---
+	// --- DEĞİŞİKLİK: İsteğe özel zaman aşımı ---
 	// STT işlemi daha uzun sürebilir, 60 saniye verelim.
 	reqCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
