@@ -323,12 +323,13 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 	}
 }
 
-// PlayAnnouncement, veritabanından önceden tanımlanmış bir ses dosyasını çalar.
+// PlayAnnouncement fonksiyonunu tamamen güncelle
 func PlayAnnouncement(deps *Dependencies, l zerolog.Logger, st *state.CallState, announcementID string) {
 	languageCode := getLanguageCode(st.Event)
 	audioPath, err := database.GetAnnouncementPathFromDB(deps.DB, announcementID, st.TenantID, languageCode)
 	if err != nil {
 		l.Error().Err(err).Str("announcement_id", announcementID).Msg("Anons yolu alınamadı, fallback deneniyor")
+		// Fallback denemesi...
 		audioPath, err = database.GetAnnouncementPathFromDB(deps.DB, announcementID, "system", "en")
 		if err != nil {
 			l.Error().Err(err).Str("announcement_id", announcementID).Msg("KRİTİK HATA: Sistem fallback anonsu dahi yüklenemedi.")
@@ -340,16 +341,21 @@ func PlayAnnouncement(deps *Dependencies, l zerolog.Logger, st *state.CallState,
 	mediaInfo := st.Event.Media
 	rtpTarget := mediaInfo["caller_rtp_addr"].(string)
 	serverPort := uint32(mediaInfo["server_rtp_port"].(float64))
+
+	// --- DEĞİŞİKLİK BURADA: Zaman aşımı context'i oluştur ---
 	ctx := metadata.AppendToOutgoingContext(context.Background(), "x-trace-id", st.TraceID)
-	playCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	playCtx, cancel := context.WithTimeout(ctx, 30*time.Second) // 30 saniye timeout
 	defer cancel()
+	// --- DEĞİŞİKLİK SONU ---
+
 	playReq := &mediav1.PlayAudioRequest{RtpTargetAddr: rtpTarget, ServerRtpPort: serverPort, AudioUri: audioURI}
 
-	_, err = deps.MediaClient.PlayAudio(playCtx, playReq)
+	_, err = deps.MediaClient.PlayAudio(playCtx, playReq) // playCtx'i kullan
 	if err != nil {
 		stErr, _ := status.FromError(err)
-		if stErr.Code() == codes.Canceled {
-			l.Info().Str("announcement_id", announcementID).Msg("Anons başka bir komutla iptal edildi.")
+		if stErr.Code() == codes.Canceled || stErr.Code() == codes.DeadlineExceeded {
+			// DeadlineExceeded hatasını artık daha net bir şekilde logluyoruz.
+			l.Error().Err(err).Str("announcement_id", announcementID).Msg("Hata: Anons çalma işlemi zaman aşımına uğradı veya iptal edildi.")
 		} else {
 			l.Error().Err(err).Str("audio_uri", audioURI).Msg("Hata: Ses çalma komutu başarısız")
 			deps.EventsFailed.WithLabelValues(st.Event.EventType, "play_announcement_failed").Inc()
