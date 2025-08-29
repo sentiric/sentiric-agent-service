@@ -28,6 +28,10 @@ Bu belge, `agent-service`'in geliştirme yol haritasını, tamamlanan görevleri
     -   **Açıklama:** `call.started` ve `call.ended` olayları aynı anda geldiğinde, `context canceled` hatası oluşmasını engelleyen, Redis tabanlı, daha dayanıklı bir durum yönetimi mimarisi.
     -   **Durum:** ✅ **Tamamlandı** (Son commit ile çözüldü)
 
+-   [x] **Görev ID: AGENT-BUG-01 - Çağrı Kaydı Tenant ID Düzeltmesi (YENİ EKLENDİ)**
+    -   **Açıklama:** Çağrı kaydı S3 yolunu oluştururken, `dialplan`'in `tenant_id`'si yerine çağrının geldiği `inbound_route`'un `tenant_id`'sini kullanarak veri izolasyonunu sağlama.
+    -   **Durum:** ✅ **Tamamlandı** (Veri sızıntısını önleyen kritik düzeltme)
+
 ---
 
 ### **FAZ 2: Akıllı ve Güvenli Diyalog Yönetimi (Sıradaki Öncelik)**
@@ -70,6 +74,4 @@ Bu belge, `agent-service`'in geliştirme yol haritasını, tamamlanan görevleri
     -   **Açıklama:** `ADR-003`'te tanımlandığı gibi, çok adımlı işlemlerde veri bütünlüğünü garanti altına almak için SAGA orkestrasyon mantığını implemente et.
     -   **Durum:** ⬜ Planlandı.
 
--   [ ] **Görev ID: AGENT-005 - Gelişmiş Hata Yönetimi**
-    -   **Açıklama:** gRPC/HTTP istemcilerine yeniden deneme (retry) ve devre kesici (circuit breaker) mekanizmaları ekle.
-    -   **Durum:** ⬜ Planlandı.
+-   [ ] **Görev ID: AGENT-0

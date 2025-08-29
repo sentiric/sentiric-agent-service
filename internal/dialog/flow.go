@@ -3,12 +3,12 @@ package dialog
 
 import (
 	"context"
-	"fmt" // YENİ: fmt importu eklendi
+	"fmt"
 	"strings"
-	"time" // YENİ: time importu eklendi
+	"time"
 
-	mediav1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/media/v1" // YENİ: mediav1 importu eklendi
-	"google.golang.org/grpc/metadata"                                         // YENİ: metadata importu eklendi
+	mediav1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/media/v1"
+	"google.golang.org/grpc/metadata"
 
 	"github.com/sentiric/sentiric-agent-service/internal/state"
 )
@@ -30,11 +30,16 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 	currentCallID := initialSt.CallID
 	l := deps.Log.With().Str("call_id", currentCallID).Str("trace_id", initialSt.TraceID).Logger()
 
-	// --- YENİ: Çağrı Kaydını Başlat ---
-	// Kayıt dosyasının adını oluşturuyoruz. Örn: s3:///kayitlar/tenant_id/2025-08-28_call_id.wav
-	// Şimdilik sadece wav formatını destekliyoruz.
+	// DÜZELTME: Tenant ID'yi inbound_route'tan al, eğer yoksa fallback yap.
+	// Bu, misafir planlarının (system tenant) çağrılarını doğru tenant altına kaydeder.
+	recordingTenantID := initialSt.TenantID
+	if initialSt.Event != nil && initialSt.Event.Dialplan != nil &&
+		initialSt.Event.Dialplan.GetInboundRoute() != nil && initialSt.Event.Dialplan.GetInboundRoute().TenantId != "" {
+		recordingTenantID = initialSt.Event.Dialplan.GetInboundRoute().TenantId
+	}
+
 	recordingURI := fmt.Sprintf("s3:///%s/%s_%s.wav",
-		initialSt.TenantID,
+		recordingTenantID,
 		time.Now().UTC().Format("2006-01-02"),
 		currentCallID,
 	)
@@ -45,19 +50,17 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 	_, err := deps.MediaClient.StartRecording(startRecCtx, &mediav1.StartRecordingRequest{
 		ServerRtpPort: uint32(initialSt.Event.Media["server_rtp_port"].(float64)),
 		OutputUri:     recordingURI,
-		SampleRate:    &deps.SttTargetSampleRate, // STT ile aynı kalitede kaydedelim
-		Format:        &[]string{"wav"}[0],       // String pointer için bu şekilde tanımlıyoruz
+		SampleRate:    &deps.SttTargetSampleRate,
+		Format:        &[]string{"wav"}[0],
 	})
-	startRecCancel() // Context'i hemen iptal et, işimiz bitti.
+	startRecCancel()
 
 	if err != nil {
 		l.Error().Err(err).Msg("Media-service'e kayıt başlatma komutu gönderilemedi. Diyalog kayıtsız devam edecek.")
 		deps.EventsFailed.WithLabelValues(initialSt.Event.EventType, "start_recording_failed").Inc()
 	}
-	// --- DEĞİŞİKLİK SONU ---
 
 	defer func() {
-		// --- YENİ: Çağrı Kaydını Durdur ---
 		l.Info().Msg("Çağrı kaydı durduruluyor...")
 		stopRecCtx, stopRecCancel := context.WithTimeout(metadata.AppendToOutgoingContext(context.Background(), "x-trace-id", initialSt.TraceID), 10*time.Second)
 		defer stopRecCancel()
@@ -70,7 +73,6 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 			l.Error().Err(err).Msg("Media-service'e kayıt durdurma komutu gönderilemedi.")
 			deps.EventsFailed.WithLabelValues(initialSt.Event.EventType, "stop_recording_failed").Inc()
 		}
-		// --- DEĞİŞİKLİK SONU ---
 
 		finalState, err := stateManager.Get(context.Background(), currentCallID)
 		if err != nil || finalState == nil {
@@ -107,7 +109,6 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 			return
 		}
 
-		// Eğer durum zaten TERMINATED ise, döngüden çık.
 		if st.CurrentState == state.StateTerminated {
 			l.Info().Msg("Durum 'Terminated' olarak ayarlandı, döngü sonlandırılıyor.")
 			return
