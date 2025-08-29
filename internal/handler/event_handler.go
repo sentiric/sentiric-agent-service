@@ -174,6 +174,14 @@ func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.Cal
 		// KULLANICI BULUNDU!
 		l.Info().Str("user_id", foundUserRes.User.Id).Msg("Mevcut kullanıcı bulundu, oluşturma adımı atlanıyor.")
 		event.Dialplan.MatchedUser = foundUserRes.User
+		// Kullanıcının arama yaptığı contact bilgisini de bulup ekleyelim.
+		for _, contact := range foundUserRes.User.Contacts {
+			if contact.ContactValue == callerNumber {
+				event.Dialplan.MatchedContact = contact
+				break
+			}
+		}
+
 	} else {
 		// KULLANICI BULUNAMADI, şimdi oluştur.
 		st, _ := status.FromError(err)
@@ -192,15 +200,18 @@ func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.Cal
 				},
 			}
 
-			createdUser, createErr := h.userClient.CreateUser(createCtx, createUserReq)
+			createdUserRes, createErr := h.userClient.CreateUser(createCtx, createUserReq)
 			if createErr != nil {
 				l.Error().Err(createErr).Msg("User-service'de misafir kullanıcı oluşturulamadı.")
 				h.eventsFailed.WithLabelValues(event.EventType, "guest_user_creation_failed").Inc()
 				playInitialAnnouncement(ctx, h.dialogDeps, l, &state.CallState{Event: event, TenantID: tenantID, TraceID: event.TraceID}, "ANNOUNCE_SYSTEM_ERROR")
 				return
 			}
-			l.Info().Str("user_id", createdUser.User.Id).Msg("Misafir kullanıcı başarıyla oluşturuldu.")
-			event.Dialplan.MatchedUser = createdUser.User
+			l.Info().Str("user_id", createdUserRes.User.Id).Msg("Misafir kullanıcı başarıyla oluşturuldu.")
+			event.Dialplan.MatchedUser = createdUserRes.User
+			if len(createdUserRes.User.Contacts) > 0 {
+				event.Dialplan.MatchedContact = createdUserRes.User.Contacts[0]
+			}
 		} else {
 			// FindUserByContact başka bir hata döndürdü
 			l.Error().Err(err).Msg("Kullanıcı aranırken beklenmedik bir hata oluştu.")
@@ -209,6 +220,40 @@ func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.Cal
 			return
 		}
 	}
+
+	// ===== YENİ EKLENECEK KOD BAŞLANGICI =====
+	// CDR'daki yarış durumunu çözmek için bu olayı yayınlıyoruz.
+	if event.Dialplan.GetMatchedUser() != nil && event.Dialplan.GetMatchedContact() != nil {
+		l.Info().Msg("Kullanıcı kimliği belirlendi, user.created.for_call olayı yayınlanacak.")
+
+		userIdentifiedPayload := struct {
+			EventType string `json:"eventType"`
+			TraceID   string `json:"traceId"`
+			CallID    string `json:"callId"`
+			UserID    string `json:"userId"`
+			ContactID int32  `json:"contactId"`
+			TenantID  string `json:"tenantId"`
+		}{
+			EventType: "user.created.for_call",
+			TraceID:   event.TraceID,
+			CallID:    event.CallID,
+			UserID:    event.Dialplan.GetMatchedUser().GetId(),
+			ContactID: event.Dialplan.GetMatchedContact().GetId(),
+			TenantID:  event.Dialplan.GetMatchedUser().GetTenantId(),
+		}
+
+		publishErr := h.publisher.PublishJSON(ctx, "user.created.for_call", userIdentifiedPayload)
+		if publishErr != nil {
+			l.Error().Err(publishErr).Msg("user.created.for_call olayı yayınlanamadı.")
+			// Bu kritik bir hata, ancak akışı durdurmuyoruz, sadece logluyoruz.
+			// CDR kaydı eksik kalacak ama çağrı devam edebilir.
+		} else {
+			l.Info().Msg("user.created.for_call olayı başarıyla yayınlandı.")
+		}
+	} else {
+		l.Warn().Msg("Kullanıcı veya contact bilgisi eksik olduğu için user.created.for_call olayı yayınlanamadı. CDR kaydı eksik olabilir.")
+	}
+	// ===== YENİ EKLENECEK KOD SONU =====
 
 	// Akışın sonunda, kullanıcı ya bulundu ya da oluşturuldu. Standart diyalog akışını başlat.
 	h.handleStartAIConversation(l, event)
