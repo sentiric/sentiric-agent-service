@@ -35,6 +35,15 @@ Bu belge, platformun tam diyalog döngüsünü tamamlamasını engelleyen son kr
 
 ### **FAZ 2: Uçtan Uca Diyalog Akışının Sağlamlaştırılması (ACİL ÖNCELİK)**
 
+-   [ ] **Görev ID: AGENT-BUG-04 - `user.identified.for_call` Olayını Yayınlama (KRİTİK)**
+    -   **Durum:** ⬜ Planlandı
+    -   **Engelleyici Mi?:** Evet, CDR servisindeki veri bütünlüğünü engelliyor.
+    -   **Tahmini Süre:** ~1 saat
+    -   **Açıklama:** `cdr-service`'in, çağrı kaydını doğru kullanıcıyla ilişkilendirememesi sorununu (race condition) çözmek için, `agent-service` kullanıcı kimliğini belirledikten sonra bu bilgiyi asenkron olarak yayınlamalıdır.
+    -   **Kabul Kriterleri:**
+        -   [ ] `handleProcessGuestCall` fonksiyonu, `user-service`'ten başarılı bir kullanıcı yanıtı aldığında (`mevcut kullanıcı bulundu` veya `yeni misafir oluşturuldu`), `user.identified.for_call` tipinde yeni bir olayı RabbitMQ'ya yayınlamalıdır.
+        -   [ ] Bu olayın payload'u, `sentiric-contracts`'te tanımlandığı gibi `call_id`, `user_id`, `contact_id` ve `tenant_id` alanlarını içermelidir.
+
 **Amaç:** Canlı testlerde tespit edilen ve diyalog döngüsünü engelleyen son kritik hataları gidererek, platformun kullanıcıyla tam bir karşılıklı konuşma yapabilmesini sağlamak.
 
 -   [x] **Görev ID: AGENT-BUG-02 - Yanlış Tenant ID ile Prompt Sorgulama Hatası**
@@ -83,6 +92,13 @@ Bu belge, platformun tam diyalog döngüsünü tamamlamasını engelleyen son kr
 
 ### **FAZ 3: Gelişmiş Orkestrasyon (Sıradaki Öncelik)**
 
+-   [ ] **Görev ID: AGENT-BUG-05 - Hatalı Olay Yayınlamayı Düzeltme**
+    -   **Durum:** ⬜ Planlandı
+    -   **Tahmini Süre:** ~15 dakika
+    -   **Açıklama:** `call.terminate.request` olayı yayınlanırken, `cdr-service`'in olayı doğru bir şekilde işlemesi için JSON payload'una `eventType` alanı eklenmelidir.
+    -   **Kabul Kriterleri:**
+        -   [ ] `RunDialogLoop` fonksiyonundaki `defer` bloğunda, `terminationReq` struct'ına `EventType string \`json:"eventType"\`` alanı eklenmeli ve değeri `"call.terminate.request"` olarak atanmalıdır.
+        
 **Amaç:** Platformu, karmaşık ve çok adımlı iş akışlarını yönetebilen, daha zeki bir sisteme dönüştürmek.
 
 -   [x] **Görev ID: AGENT-010 - Kullanıcı Kimliği Olayını Yayınlama (KRİTİK DÜZELTME)**
