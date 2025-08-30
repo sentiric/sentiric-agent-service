@@ -71,10 +71,15 @@ func GetAnnouncementPathFromDB(db *sql.DB, announcementID, tenantID, languageCod
 	return audioPath, nil
 }
 
+// --- DÜZELTME BAŞLANGICI (AGENT-BUG-02) ---
+// Sorgu, artık hem verilen tenant_id'yi hem de 'system' tenant'ını arayacak
+// ve eğer ikisi de varsa, spesifik olanı (verilen tenant_id) önceliklendirecek.
 func GetTemplateFromDB(db *sql.DB, templateID, languageCode, tenantID string) (string, error) {
 	var content string
-	// SORGUNU GÜNCELLE: tenant_id'yi de içerecek şekilde
-	query := "SELECT content FROM templates WHERE id = $1 AND language_code = $2 AND (tenant_id = $3 OR tenant_id = 'default') ORDER BY tenant_id DESC LIMIT 1"
+	query := `
+		SELECT content FROM templates 
+		WHERE id = $1 AND language_code = $2 AND (tenant_id = $3 OR tenant_id = 'system')
+		ORDER BY tenant_id DESC LIMIT 1`
 	err := db.QueryRow(query, templateID, languageCode, tenantID).Scan(&content)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -84,3 +89,5 @@ func GetTemplateFromDB(db *sql.DB, templateID, languageCode, tenantID string) (s
 	}
 	return content, nil
 }
+
+// --- DÜZELTME SONU ---

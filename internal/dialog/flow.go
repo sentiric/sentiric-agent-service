@@ -30,13 +30,15 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 	currentCallID := initialSt.CallID
 	l := deps.Log.With().Str("call_id", currentCallID).Str("trace_id", initialSt.TraceID).Logger()
 
-	// DÜZELTME: Tenant ID'yi inbound_route'tan al, eğer yoksa fallback yap.
-	// Bu, misafir planlarının (system tenant) çağrılarını doğru tenant altına kaydeder.
-	recordingTenantID := initialSt.TenantID
+	// --- DÜZELTME BAŞLANGICI: Kayıt Tenant ID'sini doğru belirleme ---
+	// Çağrı kaydı S3 yolunu oluştururken, `dialplan`'in `tenant_id`'si yerine
+	// çağrının geldiği `inbound_route`'un `tenant_id`'sini kullanarak veri izolasyonunu sağlıyoruz.
+	recordingTenantID := initialSt.TenantID // Fallback
 	if initialSt.Event != nil && initialSt.Event.Dialplan != nil &&
 		initialSt.Event.Dialplan.GetInboundRoute() != nil && initialSt.Event.Dialplan.GetInboundRoute().TenantId != "" {
 		recordingTenantID = initialSt.Event.Dialplan.GetInboundRoute().TenantId
 	}
+	// --- DÜZELTME SONU ---
 
 	recordingURI := fmt.Sprintf("s3:///%s/%s_%s.wav",
 		recordingTenantID,
