@@ -95,4 +95,45 @@ Bu belge, platformun tam diyalog döngüsünü tamamlamasını engelleyen son kr
 
 -   [ ] **Görev ID: AGENT-008 - Anlaşılır Hata Yönetimi**
     -   **Açıklama:** `ANNOUNCE_SYSTEM_ERROR` yerine, hatanın kaynağına göre daha spesifik anonslar çal (örn: `ANNOUNCE_TTS_UNAVAILABLE`, `ANNOUNCE_LLM_TIMEOUT`).
-    -   **Durum:** ⬜ Planlandı.        
+    -   **Durum:** ⬜ Planlandı.
+
+**Amaç:** `agent-service`'i, sadece konuşan değil, aynı zamanda anlayan, öğrenen ve hatırlayan bir beyne dönüştürmek. Bu, RAG ve zengin olay yayınlama yeteneklerinin eklenmesiyle gerçekleştirilecektir.
+
+-   [ ] **Görev ID: AGENT-RAG-01 - `knowledge-service` Entegrasyonu (YÜKSEK ÖNCELİK)**
+    -   **Durum:** ⬜ Planlandı
+    -   **Bağımlılık:** `AGENT-DIAG-01`'in (stabil diyalog döngüsü) tamamlanmasına bağlı.
+    -   **Tahmini Süre:** ~1 gün
+    -   **Açıklama:** Kullanıcının konuşması STT ile metne çevrildikten sonra, bu metnin bir "bilgi talebi" olup olmadığını anlamak. Eğer öyleyse, `knowledge-service`'i çağırarak ilgili bağlamı (context) almak ve bu bağlamı LLM prompt'una ekleyerek RAG akışını tamamlamak.
+    -   **Kabul Kriterleri:**
+        -   [ ] `internal/dialog/states.go` içindeki `StateFnThinking` fonksiyonu güncellenmelidir.
+        -   [ ] Fonksiyon, STT'den gelen metni analiz etmeli (basit bir anahtar kelime kontrolü veya bir LLM çağrısı ile niyet tespiti yapılabilir).
+        -   [ ] Eğer niyet "bilgi talebi" ise, `knowledge-service`'in `/api/v1/query` endpoint'ine bir HTTP isteği gönderilmelidir.
+        -   [ ] `knowledge-service`'ten dönen sonuçlar, `buildLlmPrompt` fonksiyonuna yeni bir argüman olarak verilmeli ve LLM prompt'u "Bağlam: ..., Soru: ..." formatında zenginleştirilmelidir.
+        -   [ ] **Uçtan Uca Test:** Kullanıcı "VIP Check-up paketine neler dahildir?" diye sorduğunda, sistemin `knowledge-service`'ten aldığı bilgiyle doğru ve detaylı bir cevap verdiği ses kaydı ve loglarla kanıtlanmalıdır.
+
+-   [ ] **Görev ID: AGENT-EVENT-01 - Zengin Diyalog Olaylarını Yayınlama**
+    -   **Durum:** ⬜ Planlandı
+    -   **Bağımlılık:** `AGENT-DIAG-01`'in tamamlanmasına bağlı.
+    -   **Tahmini Süre:** ~1-2 gün
+    -   **Açıklama:** `cdr-service`'i ve gelecekteki analiz servislerini beslemek için, diyalog sırasında gerçekleşen önemli anlarda (`transkripsiyon tamamlandı`, `LLM yanıtı üretildi` vb.) zengin içerikli olayları RabbitMQ'ya yayınlamak.
+    -   **Kabul Kriterleri:**
+        -   [ ] `StateFnListening` tamamlandığında, `call.transcription.available` tipinde ve `{"text": "..."}` gövdesine sahip bir olay yayınlanmalıdır.
+        -   [ ] `StateFnThinking` tamamlandığında, `call.llm.response.generated` tipinde ve `{"prompt": "...", "response": "..."}` gövdesine sahip bir olay yayınlanmalıdır.
+        -   [ ] `StateFnSpeaking` başladığında, `call.tts.synthesis.started` tipinde bir olay yayınlanmalıdır.
+        -   [ ] Bu olayların `cdr-service` tarafından yakalanıp `call_events` tablosuna yazıldığı doğrulanmalıdır.    
+
+### **FAZ 4: Mimari Sağlamlaştırma ve Teknik Borç Ödeme (Orta Öncelik)**
+
+**Amaç:** Servisin iç yapısını daha modüler ve sürdürülebilir hale getirerek, gelecekteki özellik eklemelerini hızlandırmak ve kod karmaşıklığını azaltmak.
+
+-   [ ] **Görev ID: AGENT-REFACTOR-01 - Sorumlulukların Katmanlara Ayrılması**
+    -   **Durum:** ⬜ Planlandı
+    -   **Tahmini Süre:** ~2-3 gün
+    -   **Açıklama:** Mevcut `internal/dialog` paketi, hem diyalog akışını hem de harici servis iletişimini yöneterek aşırı büyümüş ve Tek Sorumluluk Prensibi'ni ihlal etmeye başlamıştır. Bu görev, bu mantığı daha temiz katmanlara ayıracaktır.
+    -   **Kabul Kriterleri:**
+        -   [ ] `internal/orchestrator` adında yeni bir paket oluşturulmalı ve `RunDialogLoop` ile ana durum fonksiyonları (`StateFn...`) buraya taşınmalıdır.
+        -   [ ] `internal/adapter` adında yeni bir paket oluşturulmalıdır.
+        -   [ ] `playText`, `PlayAnnouncement`, `streamAndTranscribe` gibi medya ile ilgili tüm mantık, `adapter/media.go` içine taşınmalıdır.
+        -   [ ] `generateWelcomeText` ve `buildLlmPrompt` gibi LLM prompt hazırlama mantığı, `adapter/llm.go` içine taşınmalıdır.
+        -   [ ] Refaktör sonrası `internal/dialog/states.go` dosyasının satır sayısı **en az %40 oranında azalmalıdır.**
+        -   [ ] Mevcut uçtan uca diyalog testi, refaktör sonrası da başarıyla çalışmaya devam etmelidir.
