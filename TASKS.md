@@ -1,6 +1,6 @@
-# 🧠 Sentiric Agent Service - Görev Listesi (v5.1 - Dayanıklı Akış ve Akıllı Sonlandırma)
+# 🧠 Sentiric Agent Service - Görev Listesi (v5.2 - Uçtan Uca Akış Onarımı)
 
-Bu belge, `agent-service`'in geliştirme yol haritasını, tamamlanan görevleri ve bir sonraki öncelikleri tanımlar.
+Bu belge, `agent-service`'in geliştirme yol haritasını ve canlı testlerde tespit edilen kritik hataların giderilmesi için gereken acil görevleri tanımlar.
 
 ---
 
@@ -34,37 +34,29 @@ Bu belge, `agent-service`'in geliştirme yol haritasını, tamamlanan görevleri
 
 ---
 
-### **FAZ 2: Akıllı ve Güvenli Diyalog Yönetimi (Tamamlandı)**
+### **FAZ 2: Uçtan Uca Diyalog Akışının Sağlamlaştırılması (ACİL ÖNCELİK)**
 
-**Amaç:** Servisi, hataları yönetebilen, zaman aşımlarına duyarlı ve diyalog akışını akıllıca sonlandırabilen, üretime hazır bir orkestratöre dönüştürmek.
+**Amaç:** Canlı testlerde tespit edilen ve diyalog döngüsünün başlamasını engelleyen kritik hataları gidererek, platformun ilk sesli yanıtını başarıyla vermesini sağlamak.
 
--   [x] **Görev ID: AGENT-006 - Zaman Aşımlı ve Dayanıklı İstemciler (KRİTİK)**
-    -   **Açıklama:** Harici AI servislerine (STT, LLM, TTS) yapılan tüm gRPC ve HTTP çağrılarına makul zaman aşımları (timeout) eklendi.
-    -   **Durum:** ✅ **Tamamlandı**
+-   [ ] **Görev ID: AGENT-BUG-02 - Yanlış Tenant ID ile Prompt Sorgulama Hatası (KRİTİK & ACİL)**
+    -   **Durum:** ⬜ **Yapılacak (Sıradaki)**
+    -   **Engelleyici Mi?:** **EVET.** Bu hata, tüm diyalog akışını engellemektedir.
+    -   **Tahmini Süre:** ~1-2 saat
+    -   **Açıklama:** `StateWelcoming` durumunda, `generateWelcomeText` fonksiyonu `database.GetTemplateFromDB`'yi çağırırken "default" tenant_id'sini kullanıyor. Ancak "Genesis Bloğu" (`02_core_data.sql`) bu prompt'ları "system" tenant'ı altında oluşturuyor. Bu tutarsızlık, şablonun bulunamamasına ve diyalog döngüsünün çökmesine neden oluyor.
     -   **Kabul Kriterleri:**
-        -   [x] Tüm harici istemci çağrıları `context.WithTimeout` ile sarıldı (örn: LLM için 20s, TTS için 20s, STT için 60s).
-        -   [x] Bir servis zaman aşımına uğradığında veya hata döndürdüğünde, bu durum loglandı ve diyalog döngüsü güvenli bir şekilde sonlandırıldı.
-        -   [x] Hata durumunda, `media-service` üzerinden `ANNOUNCE_SYSTEM_ERROR` anonsu çalınarak `StateTerminated` durumuna geçildi.
+        -   [ ] `internal/database/postgres.go` içindeki `GetTemplateFromDB` fonksiyonu, sadece belirtilen `tenant_id`'yi değil, aynı zamanda fallback olarak `system` (veya `default`) tenant'ını da arayacak şekilde (`(tenant_id = $3 OR tenant_id = 'system') ORDER BY tenant_id DESC LIMIT 1`) güncellenmelidir.
+        -   [ ] Alternatif olarak, `internal/dialog/states.go` içindeki `generateWelcomeText` fonksiyonu, `CallState`'ten gelen `TenantID`'yi doğru bir şekilde `GetTemplateFromDB`'ye iletmelidir. **En doğru çözüm veritabanı sorgusunu daha esnek hale getirmektir.**
+        -   [ ] Düzeltme yapıldıktan sonra, yeni bir test çağrısında `agent-service`'in artık "şablon bulunamadı" hatası vermediği ve diyalog akışına devam ettiği loglarda doğrulanmalıdır.
 
--   [x] **Görev ID: AGENT-007 - AI Kararıyla Çağrıyı Sonlandırma (KRİTİK)**
-    -   **Açıklama:** Diyalog döngüsünün belirli bir noktasında (örn: kullanıcı vedalaştığında veya işlem tamamlandığında) çağrıyı proaktif olarak sonlandırma yeteneği eklendi.
-    -   **Bağımlılık:** `sip-signaling-service`'in `call.terminate.request` olayını dinlemesi.
-    -   **Durum:** ✅ **Tamamlandı**
+-   [ ] **Görev ID: AGENT-011 - Çağrı Kaydı URL'ini Loglama ve Olayını Yayınlama (Öncelik Yükseltildi)**
+    -   **Durum:** ⬜ **Planlandı**
+    -   **Bağımlılık:** `MEDIA-004`'e (`media-service`'in S3 URL'ini dönmesi) bağlı.
+    -   **Açıklama:** Çağrı kaydı (`StartRecording`) başarılı olduğunda, `media-service`'ten dönülecek olan S3 URL'ini `cdr-service` gibi diğer servislerin kullanabilmesi için loglamak ve `call.recording.started` gibi bir olayla yayınlamak.
     -   **Kabul Kriterleri:**
-        -   [x] `RunDialogLoop` içinde, `StateTerminated` durumuna ulaşıldığında, `RabbitMQ`'ya `call.terminate.request` tipinde ve `{"callId": "..."}` gövdesine sahip bir olay yayınlandı.
-        -   [x] Bu olay, `sentiric_events` exchange'ine ve `call.terminate.request` routing key'ine gönderildi.
-
--   [x] **Görev ID: AGENT-009 - Sonsuz Döngü Kırma Mekanizması**
-    -   **Açıklama:** `StateListening` durumunda, art arda belirli sayıda (örn: 2 kez) STT'den boş metin dönmesi veya anlama hatası yaşanması durumunda, bir hata anonsu çalıp çağrıyı sonlandıran bir sayaç mekanizması eklendi.
-    -   **Durum:** ✅ **Tamamlandı**
-    -   **Kabul Kriterleri:**
-        -   [x] `CallState` yapısına `consecutive_failures` adında bir sayaç eklendi.
-        -   [x] `StateFnListening` içinde, STT'den boş metin döndüğünde veya hata alındığında bu sayaç artırıldı.
-        -   [x] Sayaç belirlenen eşiğe ulaştığında, `ANNOUNCE_SYSTEM_MAX_FAILURES` anonsu çalınarak durum `StateTerminated`'e set edildi.
-        -   [x] Başarılı bir transkripsiyon olduğunda sayaç sıfırlandı.
+        -   [ ] `agent-service` loglarında "Çağrı kaydı başlatılıyor... uri=s3:///..." logunun, `media-service`'ten gelen gerçek ve tam URL'i içerdiği doğrulanmalıdır.
+        -   [ ] (Opsiyonel ama önerilir) `call.recording.available` olayı, `agent-service` tarafından dinlenmeli ve bu olay geldiğinde `calls` tablosundaki ilgili kaydın `recording_url` alanı güncellenmelidir. Bu iş `cdr-service`'in de sorumluluğu olabilir.
 
 ---
-
 ### **FAZ 3: Gelişmiş Orkestrasyon (Sıradaki Öncelik)**
 
 **Amaç:** Platformu, karmaşık ve çok adımlı iş akışlarını yönetebilen, daha zeki bir sisteme dönüştürmek.
