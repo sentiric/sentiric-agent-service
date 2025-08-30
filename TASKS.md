@@ -40,6 +40,15 @@ Bu belge, platformun tam diyalog döngüsünü tamamlamasını engelleyen son kr
 -   [x] **Görev ID: AGENT-BUG-02 - Yanlış Tenant ID ile Prompt Sorgulama Hatası**
     -   **Durum:** ✅ **Tamamlandı ve Doğrulandı.**
 
+-   [ ] **Görev ID:** `CDR-BUG-02` / `AGENT-BUG-04`
+    -   **Açıklama:** `cdr-service`'in `call.started` olayında kullanıcı bilgisi aramaktan vazgeçmesini sağla. Bunun yerine, `agent-service`'in, bir misafir kullanıcıyı oluşturduktan veya mevcut bir kullanıcıyı bulduktan sonra, `user_id`, `contact_id` ve `tenant_id` içeren yeni bir `user.identified.for_call` olayı yayınlamasını sağla. `cdr-service` bu yeni olayı dinleyerek mevcut `calls` kaydını güncellemeli.
+    -   **Kabul Kriterleri:**
+        *   [ ] `sentiric-contracts`'e yeni `UserIdentifiedForCallEvent` mesajı eklenmeli.
+        *   [ ] `agent-service`, kullanıcıyı bulduktan/oluşturduktan sonra bu olayı yayınlamalı.
+        *   [ ] `cdr-service`, bu olayı dinleyip ilgili `calls` satırını `UPDATE` etmeli.
+        *   [ ] Test çağrısı sonunda `calls` tablosundaki `user_id`, `contact_id` ve `tenant_id` alanlarının doğru bir şekilde doldurulduğu doğrulanmalıdır.
+
+
 -   [ ] **Görev ID: AGENT-BUG-03 - `playText` Fonksiyonunda Kapsamlı Nil Pointer Koruması (KRİTİK & ACİL)**
     -   **Durum:** ⬜ **Yapılacak (İLK GÖREV)**
     -   **Engelleyici Mi?:** **EVET. TAM DİYALOG AKIŞINI BLOKE EDİYOR.**

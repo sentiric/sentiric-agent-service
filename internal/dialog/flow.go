@@ -84,7 +84,15 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 
 		if finalState.CurrentState == state.StateTerminated {
 			l.Info().Msg("Diyalog sonlandı, sip-signaling'e çağrıyı kapatma isteği gönderiliyor.")
-			terminationReq := TerminationRequest{CallID: currentCallID}
+			// --- YENİ STRUCT TANIMI ---
+			terminationReq := struct {
+				EventType string `json:"eventType"`
+				CallID    string `json:"callId"`
+			}{
+				EventType: "call.terminate.request", // <-- EKSİK ALAN EKLENDİ
+				CallID:    currentCallID,
+			}
+			// --- DEĞİŞİKLİK SONU ---
 			err := deps.Publisher.PublishJSON(context.Background(), "call.terminate.request", terminationReq)
 			if err != nil {
 				l.Error().Err(err).Msg("Çağrı sonlandırma isteği yayınlanamadı.")
