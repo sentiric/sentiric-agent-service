@@ -1,11 +1,10 @@
-# 🧠 Sentiric Agent Service - Görev Listesi (v5.2 - Uçtan Uca Akış Onarımı)
+# 🧠 Sentiric Agent Service - Görev Listesi (v5.3 - Uçtan Uca Akış Onarım Planı)
 
-Bu belge, `agent-service`'in geliştirme yol haritasını ve canlı testlerde tespit edilen kritik hataların giderilmesi için gereken acil görevleri tanımlar.
+Bu belge, canlı testlerde tespit edilen ve platformun temel fonksiyonelliğini engelleyen kritik hataları gidermek için gereken ACİL ve ÖNCELİKLİ görevleri tanımlar.
 
 ---
 
-### **FAZ 1: Temel Orkestrasyon Yetenekleri (Mevcut Durum)**
-
+### **FAZ 1: Temel Orkestrasyon Yetenekleri (Mevcut Durum - Kısmen Hatalı)**
 **Amaç:** Servisin temel olayları dinleyip, diğer servisleri yöneterek basit bir diyalog akışını baştan sona yürütebilmesini sağlamak.
 
 -   [x] **Görev ID: AGENT-CORE-01 - Olay Tüketimi ve Servis İstemcileri**
@@ -34,29 +33,41 @@ Bu belge, `agent-service`'in geliştirme yol haritasını ve canlı testlerde te
 
 ---
 
-### **FAZ 2: Uçtan Uca Diyalog Akışının Sağlamlaştırılması (ACİL ÖNCELİK)**
+### **FAZ 2: Uçtan Uca Diyalog Akışının Onarımı (ACİL ÖNCELİK)**
 
-**Amaç:** Canlı testlerde tespit edilen ve diyalog döngüsünün başlamasını engelleyen kritik hataları gidererek, platformun ilk sesli yanıtını başarıyla vermesini sağlamak.
+**Amaç:** Platformun bir çağrıyı baştan sona yönetebilmesini, kullanıcıyla karşılıklı konuşabilmesini ve bu etkileşimi doğru bir şekilde kaydedebilmesini sağlamak.
 
 -   [ ] **Görev ID: AGENT-BUG-02 - Yanlış Tenant ID ile Prompt Sorgulama Hatası (KRİTİK & ACİL)**
-    -   **Durum:** ⬜ **Yapılacak (Sıradaki)**
-    -   **Engelleyici Mi?:** **EVET.** Bu hata, tüm diyalog akışını engellemektedir.
-    -   **Tahmini Süre:** ~1-2 saat
-    -   **Açıklama:** `StateWelcoming` durumunda, `generateWelcomeText` fonksiyonu `database.GetTemplateFromDB`'yi çağırırken "default" tenant_id'sini kullanıyor. Ancak "Genesis Bloğu" (`02_core_data.sql`) bu prompt'ları "system" tenant'ı altında oluşturuyor. Bu tutarsızlık, şablonun bulunamamasına ve diyalog döngüsünün çökmesine neden oluyor.
+    -   **Durum:** ⬜ **Yapılacak (İLK GÖREV)**
+    -   **Engelleyici Mi?:** **EVET. TÜM PLATFORMUN ÇALIŞMASINI BLOKE EDİYOR.**
+    -   **Tahmini Süre:** ~1 saat
+    -   **Açıklama:** `StateWelcoming` durumunda, veritabanından `PROMPT_WELCOME_GUEST` şablonu "default" tenant'ı için aranıyor, ancak bu şablon "system" tenant'ı altında kayıtlı. Bu tutarsızlık, diyalog döngüsünün anında çökmesine, boş ses kayıtlarına ve hatalı çağrı sürelerine neden olan **ana sorundur.**
     -   **Kabul Kriterleri:**
-        -   [ ] `internal/database/postgres.go` içindeki `GetTemplateFromDB` fonksiyonu, sadece belirtilen `tenant_id`'yi değil, aynı zamanda fallback olarak `system` (veya `default`) tenant'ını da arayacak şekilde (`(tenant_id = $3 OR tenant_id = 'system') ORDER BY tenant_id DESC LIMIT 1`) güncellenmelidir.
-        -   [ ] Alternatif olarak, `internal/dialog/states.go` içindeki `generateWelcomeText` fonksiyonu, `CallState`'ten gelen `TenantID`'yi doğru bir şekilde `GetTemplateFromDB`'ye iletmelidir. **En doğru çözüm veritabanı sorgusunu daha esnek hale getirmektir.**
-        -   [ ] Düzeltme yapıldıktan sonra, yeni bir test çağrısında `agent-service`'in artık "şablon bulunamadı" hatası vermediği ve diyalog akışına devam ettiği loglarda doğrulanmalıdır.
+        -   [ ] `internal/database/postgres.go` içindeki `GetTemplateFromDB` fonksiyonu, hem istekle gelen `tenant_id`'yi hem de fallback olarak `'system'` tenant'ını arayacak şekilde (`WHERE id = $1 AND language_code = $2 AND (tenant_id = $3 OR tenant_id = 'system') ORDER BY tenant_id DESC LIMIT 1`) güncellenmelidir.
+        -   [ ] Bu düzeltme sonrasında yapılan test çağrısında, `agent-service` loglarında "şablon bulunamadı" hatasının **görülmediği** ve durum makinesinin `StateWelcoming`'den sonra `StateListening`'e geçtiği **doğrulanmalıdır.**
 
--   [ ] **Görev ID: AGENT-011 - Çağrı Kaydı URL'ini Loglama ve Olayını Yayınlama (Öncelik Yükseltildi)**
-    -   **Durum:** ⬜ **Planlandı**
-    -   **Bağımlılık:** `MEDIA-004`'e (`media-service`'in S3 URL'ini dönmesi) bağlı.
-    -   **Açıklama:** Çağrı kaydı (`StartRecording`) başarılı olduğunda, `media-service`'ten dönülecek olan S3 URL'ini `cdr-service` gibi diğer servislerin kullanabilmesi için loglamak ve `call.recording.started` gibi bir olayla yayınlamak.
+-   [ ] **Görev ID: AGENT-DIAG-01 - Tam Diyalog Döngüsü Sağlamlık Testi**
+    -   **Durum:** ⬜ Planlandı
+    -   **Bağımlılık:** `AGENT-BUG-02`'nin tamamlanmasına bağlı.
+    -   **Tahmini Süre:** ~4-6 saat (hata ayıklama dahil)
+    -   **Açıklama:** `AGENT-BUG-02` düzeltildikten sonra, tam bir diyalog döngüsünü (Karşılama -> Dinleme -> Anlama -> Konuşma) test etmek ve ortaya çıkacak yeni sorunları tespit edip gidermek.
     -   **Kabul Kriterleri:**
-        -   [ ] `agent-service` loglarında "Çağrı kaydı başlatılıyor... uri=s3:///..." logunun, `media-service`'ten gelen gerçek ve tam URL'i içerdiği doğrulanmalıdır.
-        -   [ ] (Opsiyonel ama önerilir) `call.recording.available` olayı, `agent-service` tarafından dinlenmeli ve bu olay geldiğinde `calls` tablosundaki ilgili kaydın `recording_url` alanı güncellenmelidir. Bu iş `cdr-service`'in de sorumluluğu olabilir.
+        -   [ ] Test çağrısı sırasında kullanıcıya "Merhaba, Sentiric'e hoş geldiniz..." gibi bir karşılama anonsu **duyulmalıdır.**
+        -   [ ] Kullanıcı konuştuğunda, `stt-service`'in bu konuşmayı metne çevirdiği loglarda **görülmelidir.**
+        -   [ ] `agent-service`'in, bu metinle `llm-service`'e istek attığı loglarda **görülmelidir.**
+        -   [ ] `agent-service`'in, LLM yanıtını `tts-gateway`'e gönderdiği ve dönen ses verisini `media-service`'e çaldırdığı **doğrulanmalıdır.**
+        -   [ ] Döngünün en az 2 tur (kullanıcı konuşur, sistem cevap verir, kullanıcı tekrar konuşur, sistem tekrar cevap verir) tamamladığı kanıtlanmalıdır.
 
----
+-   [ ] **Görev ID: AGENT-011 - Çağrı Kaydı Bütünlüğünün Sağlanması**
+    -   **Durum:** ⬜ Planlandı
+    -   **Bağımlılık:** `AGENT-DIAG-01`'in tamamlanmasına bağlı.
+    -   **Açıklama:** Diyalog döngüsü başarılı olduğunda, çağrı kaydının tüm sesleri (karşılama, kullanıcı, AI yanıtları) içerdiğini ve `cdr-service`'in bu kaydın URL'ini aldığını doğrulamak.
+    -   **Kabul Kriterleri:**
+        -   [ ] Test çağrısı sonunda MinIO'ya kaydedilen `.wav` dosyası indirildiğinde, içinde hem sistemin hem de kullanıcının seslerinin olduğu **duyulmalıdır.**
+        -   [ ] `media-service`, kayıt tamamlandığında `call.recording.available` olayını RabbitMQ'ya yayınlamalıdır. (Bu `MEDIA-004` görevidir).
+        -   [ ] `cdr-service`, bu olayı dinleyerek `calls` tablosundaki ilgili kaydın `recording_url` alanını güncellemelidir. (Bu `CDR-005` görevidir).
+
+
 ### **FAZ 3: Gelişmiş Orkestrasyon (Sıradaki Öncelik)**
 
 **Amaç:** Platformu, karmaşık ve çok adımlı iş akışlarını yönetebilen, daha zeki bir sisteme dönüştürmek.
