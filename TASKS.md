@@ -1,6 +1,6 @@
-# 🧠 Sentiric Agent Service - Görev Listesi (v5.4 - Savunmacı Diyalog Mantığı)
+# 🧠 Sentiric Agent Service - Görev Listesi (v5.5 - Nihai Stabilizasyon)
 
-Bu belge, canlı testlerde tespit edilen kritik "nil pointer" hatasını gidermek ve diyalog akışını sağlamlaştırmak için gereken görevleri tanımlar.
+Bu belge, platformun tam diyalog döngüsünü tamamlamasını engelleyen son kritik "nil pointer" hatasını gidermek için gereken görevleri tanımlar.
 
 ---
 
@@ -35,26 +35,26 @@ Bu belge, canlı testlerde tespit edilen kritik "nil pointer" hatasını giderme
 
 ### **FAZ 2: Uçtan Uca Diyalog Akışının Sağlamlaştırılması (ACİL ÖNCELİK)**
 
-**Amaç:** Canlı testlerde tespit edilen ve diyalog döngüsünün başlamasını engelleyen kritik hataları gidererek, platformun ilk sesli yanıtını başarıyla vermesini sağlamak.
+**Amaç:** Canlı testlerde tespit edilen ve diyalog döngüsünü engelleyen son kritik hataları gidererek, platformun kullanıcıyla tam bir karşılıklı konuşma yapabilmesini sağlamak.
 
 -   [x] **Görev ID: AGENT-BUG-02 - Yanlış Tenant ID ile Prompt Sorgulama Hatası**
-    -   **Durum:** ✅ **Tamamlandı** (Önceki adımda çözüldü ve doğrulandı).
+    -   **Durum:** ✅ **Tamamlandı ve Doğrulandı.**
 
--   [ ] **Görev ID: AGENT-BUG-03 - `playText` Fonksiyonunda Nil Pointer Çökmesi (KRİTİK & ACİL)**
+-   [ ] **Görev ID: AGENT-BUG-03 - `playText` Fonksiyonunda Kapsamlı Nil Pointer Koruması (KRİTİK & ACİL)**
     -   **Durum:** ⬜ **Yapılacak (İLK GÖREV)**
     -   **Engelleyici Mi?:** **EVET. TAM DİYALOG AKIŞINI BLOKE EDİYOR.**
-    -   **Tahmini Süre:** ~1-2 saat
-    -   **Açıklama:** `playText` fonksiyonu, `CallState` içindeki `Dialplan` verisine erişirken gerekli `nil` kontrollerini yapmıyor. `Dialplan`, `Action` veya `ActionData` alanlarından herhangi biri `nil` olduğunda servis çöküyor. Bu durum, tüm diyalog akışının, ses kaydının ve çağrı süresinin hatalı olmasına neden oluyor.
+    -   **Tahmini Süre:** ~1 saat
+    -   **Açıklama:** `playText` fonksiyonu, `CallState` içindeki `st.Event.Media` map'ine ve içindeki `caller_rtp_addr`, `server_rtp_port` gibi anahtarlara erişmeden önce bu map'in veya anahtarların var olup olmadığını kontrol etmiyor. Bu, servisin çökmesine ve diyalog döngüsünün tamamlanamamasına neden oluyor.
     -   **Kabul Kriterleri:**
-        -   [ ] `internal/dialog/states.go` içindeki `playText` fonksiyonu, `st.Event.Dialplan.Action.ActionData.Data` zincirindeki her bir adıma erişmeden önce nil olup olmadığını kontrol eden "savunmacı" (defensive) kod blokları ile güncellenmelidir.
-        -   [ ] Eğer `voice_selector` veya `speaker_wav_url` gibi veriler `dialplan`'de bulunamazsa, kod çökmemeli; bunun yerine log basmalı ve makul varsayılan değerlerle (örn: varsayılan bir ses seçici) devam etmelidir.
-        -   [ ] Düzeltme sonrası yapılan test çağrısında, `agent-service`'in artık `panic: runtime error` hatası vermediği ve `StateWelcoming` adımını başarıyla tamamlayarak `StateListening`'e geçtiği loglarda **doğrulanmalıdır.**
+        -   [ ] `internal/dialog/states.go` içindeki `playText` fonksiyonu, `st.Event` ve `st.Event.Media`'nın `nil` olmadığını kontrol etmelidir.
+        -   [ ] Fonksiyon, `caller_rtp_addr` ve `server_rtp_port` anahtarlarının `Media` map'inde var olup olmadığını ve doğru tipte (`string`, `float64`) olduklarını güvenli bir şekilde kontrol etmelidir.
+        -   [ ] Eğer bu kritik medya bilgileri eksikse, fonksiyon paniklemek yerine anlamlı bir hata logu basmalı ve `error` döndürerek diyalog döngüsünün çağrıyı güvenli bir şekilde sonlandırmasını sağlamalıdır.
+        -   [ ] Düzeltme sonrası yapılan test çağrısında, `agent-service`'in artık `panic` yapmadığı, `StateWelcoming`'i tamamlayıp, sesi kullanıcıya çaldığı ve `StateListening`'e geçtiği **loglarda ve ses kaydında doğrulanmalıdır.**
 
 -   [ ] **Görev ID: AGENT-DIAG-01 - Tam Diyalog Döngüsü Sağlamlık Testi**
     -   **Durum:** ⬜ Planlandı
     -   **Bağımlılık:** `AGENT-BUG-03`'ün tamamlanmasına bağlı.
     -   **Tahmini Süre:** ~4-6 saat (hata ayıklama dahil)
-    -   **Açıklama:** `AGENT-BUG-03` düzeltildikten sonra, tam bir diyalog döngüsünü (Karşılama -> Dinleme -> Anlama -> Konuşma) test etmek ve ortaya çıkacak yeni sorunları tespit edip gidermek.
     -   **Kabul Kriterleri:**
         -   [ ] Test çağrısı sırasında kullanıcıya **"Merhaba, Sentirik'e hoş geldiniz..."** karşılama anonsu **duyulmalıdır.**
         -   [ ] Kullanıcı konuştuğunda, `stt-service`'in bu konuşmayı metne çevirdiği loglarda **görülmelidir.**
@@ -95,4 +95,4 @@ Bu belge, canlı testlerde tespit edilen kritik "nil pointer" hatasını giderme
 
 -   [ ] **Görev ID: AGENT-008 - Anlaşılır Hata Yönetimi**
     -   **Açıklama:** `ANNOUNCE_SYSTEM_ERROR` yerine, hatanın kaynağına göre daha spesifik anonslar çal (örn: `ANNOUNCE_TTS_UNAVAILABLE`, `ANNOUNCE_LLM_TIMEOUT`).
-    -   **Durum:** ⬜ Planlandı.
+    -   **Durum:** ⬜ Planlandı.        

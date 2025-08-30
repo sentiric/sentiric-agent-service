@@ -159,16 +159,13 @@ func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.Call
 	q.Set("logprob_threshold", fmt.Sprintf("%f", deps.Config.SttServiceLogprobThreshold))
 	q.Set("no_speech_threshold", fmt.Sprintf("%f", deps.Config.SttServiceNoSpeechThreshold))
 
-	// --- SAVUNMACI KODLAMA (AGENT-BUG-03 ile ilişkili) ---
-	// st.Event.Dialplan.Action.ActionData.Data zincirine güvenli erişim
-	vadLevel := "1" // Varsayılan değer
+	vadLevel := "1"
 	if st.Event != nil && st.Event.Dialplan != nil && st.Event.Dialplan.Action != nil && st.Event.Dialplan.Action.ActionData != nil && st.Event.Dialplan.Action.ActionData.Data != nil {
 		if val, ok := st.Event.Dialplan.Action.ActionData.Data["stt_vad_level"]; ok {
 			vadLevel = val
 		}
 	}
 	q.Set("vad_aggressiveness", vadLevel)
-	// --- SAVUNMACI KODLAMA SONU ---
 
 	sttURL.RawQuery = q.Encode()
 
@@ -251,20 +248,19 @@ func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.Call
 	}
 }
 
-// --- DÜZELTME BAŞLANGICI (AGENT-BUG-03) ---
 func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *state.CallState, textToPlay string) {
 	l.Info().Str("text", textToPlay).Msg("Metin sese dönüştürülüyor...")
 
-	// SAVUNMACI KODLAMA: Dialplan'den gelen verileri güvenli bir şekilde al
-	var speakerURL string
-	var voiceSelector string
+	var speakerURL, voiceSelector string
 	var useCloning bool
 
-	// Zincirdeki her bir adımın nil olup olmadığını kontrol et
 	if st.Event != nil && st.Event.Dialplan != nil && st.Event.Dialplan.Action != nil && st.Event.Dialplan.Action.ActionData != nil && st.Event.Dialplan.Action.ActionData.Data != nil {
 		actionData := st.Event.Dialplan.Action.ActionData.Data
 		speakerURL, useCloning = actionData["speaker_wav_url"]
-		voiceSelector, _ = actionData["voice_selector"] // voice_selector yoksa boş olacak
+		// --- DÜZELTME BAŞLANGICI (S1005) ---
+		// Artık 'ok' değerini kontrol etmediğimiz için, doğrudan atama yapmak daha temiz.
+		voiceSelector = actionData["voice_selector"]
+		// --- DÜZELTME SONU ---
 	}
 
 	mdCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", st.TraceID)
@@ -282,7 +278,6 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 	} else if voiceSelector != "" {
 		ttsReq.VoiceSelector = &voiceSelector
 	}
-	// --- DÜZELTME SONU ---
 
 	ttsCtx, ttsCancel := context.WithTimeout(mdCtx, 20*time.Second)
 	defer ttsCancel()
@@ -295,22 +290,38 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 		return
 	}
 
-	// --- YENİ: Nil Yanıt Kontrolü ---
-	// gRPC'nin `err == nil` iken `ttsResp == nil` dönme ihtimaline karşı ekstra güvenlik
 	if ttsResp == nil {
 		l.Error().Msg("TTS Gateway'den hata dönmedi ancak yanıt boş (nil). Bu beklenmedik bir durum.")
 		deps.EventsFailed.WithLabelValues(st.Event.EventType, "tts_gateway_nil_response").Inc()
 		PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_ERROR")
 		return
 	}
-	// --- KONTROL SONU ---
 
 	audioBytes := ttsResp.GetAudioContent()
 	audioURI := fmt.Sprintf("data:audio/wav;base64,%s", base64.StdEncoding.EncodeToString(audioBytes))
 
-	mediaInfo := st.Event.Media
-	rtpTarget := mediaInfo["caller_rtp_addr"].(string)
-	serverPort := uint32(mediaInfo["server_rtp_port"].(float64))
+	if st.Event == nil || st.Event.Media == nil {
+		l.Error().Msg("PlayAudio için kritik medya bilgisi eksik (st.Event.Media is nil).")
+		return
+	}
+
+	rtpTargetVal, ok1 := st.Event.Media["caller_rtp_addr"]
+	serverPortVal, ok2 := st.Event.Media["server_rtp_port"]
+
+	if !ok1 || !ok2 {
+		l.Error().Msg("PlayAudio için medya bilgileri eksik (caller_rtp_addr veya server_rtp_port anahtarı yok).")
+		return
+	}
+
+	rtpTarget, ok1 := rtpTargetVal.(string)
+	serverPortFloat, ok2 := serverPortVal.(float64)
+
+	if !ok1 || !ok2 {
+		l.Error().Interface("rtp_target", rtpTargetVal).Interface("server_port", serverPortVal).Msg("PlayAudio için medya bilgileri geçersiz formatta.")
+		return
+	}
+
+	serverPort := uint32(serverPortFloat)
 	playReq := &mediav1.PlayAudioRequest{RtpTargetAddr: rtpTarget, ServerRtpPort: serverPort, AudioUri: audioURI}
 
 	playCtx, playCancel := context.WithTimeout(mdCtx, 5*time.Minute)
@@ -372,7 +383,7 @@ func PlayAnnouncement(deps *Dependencies, l zerolog.Logger, st *state.CallState,
 func generateWelcomeText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *state.CallState) (string, error) {
 	languageCode := getLanguageCode(st.Event)
 	var promptID string
-	if st.Event.Dialplan.MatchedUser != nil && st.Event.Dialplan.MatchedUser.Name != nil {
+	if st.Event != nil && st.Event.Dialplan != nil && st.Event.Dialplan.MatchedUser != nil && st.Event.Dialplan.MatchedUser.Name != nil {
 		promptID = "PROMPT_WELCOME_KNOWN_USER"
 	} else {
 		promptID = "PROMPT_WELCOME_GUEST"
@@ -383,7 +394,7 @@ func generateWelcomeText(ctx context.Context, deps *Dependencies, l zerolog.Logg
 		return "Merhaba, hoş geldiniz.", err
 	}
 	prompt := promptTemplate
-	if st.Event.Dialplan.MatchedUser != nil && st.Event.Dialplan.MatchedUser.Name != nil {
+	if st.Event != nil && st.Event.Dialplan != nil && st.Event.Dialplan.MatchedUser != nil && st.Event.Dialplan.MatchedUser.Name != nil {
 		prompt = strings.Replace(prompt, "{user_name}", *st.Event.Dialplan.MatchedUser.Name, -1)
 	}
 	return deps.LLMClient.Generate(ctx, prompt, st.TraceID)
@@ -424,7 +435,10 @@ func getLanguageCode(event *state.CallEvent) string {
 
 var allowedSpeakerDomains = map[string]bool{"sentiric.github.io": true}
 
+// --- DÜZELTME BAŞLANGICI (unusedparams) ---
+// Artık 'ctx' parametresini almıyor çünkü kullanılmıyordu.
 func isAllowedSpeakerURL(rawURL string) bool {
+	// --- DÜZELTME SONU ---
 	u, e := url.Parse(rawURL)
 	return e == nil && (u.Scheme == "http" || u.Scheme == "https") && allowedSpeakerDomains[u.Hostname()]
 }
