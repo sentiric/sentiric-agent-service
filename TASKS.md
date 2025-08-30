@@ -1,6 +1,6 @@
-# 🧠 Sentiric Agent Service - Görev Listesi (v5.3 - Uçtan Uca Akış Onarım Planı)
+# 🧠 Sentiric Agent Service - Görev Listesi (v5.4 - Savunmacı Diyalog Mantığı)
 
-Bu belge, canlı testlerde tespit edilen ve platformun temel fonksiyonelliğini engelleyen kritik hataları gidermek için gereken ACİL ve ÖNCELİKLİ görevleri tanımlar.
+Bu belge, canlı testlerde tespit edilen kritik "nil pointer" hatasını gidermek ve diyalog akışını sağlamlaştırmak için gereken görevleri tanımlar.
 
 ---
 
@@ -33,26 +33,30 @@ Bu belge, canlı testlerde tespit edilen ve platformun temel fonksiyonelliğini 
 
 ---
 
-### **FAZ 2: Uçtan Uca Diyalog Akışının Onarımı (ACİL ÖNCELİK)**
+### **FAZ 2: Uçtan Uca Diyalog Akışının Sağlamlaştırılması (ACİL ÖNCELİK)**
 
-**Amaç:** Platformun bir çağrıyı baştan sona yönetebilmesini, kullanıcıyla karşılıklı konuşabilmesini ve bu etkileşimi doğru bir şekilde kaydedebilmesini sağlamak.
+**Amaç:** Canlı testlerde tespit edilen ve diyalog döngüsünün başlamasını engelleyen kritik hataları gidererek, platformun ilk sesli yanıtını başarıyla vermesini sağlamak.
 
--   [ ] **Görev ID: AGENT-BUG-02 - Yanlış Tenant ID ile Prompt Sorgulama Hatası (KRİTİK & ACİL)**
+-   [x] **Görev ID: AGENT-BUG-02 - Yanlış Tenant ID ile Prompt Sorgulama Hatası**
+    -   **Durum:** ✅ **Tamamlandı** (Önceki adımda çözüldü ve doğrulandı).
+
+-   [ ] **Görev ID: AGENT-BUG-03 - `playText` Fonksiyonunda Nil Pointer Çökmesi (KRİTİK & ACİL)**
     -   **Durum:** ⬜ **Yapılacak (İLK GÖREV)**
-    -   **Engelleyici Mi?:** **EVET. TÜM PLATFORMUN ÇALIŞMASINI BLOKE EDİYOR.**
-    -   **Tahmini Süre:** ~1 saat
-    -   **Açıklama:** `StateWelcoming` durumunda, veritabanından `PROMPT_WELCOME_GUEST` şablonu "default" tenant'ı için aranıyor, ancak bu şablon "system" tenant'ı altında kayıtlı. Bu tutarsızlık, diyalog döngüsünün anında çökmesine, boş ses kayıtlarına ve hatalı çağrı sürelerine neden olan **ana sorundur.**
+    -   **Engelleyici Mi?:** **EVET. TAM DİYALOG AKIŞINI BLOKE EDİYOR.**
+    -   **Tahmini Süre:** ~1-2 saat
+    -   **Açıklama:** `playText` fonksiyonu, `CallState` içindeki `Dialplan` verisine erişirken gerekli `nil` kontrollerini yapmıyor. `Dialplan`, `Action` veya `ActionData` alanlarından herhangi biri `nil` olduğunda servis çöküyor. Bu durum, tüm diyalog akışının, ses kaydının ve çağrı süresinin hatalı olmasına neden oluyor.
     -   **Kabul Kriterleri:**
-        -   [ ] `internal/database/postgres.go` içindeki `GetTemplateFromDB` fonksiyonu, hem istekle gelen `tenant_id`'yi hem de fallback olarak `'system'` tenant'ını arayacak şekilde (`WHERE id = $1 AND language_code = $2 AND (tenant_id = $3 OR tenant_id = 'system') ORDER BY tenant_id DESC LIMIT 1`) güncellenmelidir.
-        -   [ ] Bu düzeltme sonrasında yapılan test çağrısında, `agent-service` loglarında "şablon bulunamadı" hatasının **görülmediği** ve durum makinesinin `StateWelcoming`'den sonra `StateListening`'e geçtiği **doğrulanmalıdır.**
+        -   [ ] `internal/dialog/states.go` içindeki `playText` fonksiyonu, `st.Event.Dialplan.Action.ActionData.Data` zincirindeki her bir adıma erişmeden önce nil olup olmadığını kontrol eden "savunmacı" (defensive) kod blokları ile güncellenmelidir.
+        -   [ ] Eğer `voice_selector` veya `speaker_wav_url` gibi veriler `dialplan`'de bulunamazsa, kod çökmemeli; bunun yerine log basmalı ve makul varsayılan değerlerle (örn: varsayılan bir ses seçici) devam etmelidir.
+        -   [ ] Düzeltme sonrası yapılan test çağrısında, `agent-service`'in artık `panic: runtime error` hatası vermediği ve `StateWelcoming` adımını başarıyla tamamlayarak `StateListening`'e geçtiği loglarda **doğrulanmalıdır.**
 
 -   [ ] **Görev ID: AGENT-DIAG-01 - Tam Diyalog Döngüsü Sağlamlık Testi**
     -   **Durum:** ⬜ Planlandı
-    -   **Bağımlılık:** `AGENT-BUG-02`'nin tamamlanmasına bağlı.
+    -   **Bağımlılık:** `AGENT-BUG-03`'ün tamamlanmasına bağlı.
     -   **Tahmini Süre:** ~4-6 saat (hata ayıklama dahil)
-    -   **Açıklama:** `AGENT-BUG-02` düzeltildikten sonra, tam bir diyalog döngüsünü (Karşılama -> Dinleme -> Anlama -> Konuşma) test etmek ve ortaya çıkacak yeni sorunları tespit edip gidermek.
+    -   **Açıklama:** `AGENT-BUG-03` düzeltildikten sonra, tam bir diyalog döngüsünü (Karşılama -> Dinleme -> Anlama -> Konuşma) test etmek ve ortaya çıkacak yeni sorunları tespit edip gidermek.
     -   **Kabul Kriterleri:**
-        -   [ ] Test çağrısı sırasında kullanıcıya "Merhaba, Sentiric'e hoş geldiniz..." gibi bir karşılama anonsu **duyulmalıdır.**
+        -   [ ] Test çağrısı sırasında kullanıcıya **"Merhaba, Sentirik'e hoş geldiniz..."** karşılama anonsu **duyulmalıdır.**
         -   [ ] Kullanıcı konuştuğunda, `stt-service`'in bu konuşmayı metne çevirdiği loglarda **görülmelidir.**
         -   [ ] `agent-service`'in, bu metinle `llm-service`'e istek attığı loglarda **görülmelidir.**
         -   [ ] `agent-service`'in, LLM yanıtını `tts-gateway`'e gönderdiği ve dönen ses verisini `media-service`'e çaldırdığı **doğrulanmalıdır.**

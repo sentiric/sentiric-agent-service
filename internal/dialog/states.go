@@ -18,7 +18,7 @@ import (
 	"github.com/sentiric/sentiric-agent-service/internal/client"
 	"github.com/sentiric/sentiric-agent-service/internal/config"
 	"github.com/sentiric/sentiric-agent-service/internal/database"
-	"github.com/sentiric/sentiric-agent-service/internal/queue" // <-- YENİ import
+	"github.com/sentiric/sentiric-agent-service/internal/queue"
 	"github.com/sentiric/sentiric-agent-service/internal/state"
 	mediav1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/media/v1"
 	ttsv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/tts/v1"
@@ -27,11 +27,10 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// Dependencies yapısını GÜNCELLE
 type Dependencies struct {
 	DB                  *sql.DB
 	Config              *config.Config
-	Publisher           *queue.Publisher // <-- YENİ ALAN
+	Publisher           *queue.Publisher
 	MediaClient         mediav1.MediaServiceClient
 	TTSClient           ttsv1.TextToSpeechServiceClient
 	LLMClient           *client.LlmClient
@@ -45,7 +44,6 @@ type Dependencies struct {
 // === ANA DURUM FONKSİYONLARI (STATE FUNCTIONS) ===============================
 // =============================================================================
 
-// StateFnWelcoming, çağrının başlangıcında kullanıcıyı karşılar.
 func StateFnWelcoming(ctx context.Context, deps *Dependencies, st *state.CallState) (*state.CallState, error) {
 	l := deps.Log.With().Str("call_id", st.CallID).Logger()
 	welcomeText, err := generateWelcomeText(ctx, deps, l, st)
@@ -58,18 +56,15 @@ func StateFnWelcoming(ctx context.Context, deps *Dependencies, st *state.CallSta
 	return st, nil
 }
 
-// StateFnListening, kullanıcıyı dinler, döngüleri kontrol eder ve bir sonraki adıma geçer.
 func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallState) (*state.CallState, error) {
 	l := deps.Log.With().Str("call_id", st.CallID).Logger()
 
-	// --- YENİ: Döngü Kırma Kontrolü ---
 	if st.ConsecutiveFailures >= 2 {
 		l.Warn().Int("failures", st.ConsecutiveFailures).Msg("Art arda çok fazla anlama hatası. Çağrı sonlandırılıyor.")
 		PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_MAX_FAILURES")
-		st.CurrentState = state.StateTerminated // Çağrıyı sonlandır
+		st.CurrentState = state.StateTerminated
 		return st, nil
 	}
-	// --- KONTROL SONU ---
 
 	l.Info().Msg("Kullanıcıdan ses bekleniyor (gerçek zamanlı akış modu)...")
 
@@ -79,25 +74,23 @@ func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallSta
 			return st, context.Canceled
 		}
 		PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_ERROR")
-		st.ConsecutiveFailures++ // Hata durumunda sayacı artır
-		return st, nil           // Tekrar dinlemeye git
+		st.ConsecutiveFailures++
+		return st, nil
 	}
 
 	if transcribedText == "" {
 		l.Warn().Msg("STT boş metin döndürdü, tekrar dinleniyor.")
 		PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_CANT_UNDERSTAND")
-		st.ConsecutiveFailures++ // Boş metin durumunda sayacı artır
-		return st, nil           // Tekrar dinlemeye git
+		st.ConsecutiveFailures++
+		return st, nil
 	}
 
-	// Başarılı bir transkripsiyon olduğunda sayacı sıfırla
 	st.ConsecutiveFailures = 0
 	st.Conversation = append(st.Conversation, map[string]string{"user": transcribedText})
 	st.CurrentState = state.StateThinking
 	return st, nil
 }
 
-// StateFnThinking, LLM kullanarak bir yanıt üretir.
 func StateFnThinking(ctx context.Context, deps *Dependencies, st *state.CallState) (*state.CallState, error) {
 	l := deps.Log.With().Str("call_id", st.CallID).Logger()
 	l.Info().Msg("LLM'den yanıt üretiliyor...")
@@ -115,7 +108,6 @@ func StateFnThinking(ctx context.Context, deps *Dependencies, st *state.CallStat
 	return st, nil
 }
 
-// StateFnSpeaking, üretilen yanıtı seslendirir ve döngüyü yeniden başlatır.
 func StateFnSpeaking(ctx context.Context, deps *Dependencies, st *state.CallState) (*state.CallState, error) {
 	l := deps.Log.With().Str("call_id", st.CallID).Logger()
 	lastAiMessage := st.Conversation[len(st.Conversation)-1]["ai"]
@@ -167,16 +159,16 @@ func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.Call
 	q.Set("logprob_threshold", fmt.Sprintf("%f", deps.Config.SttServiceLogprobThreshold))
 	q.Set("no_speech_threshold", fmt.Sprintf("%f", deps.Config.SttServiceNoSpeechThreshold))
 
-	// --- YENİ: VAD Seviyesini Dinamik Olarak Ayarla ---
-	// Şimdilik varsayılan olarak en hoşgörülü seviyeyi (1) kullanıyoruz.
-	vadLevel := "1"
-	if st.Event.Dialplan != nil && st.Event.Dialplan.Action != nil && st.Event.Dialplan.Action.ActionData != nil {
+	// --- SAVUNMACI KODLAMA (AGENT-BUG-03 ile ilişkili) ---
+	// st.Event.Dialplan.Action.ActionData.Data zincirine güvenli erişim
+	vadLevel := "1" // Varsayılan değer
+	if st.Event != nil && st.Event.Dialplan != nil && st.Event.Dialplan.Action != nil && st.Event.Dialplan.Action.ActionData != nil && st.Event.Dialplan.Action.ActionData.Data != nil {
 		if val, ok := st.Event.Dialplan.Action.ActionData.Data["stt_vad_level"]; ok {
 			vadLevel = val
 		}
 	}
 	q.Set("vad_aggressiveness", vadLevel)
-	// --- YENİ KISIM SONU ---
+	// --- SAVUNMACI KODLAMA SONU ---
 
 	sttURL.RawQuery = q.Encode()
 
@@ -253,17 +245,27 @@ func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.Call
 	case err := <-errChan:
 		l.Error().Err(err).Msg("Akış sırasında hata oluştu.")
 		return "", err
-	case <-time.After(30 * time.Second): // DEĞİŞTİRİLDİ: Zaman aşımı 30 saniyeye yükseltildi.
+	case <-time.After(30 * time.Second):
 		l.Warn().Msg("Transkripsiyon için zaman aşımına ulaşıldı.")
 		return "", nil
 	}
 }
 
-// playText fonksiyonunu tamamen güncelliyoruz
+// --- DÜZELTME BAŞLANGICI (AGENT-BUG-03) ---
 func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *state.CallState, textToPlay string) {
 	l.Info().Str("text", textToPlay).Msg("Metin sese dönüştürülüyor...")
-	speakerURL, useCloning := st.Event.Dialplan.Action.ActionData.Data["speaker_wav_url"]
-	voiceSelector, useVoiceSelector := st.Event.Dialplan.Action.ActionData.Data["voice_selector"]
+
+	// SAVUNMACI KODLAMA: Dialplan'den gelen verileri güvenli bir şekilde al
+	var speakerURL string
+	var voiceSelector string
+	var useCloning bool
+
+	// Zincirdeki her bir adımın nil olup olmadığını kontrol et
+	if st.Event != nil && st.Event.Dialplan != nil && st.Event.Dialplan.Action != nil && st.Event.Dialplan.Action.ActionData != nil && st.Event.Dialplan.Action.ActionData.Data != nil {
+		actionData := st.Event.Dialplan.Action.ActionData.Data
+		speakerURL, useCloning = actionData["speaker_wav_url"]
+		voiceSelector, _ = actionData["voice_selector"] // voice_selector yoksa boş olacak
+	}
 
 	mdCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", st.TraceID)
 	languageCode := getLanguageCode(st.Event)
@@ -277,22 +279,31 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 			return
 		}
 		ttsReq.SpeakerWavUrl = &speakerURL
-	} else if useVoiceSelector && voiceSelector != "" {
+	} else if voiceSelector != "" {
 		ttsReq.VoiceSelector = &voiceSelector
 	}
+	// --- DÜZELTME SONU ---
 
-	// --- YENİ: TTS İsteği için Zaman Aşımı ---
 	ttsCtx, ttsCancel := context.WithTimeout(mdCtx, 20*time.Second)
 	defer ttsCancel()
-	// --- DEĞİŞİKLİK SONU ---
 
-	ttsResp, err := deps.TTSClient.Synthesize(ttsCtx, ttsReq) // ttsCtx'i kullan
+	ttsResp, err := deps.TTSClient.Synthesize(ttsCtx, ttsReq)
 	if err != nil {
 		l.Error().Err(err).Msg("TTS Gateway'den yanıt alınamadı (muhtemelen zaman aşımı).")
 		deps.EventsFailed.WithLabelValues(st.Event.EventType, "tts_gateway_failed").Inc()
 		PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_ERROR")
 		return
 	}
+
+	// --- YENİ: Nil Yanıt Kontrolü ---
+	// gRPC'nin `err == nil` iken `ttsResp == nil` dönme ihtimaline karşı ekstra güvenlik
+	if ttsResp == nil {
+		l.Error().Msg("TTS Gateway'den hata dönmedi ancak yanıt boş (nil). Bu beklenmedik bir durum.")
+		deps.EventsFailed.WithLabelValues(st.Event.EventType, "tts_gateway_nil_response").Inc()
+		PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_ERROR")
+		return
+	}
+	// --- KONTROL SONU ---
 
 	audioBytes := ttsResp.GetAudioContent()
 	audioURI := fmt.Sprintf("data:audio/wav;base64,%s", base64.StdEncoding.EncodeToString(audioBytes))
@@ -302,16 +313,12 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 	serverPort := uint32(mediaInfo["server_rtp_port"].(float64))
 	playReq := &mediav1.PlayAudioRequest{RtpTargetAddr: rtpTarget, ServerRtpPort: serverPort, AudioUri: audioURI}
 
-	// --- YENİ: Media Service İsteği için Zaman Aşımı ---
-	// Sesin çalınması uzun sürebilir, bu yüzden daha uzun bir timeout veriyoruz.
 	playCtx, playCancel := context.WithTimeout(mdCtx, 5*time.Minute)
 	defer playCancel()
-	// --- DEĞİŞİKLİK SONU ---
 
-	_, err = deps.MediaClient.PlayAudio(playCtx, playReq) // playCtx'i kullan
+	_, err = deps.MediaClient.PlayAudio(playCtx, playReq)
 	if err != nil {
 		stErr, ok := status.FromError(err)
-		// Zaman aşımı hatasını da loglayalım
 		if ok && (stErr.Code() == codes.Canceled || stErr.Code() == codes.DeadlineExceeded) {
 			l.Warn().Err(err).Msg("PlayAudio işlemi başka bir komutla veya zaman aşımı nedeniyle iptal edildi.")
 		} else {
@@ -323,13 +330,11 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 	}
 }
 
-// PlayAnnouncement fonksiyonunu tamamen güncelle
 func PlayAnnouncement(deps *Dependencies, l zerolog.Logger, st *state.CallState, announcementID string) {
 	languageCode := getLanguageCode(st.Event)
 	audioPath, err := database.GetAnnouncementPathFromDB(deps.DB, announcementID, st.TenantID, languageCode)
 	if err != nil {
 		l.Error().Err(err).Str("announcement_id", announcementID).Msg("Anons yolu alınamadı, fallback deneniyor")
-		// Fallback denemesi...
 		audioPath, err = database.GetAnnouncementPathFromDB(deps.DB, announcementID, "system", "en")
 		if err != nil {
 			l.Error().Err(err).Str("announcement_id", announcementID).Msg("KRİTİK HATA: Sistem fallback anonsu dahi yüklenemedi.")
@@ -342,19 +347,16 @@ func PlayAnnouncement(deps *Dependencies, l zerolog.Logger, st *state.CallState,
 	rtpTarget := mediaInfo["caller_rtp_addr"].(string)
 	serverPort := uint32(mediaInfo["server_rtp_port"].(float64))
 
-	// --- DEĞİŞİKLİK BURADA: Zaman aşımı context'i oluştur ---
 	ctx := metadata.AppendToOutgoingContext(context.Background(), "x-trace-id", st.TraceID)
-	playCtx, cancel := context.WithTimeout(ctx, 30*time.Second) // 30 saniye timeout
+	playCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	// --- DEĞİŞİKLİK SONU ---
 
 	playReq := &mediav1.PlayAudioRequest{RtpTargetAddr: rtpTarget, ServerRtpPort: serverPort, AudioUri: audioURI}
 
-	_, err = deps.MediaClient.PlayAudio(playCtx, playReq) // playCtx'i kullan
+	_, err = deps.MediaClient.PlayAudio(playCtx, playReq)
 	if err != nil {
 		stErr, _ := status.FromError(err)
 		if stErr.Code() == codes.Canceled || stErr.Code() == codes.DeadlineExceeded {
-			// DeadlineExceeded hatasını artık daha net bir şekilde logluyoruz.
 			l.Error().Err(err).Str("announcement_id", announcementID).Msg("Hata: Anons çalma işlemi zaman aşımına uğradı veya iptal edildi.")
 		} else {
 			l.Error().Err(err).Str("audio_uri", audioURI).Msg("Hata: Ses çalma komutu başarısız")
@@ -367,7 +369,6 @@ func PlayAnnouncement(deps *Dependencies, l zerolog.Logger, st *state.CallState,
 // === VERİ HAZIRLAMA VE İŞLEME FONKSİYONLARI ==================================
 // =============================================================================
 
-// generateWelcomeText, LLM kullanarak kullanıcıya özel bir karşılama metni oluşturur.
 func generateWelcomeText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *state.CallState) (string, error) {
 	languageCode := getLanguageCode(st.Event)
 	var promptID string
@@ -388,7 +389,6 @@ func generateWelcomeText(ctx context.Context, deps *Dependencies, l zerolog.Logg
 	return deps.LLMClient.Generate(ctx, prompt, st.TraceID)
 }
 
-// buildLlmPrompt, konuşma geçmişini ve sistem prompt'unu birleştirerek LLM için bir bağlam oluşturur.
 func buildLlmPrompt(ctx context.Context, deps *Dependencies, st *state.CallState) (string, error) {
 	languageCode := getLanguageCode(st.Event)
 	systemPrompt, err := database.GetTemplateFromDB(deps.DB, "PROMPT_SYSTEM_DEFAULT", languageCode, st.TenantID)
@@ -410,18 +410,18 @@ func buildLlmPrompt(ctx context.Context, deps *Dependencies, st *state.CallState
 	return promptBuilder.String(), nil
 }
 
-// getLanguageCode, çağrı için kullanılacak dili belirler.
 func getLanguageCode(event *state.CallEvent) string {
-	if event.Dialplan != nil && event.Dialplan.MatchedUser != nil && event.Dialplan.MatchedUser.PreferredLanguageCode != nil && *event.Dialplan.MatchedUser.PreferredLanguageCode != "" {
-		return *event.Dialplan.MatchedUser.PreferredLanguageCode
-	}
-	if event.Dialplan != nil && event.Dialplan.GetInboundRoute() != nil && event.Dialplan.GetInboundRoute().DefaultLanguageCode != "" {
-		return event.Dialplan.GetInboundRoute().DefaultLanguageCode
+	if event != nil && event.Dialplan != nil {
+		if event.Dialplan.MatchedUser != nil && event.Dialplan.MatchedUser.PreferredLanguageCode != nil && *event.Dialplan.MatchedUser.PreferredLanguageCode != "" {
+			return *event.Dialplan.MatchedUser.PreferredLanguageCode
+		}
+		if event.Dialplan.GetInboundRoute() != nil && event.Dialplan.GetInboundRoute().DefaultLanguageCode != "" {
+			return event.Dialplan.GetInboundRoute().DefaultLanguageCode
+		}
 	}
 	return "tr"
 }
 
-// isAllowedSpeakerURL, SSRF saldırılarını önlemek için speaker_wav_url'yi kontrol eder.
 var allowedSpeakerDomains = map[string]bool{"sentiric.github.io": true}
 
 func isAllowedSpeakerURL(rawURL string) bool {
