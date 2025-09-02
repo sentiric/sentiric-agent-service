@@ -32,15 +32,9 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 	currentCallID := initialSt.CallID
 	l := deps.Log.With().Str("call_id", currentCallID).Str("trace_id", initialSt.TraceID).Logger()
 
-	// === DÜZELTME: S3 Tenant ID Mantığı ===
-	// initialSt.TenantID, handler'da doğru bir şekilde atandığı için güvenilir kaynaktır.
+	// === 1. ADIM: Kalıcı Kaydı Başlat ===
 	recordingTenantID := initialSt.TenantID
-
-	recordingURI := fmt.Sprintf("s3://%s/%s_%s.wav",
-		recordingTenantID,
-		time.Now().UTC().Format("2006-01-02"),
-		currentCallID,
-	)
+	recordingURI := fmt.Sprintf("s3://%s/%s_%s.wav", recordingTenantID, time.Now().UTC().Format("2006-01-02"), currentCallID)
 	l.Info().Str("uri", recordingURI).Msg("Çağrı kaydı başlatılıyor...")
 	startRecCtx, startRecCancel := context.WithTimeout(metadata.AppendToOutgoingContext(ctx, "x-trace-id", initialSt.TraceID), 10*time.Second)
 	_, err := deps.MediaClient.StartRecording(startRecCtx, &mediav1.StartRecordingRequest{
@@ -54,10 +48,8 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 		l.Error().Err(err).Msg("Media-service'e kayıt başlatma komutu gönderilemedi.")
 	}
 
-	// === AKILLI ORKESTRASYON: "Bağlanıyor" anonsunu çal ve BİTMESİNİ BEKLE ===
+	// === 2. ADIM: "Bağlanıyor" anonsunu ÇAL VE BİTMESİNİ BEKLE ===
 	l.Info().Msg("Bağlanıyor anonsu çalınıyor ve bitmesi bekleniyor...")
-	// Bu fonksiyon içindeki PlayAudio bir gRPC çağrısıdır ve tamamlanmasını bekleriz.
-	// Bu, bir sonraki adıma geçmeden önce anonsun bitmesini sağlar.
 	PlayAnnouncement(ctx, deps, l, initialSt, "ANNOUNCE_SYSTEM_CONNECTING")
 
 	defer func() {
@@ -94,6 +86,7 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 		}
 	}()
 
+	// === 3. ADIM: Ana diyalog döngüsünü başlat ===
 	for {
 		select {
 		case <-ctx.Done():
