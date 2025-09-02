@@ -154,10 +154,14 @@ func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.Cal
 	l = l.With().Str("caller_number", callerNumber).Logger()
 	l.Info().Msg("Arayan numara parse edildi.")
 
-	tenantID := "default"
-	if event.Dialplan.GetInboundRoute() != nil {
+	// === DÜZELTME BAŞLANGICI (AGENT-BUG-06): Doğru Tenant ID'yi al ===
+	tenantID := "sentiric_demo" // Güvenli bir varsayılan
+	if event.Dialplan.GetInboundRoute() != nil && event.Dialplan.GetInboundRoute().TenantId != "" {
 		tenantID = event.Dialplan.GetInboundRoute().TenantId
+	} else {
+		l.Warn().Msg("InboundRoute veya TenantId bulunamadı, fallback 'sentiric_demo' tenant'ı kullanılıyor.")
 	}
+	// === DÜZELTME SONU ===
 
 	// 1. ADIM: Önce kullanıcıyı bu numarayla bulmayı dene
 	findCtx, findCancel := context.WithTimeout(metadata.AppendToOutgoingContext(ctx, "x-trace-id", event.TraceID), 10*time.Second)
@@ -174,7 +178,6 @@ func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.Cal
 		// KULLANICI BULUNDU!
 		l.Info().Str("user_id", foundUserRes.User.Id).Msg("Mevcut kullanıcı bulundu, oluşturma adımı atlanıyor.")
 		event.Dialplan.MatchedUser = foundUserRes.User
-		// Kullanıcının arama yaptığı contact bilgisini de bulup ekleyelim.
 		for _, contact := range foundUserRes.User.Contacts {
 			if contact.ContactValue == callerNumber {
 				event.Dialplan.MatchedContact = contact
@@ -192,7 +195,7 @@ func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.Cal
 			defer createCancel()
 
 			createUserReq := &userv1.CreateUserRequest{
-				TenantId: tenantID,
+				TenantId: tenantID, // Düzeltilmiş tenantID kullanılıyor
 				UserType: "caller",
 				InitialContact: &userv1.CreateUserRequest_InitialContact{
 					ContactType:  "phone",
@@ -221,10 +224,9 @@ func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.Cal
 		}
 	}
 
-	// ===== YENİ EKLENECEK KOD BAŞLANGICI =====
-	// CDR'daki yarış durumunu çözmek için bu olayı yayınlıyoruz.
+	// === DÜZELTME BAŞLANGICI (AGENT-BUG-04): user.identified.for_call olayını yayınla ===
 	if event.Dialplan.GetMatchedUser() != nil && event.Dialplan.GetMatchedContact() != nil {
-		l.Info().Msg("Kullanıcı kimliği belirlendi, user.created.for_call olayı yayınlanacak.")
+		l.Info().Msg("Kullanıcı kimliği belirlendi, user.identified.for_call olayı yayınlanacak.")
 
 		userIdentifiedPayload := struct {
 			EventType string `json:"eventType"`
@@ -234,7 +236,7 @@ func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.Cal
 			ContactID int32  `json:"contactId"`
 			TenantID  string `json:"tenantId"`
 		}{
-			EventType: "user.created.for_call",
+			EventType: "user.identified.for_call",
 			TraceID:   event.TraceID,
 			CallID:    event.CallID,
 			UserID:    event.Dialplan.GetMatchedUser().GetId(),
@@ -242,18 +244,16 @@ func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.Cal
 			TenantID:  event.Dialplan.GetMatchedUser().GetTenantId(),
 		}
 
-		publishErr := h.publisher.PublishJSON(ctx, "user.created.for_call", userIdentifiedPayload)
+		publishErr := h.publisher.PublishJSON(ctx, "user.identified.for_call", userIdentifiedPayload)
 		if publishErr != nil {
-			l.Error().Err(publishErr).Msg("user.created.for_call olayı yayınlanamadı.")
-			// Bu kritik bir hata, ancak akışı durdurmuyoruz, sadece logluyoruz.
-			// CDR kaydı eksik kalacak ama çağrı devam edebilir.
+			l.Error().Err(publishErr).Msg("user.identified.for_call olayı yayınlanamadı.")
 		} else {
-			l.Info().Msg("user.created.for_call olayı başarıyla yayınlandı.")
+			l.Info().Msg("user.identified.for_call olayı başarıyla yayınlandı.")
 		}
 	} else {
-		l.Warn().Msg("Kullanıcı veya contact bilgisi eksik olduğu için user.created.for_call olayı yayınlanamadı. CDR kaydı eksik olabilir.")
+		l.Warn().Msg("Kullanıcı veya contact bilgisi eksik olduğu için user.identified.for_call olayı yayınlanamadı. CDR kaydı eksik olabilir.")
 	}
-	// ===== YENİ EKLENECEK KOD SONU =====
+	// === DÜZELTME SONU ===
 
 	// Akışın sonunda, kullanıcı ya bulundu ya da oluşturuldu. Standart diyalog akışını başlat.
 	h.handleStartAIConversation(l, event)

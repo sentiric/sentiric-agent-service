@@ -35,17 +35,28 @@ Bu belge, platformun tam diyalog döngüsünü tamamlamasını engelleyen son kr
 
 ### **FAZ 2: Uçtan Uca Diyalog Akışının Sağlamlaştırılması (ACİL ÖNCELİK)**
 
--   [ ] **Görev ID: AGENT-BUG-04 - `user.identified.for_call` Olayını Yayınlama (KRİTİK)**
-    -   **Durum:** ⬜ Planlandı
-    -   **Engelleyici Mi?:** Evet, CDR servisindeki veri bütünlüğünü engelliyor.
-    -   **Tahmini Süre:** ~1 saat
-    -   **Açıklama:** `cdr-service`'in, çağrı kaydını doğru kullanıcıyla ilişkilendirememesi sorununu (race condition) çözmek için, `agent-service` kullanıcı kimliğini belirledikten sonra bu bilgiyi asenkron olarak yayınlamalıdır.
+**Amaç:** Canlı testlerde tespit edilen ve diyalog döngüsünü engelleyen kritik hataları gidererek, platformun kullanıcıyla tam bir karşılıklı konuşma yapabilmesini sağlamak.
+
+-   [ ] **Görev ID: AGENT-BUG-06 - Veritabanı Bütünlüğü ve Misafir Kullanıcı Oluşturma Hatası (KRİTİK & ACİL)**
+    -   **Durum:** ⬜ **Yapılacak (İLK GÖREV)**
+    -   **Bulgular:** `agent-service`, misafir bir kullanıcı oluştururken `tenant_id` olarak hard-code edilmiş `"default"` değerini `user-service`'e gönderiyor. Veritabanında bu isimde bir tenant olmadığı için `user-service` çöküyor ve tüm diyalog akışı `ANNOUNCE_SYSTEM_ERROR` ile sonlanıyor. Bu, anonsların duyulmaması ve STT/LLM döngüsünün hiç başlamamasının **kök nedenidir.**
+    -   **Çözüm Stratejisi:** `agent-service`, tenant ID'sini hard-code etmek yerine, `dialplan`'den gelen dinamik veriyi kullanmalıdır.
     -   **Kabul Kriterleri:**
-        -   [ ] `handleProcessGuestCall` fonksiyonu, `user-service`'ten başarılı bir kullanıcı yanıtı aldığında (`mevcut kullanıcı bulundu` veya `yeni misafir oluşturuldu`), `user.identified.for_call` tipinde yeni bir olayı RabbitMQ'ya yayınlamalıdır.
+        -   [ ] `internal/handler/event_handler.go` içindeki `handleProcessGuestCall` fonksiyonu, yeni kullanıcı oluştururken `tenantID` olarak `event.Dialplan.GetInboundRoute().GetTenantId()` değerini kullanmalıdır.
+        -   [ ] Eğer `InboundRoute` veya `TenantId` alanı `nil` veya boş ise, bir fallback olarak `"sentiric_demo"` tenant'ını kullanmalıdır. Hard-code edilmiş `"default"` değeri tamamen kaldırılmalıdır.
+        -   [ ] Düzeltme sonrası yapılan test çağrısında, `user-service` loglarında artık `violates foreign key constraint` hatasının görülmediği ve `agent-service` loglarında `Misafir kullanıcı başarıyla oluşturuldu` mesajının göründüğü doğrulanmalıdır.
+    -   **Tahmini Süre:** ~1 saat
+
+-   [ ] **Görev ID: AGENT-BUG-04 - `user.identified.for_call` Olayını Yayınlama (KRİTİK)**
+    -   **Durum:** ⬜ Planlandı (AGENT-BUG-06'ya bağımlı)
+    -   **Bulgular:** `calls` tablosundaki `user_id`, `contact_id`, `tenant_id` alanlarının `(NULL)` kalması, bu olayın yayınlanmadığını veya `cdr-service` tarafından işlenmediğini kanıtlamaktadır. Bu, raporlama ve veri bütünlüğü için kritik bir eksikliktir.
+    -   **Çözüm Stratejisi:** `agent-service`, bir kullanıcıyı bulduğunda veya başarılı bir şekilde oluşturduğunda, bu bilgiyi asenkron olarak diğer servislere duyurmalıdır.
+    -   **Kabul Kriterleri:**
+        -   [ ] `handleProcessGuestCall` fonksiyonu, `user-service`'ten başarılı bir kullanıcı yanıtı aldığında (`mevcut kullanıcı bulundu` VEYA `yeni misafir oluşturuldu`), `user.identified.for_call` tipinde yeni bir olayı RabbitMQ'ya yayınlamalıdır.
         -   [ ] Bu olayın payload'u, `sentiric-contracts`'te tanımlandığı gibi `call_id`, `user_id`, `contact_id` ve `tenant_id` alanlarını içermelidir.
-
-**Amaç:** Canlı testlerde tespit edilen ve diyalog döngüsünü engelleyen son kritik hataları gidererek, platformun kullanıcıyla tam bir karşılıklı konuşma yapabilmesini sağlamak.
-
+        -   [ ] Test çağrısı sonunda, `cdr-service` loglarında bu olayın işlendiğine dair bir mesaj ve `calls` tablosunda ilgili alanların doğru bir şekilde doldurulduğu doğrulanmalıdır.
+    -   **Tahmini Süre:** ~1 saat
+    
 -   [x] **Görev ID: AGENT-BUG-02 - Yanlış Tenant ID ile Prompt Sorgulama Hatası**
     -   **Durum:** ✅ **Tamamlandı ve Doğrulandı.**
 
@@ -147,18 +158,16 @@ Bu belge, platformun tam diyalog döngüsünü tamamlamasını engelleyen son kr
         -   [ ] `StateFnSpeaking` başladığında, `call.tts.synthesis.started` tipinde bir olay yayınlanmalıdır.
         -   [ ] Bu olayların `cdr-service` tarafından yakalanıp `call_events` tablosuna yazıldığı doğrulanmalıdır.    
 
-### **FAZ 4: Mimari Sağlamlaştırma ve Teknik Borç Ödeme (Orta Öncelik)**
+### **FAZ 4: Mimari Sağlamlaştırma ve Teknik Borç Ödeme (Yeniden Önceliklendirildi)**
 
-**Amaç:** Servisin iç yapısını daha modüler ve sürdürülebilir hale getirerek, gelecekteki özellik eklemelerini hızlandırmak ve kod karmaşıklığını azaltmak.
-
--   [ ] **Görev ID: AGENT-REFACTOR-01 - Sorumlulukların Katmanlara Ayrılması**
+-   [ ] **Görev ID: AGENT-REFACTOR-01 - Sorumlulukların Katmanlara Ayrılması (GÖZDEN GEÇİRİLDİ)**
     -   **Durum:** ⬜ Planlandı
-    -   **Tahmini Süre:** ~2-3 gün
-    -   **Açıklama:** Mevcut `internal/dialog` paketi, hem diyalog akışını hem de harici servis iletişimini yöneterek aşırı büyümüş ve Tek Sorumluluk Prensibi'ni ihlal etmeye başlamıştır. Bu görev, bu mantığı daha temiz katmanlara ayıracaktır.
+    -   **Bulgular:** `internal/dialog/states.go` dosyası, hem diyalog akışını (durum makinesi) hem de harici servis iletişimlerini (medya oynatma, TTS/STT/LLM çağırma) yöneterek "Tek Sorumluluk Prensibi"ni ihlal etmektedir. Bu durum, kodun bakımını ve test edilebilirliğini zorlaştırmaktadır.
+    -   **Çözüm Stratejisi:** Bu mantığı, "Akıllı Orkestratör" ve "Adaptör" katmanlarına ayıracağız.
     -   **Kabul Kriterleri:**
-        -   [ ] `internal/orchestrator` adında yeni bir paket oluşturulmalı ve `RunDialogLoop` ile ana durum fonksiyonları (`StateFn...`) buraya taşınmalıdır.
+        -   [ ] `internal/orchestrator` adında yeni bir paket oluşturulmalı ve `RunDialogLoop` ile ana durum fonksiyonları (`StateFn...`) buraya taşınmalıdır. Bu katman, akışın "ne" yapılacağını yönetir.
         -   [ ] `internal/adapter` adında yeni bir paket oluşturulmalıdır.
-        -   [ ] `playText`, `PlayAnnouncement`, `streamAndTranscribe` gibi medya ile ilgili tüm mantık, `adapter/media.go` içine taşınmalıdır.
-        -   [ ] `generateWelcomeText` ve `buildLlmPrompt` gibi LLM prompt hazırlama mantığı, `adapter/llm.go` içine taşınmalıdır.
-        -   [ ] Refaktör sonrası `internal/dialog/states.go` dosyasının satır sayısı **en az %40 oranında azalmalıdır.**
+        -   [ ] `playText`, `PlayAnnouncement`, `streamAndTranscribe` gibi medya ve AI ile ilgili tüm mantık, `adapter/media.go`, `adapter/ai.go` gibi dosyalara taşınmalıdır. Bu katman, işin "nasıl" yapılacağını yönetir.
+        -   [ ] Refaktör sonrası `internal/orchestrator`'daki durum fonksiyonları, doğrudan gRPC/HTTP istemcilerini çağırmamalı, sadece `adapter` katmanındaki fonksiyonları çağırmalıdır.
         -   [ ] Mevcut uçtan uca diyalog testi, refaktör sonrası da başarıyla çalışmaya devam etmelidir.
+    -   **Tahmini Süre:** ~2-3 gün
