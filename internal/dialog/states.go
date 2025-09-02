@@ -1,4 +1,4 @@
-// File: internal/dialog/states.go (TAM VE EKSİKSİZ SON HALİ)
+// internal/dialog/states.go dosyasının TAM ve GÜNCELLENMİŞ HALİ
 package dialog
 
 import (
@@ -27,6 +27,14 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// --- DEĞİŞİKLİK: streamAndTranscribe için yeni bir yanıt struct'ı ---
+type TranscriptionResult struct {
+	Text             string
+	IsNoSpeechTimeout bool
+}
+// --- DEĞİŞİKLİK SONU ---
+
+// Dependencies struct'ı aynı kalır...
 type Dependencies struct {
 	DB                  *sql.DB
 	Config              *config.Config
@@ -40,22 +48,20 @@ type Dependencies struct {
 	EventsFailed        *prometheus.CounterVec
 }
 
+// StateFnWelcoming aynı kalır...
 func StateFnWelcoming(ctx context.Context, deps *Dependencies, st *state.CallState) (*state.CallState, error) {
 	l := deps.Log.With().Str("call_id", st.CallID).Logger()
-
 	l.Info().Msg("İlk AI yanıtı öncesi 1.5 saniye bekleniyor...")
 	time.Sleep(1500 * time.Millisecond)
-
 	welcomeText, err := generateWelcomeText(ctx, deps, l, st)
-	if err != nil {
-		return st, err
-	}
+	if err != nil { return st, err }
 	st.Conversation = append(st.Conversation, map[string]string{"ai": welcomeText})
 	playText(ctx, deps, l, st, welcomeText)
 	st.CurrentState = state.StateListening
 	return st, nil
 }
 
+// --- DEĞİŞİKLİK: StateFnListening tamamen güncellendi ---
 func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallState) (*state.CallState, error) {
 	l := deps.Log.With().Str("call_id", st.CallID).Logger()
 
@@ -68,98 +74,91 @@ func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallSta
 
 	l.Info().Msg("Kullanıcıdan ses bekleniyor (gerçek zamanlı akış modu)...")
 
-	transcribedText, err := streamAndTranscribe(ctx, deps, st)
+	transcriptionResult, err := streamAndTranscribe(ctx, deps, st)
 	if err != nil {
-		if err == context.Canceled || status.Code(err) == codes.Canceled {
-			return st, context.Canceled
-		}
+		if err == context.Canceled || status.Code(err) == codes.Canceled { return st, context.Canceled }
 		PlayAnnouncement(ctx, deps, l, st, "ANNOUNCE_SYSTEM_ERROR")
 		st.ConsecutiveFailures++
 		return st, nil
 	}
+	
+	// --- YENİ MANTIK BURADA ---
+	if transcriptionResult.IsNoSpeechTimeout {
+		l.Warn().Msg("STT'den ses algılanmadı (timeout). Kullanıcıya bir şans daha veriliyor.")
+		PlayAnnouncement(ctx, deps, l, st, "ANNOUNCE_SYSTEM_CANT_HEAR_YOU")
+		// Durumu tekrar Listening'e ayarlayarak döngüye devam etmesini sağlıyoruz, hata sayacını artırmıyoruz.
+		st.CurrentState = state.StateListening 
+		return st, nil
+	}
 
-	if transcribedText == "" {
-		if st.ConsecutiveFailures == 0 {
-			l.Warn().Msg("STT boş metin döndürdü (ilk deneme), kullanıcıya bir şans daha veriliyor.")
-			st.ConsecutiveFailures++
-			return st, nil
-		}
-		l.Warn().Msg("STT tekrar boş metin döndürdü, 'anlayamadım' anonsu çalınacak.")
+	if transcriptionResult.Text == "" {
+		l.Warn().Msg("STT boş metin döndürdü, 'anlayamadım' anonsu çalınacak.")
 		PlayAnnouncement(ctx, deps, l, st, "ANNOUNCE_SYSTEM_CANT_UNDERSTAND")
 		st.ConsecutiveFailures++
+		// Durumu tekrar Listening'e ayarlayarak döngüye devam et.
+		st.CurrentState = state.StateListening
 		return st, nil
 	}
 
 	st.ConsecutiveFailures = 0
-	st.Conversation = append(st.Conversation, map[string]string{"user": transcribedText})
+	st.Conversation = append(st.Conversation, map[string]string{"user": transcriptionResult.Text})
 	st.CurrentState = state.StateThinking
 	return st, nil
 }
+// --- DEĞİŞİKLİK SONU ---
 
+// StateFnThinking aynı kalır...
 func StateFnThinking(ctx context.Context, deps *Dependencies, st *state.CallState) (*state.CallState, error) {
 	l := deps.Log.With().Str("call_id", st.CallID).Logger()
 	l.Info().Msg("LLM'den yanıt üretiliyor...")
 	prompt, err := buildLlmPrompt(ctx, deps, st)
-	if err != nil {
-		return st, fmt.Errorf("LLM prompt'u oluşturulamadı: %w", err)
-	}
-
+	if err != nil { return st, fmt.Errorf("LLM prompt'u oluşturulamadı: %w", err) }
 	llmRespText, err := deps.LLMClient.Generate(ctx, prompt, st.TraceID)
-	if err != nil {
-		return st, fmt.Errorf("LLM yanıtı üretilemedi: %w", err)
-	}
+	if err != nil { return st, fmt.Errorf("LLM yanıtı üretilemedi: %w", err) }
 	st.Conversation = append(st.Conversation, map[string]string{"ai": llmRespText})
 	st.CurrentState = state.StateSpeaking
 	return st, nil
 }
 
+// StateFnSpeaking aynı kalır...
 func StateFnSpeaking(ctx context.Context, deps *Dependencies, st *state.CallState) (*state.CallState, error) {
 	l := deps.Log.With().Str("call_id", st.CallID).Logger()
 	lastAiMessage := st.Conversation[len(st.Conversation)-1]["ai"]
 	l.Info().Str("text", lastAiMessage).Msg("AI yanıtı seslendiriliyor...")
 	playText(ctx, deps, l, st, lastAiMessage)
-
 	time.Sleep(250 * time.Millisecond)
-
 	st.CurrentState = state.StateListening
 	return st, nil
 }
 
-func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.CallState) (string, error) {
+// --- DEĞİŞİKLİK: streamAndTranscribe dönüş değeri güncellendi ---
+func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.CallState) (TranscriptionResult, error) {
 	l := deps.Log.With().Str("call_id", st.CallID).Logger()
+	var result TranscriptionResult // Varsayılan değerler: Text="", IsNoSpeechTimeout=false
 
 	portVal, ok := st.Event.Media["server_rtp_port"]
-	if !ok {
-		return "", fmt.Errorf("kritik hata: CallState içinde 'server_rtp_port' bulunamadı")
-	}
+	if !ok { return result, fmt.Errorf("kritik hata: CallState içinde 'server_rtp_port' bulunamadı") }
 	serverRtpPortFloat, ok := portVal.(float64)
 	if !ok {
 		l.Error().Interface("value", portVal).Msg("Kritik hata: 'server_rtp_port' beklenen float64 tipinde değil.")
-		return "", fmt.Errorf("kritik hata: 'server_rtp_port' tipi geçersiz")
+		return result, fmt.Errorf("kritik hata: 'server_rtp_port' tipi geçersiz")
 	}
 
 	grpcCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", st.TraceID)
-
 	mediaStream, err := deps.MediaClient.RecordAudio(grpcCtx, &mediav1.RecordAudioRequest{
 		ServerRtpPort:    uint32(serverRtpPortFloat),
 		TargetSampleRate: &deps.SttTargetSampleRate,
 	})
-	if err != nil {
-		return "", fmt.Errorf("media service ile stream oluşturulamadı: %w", err)
-	}
+	if err != nil { return result, fmt.Errorf("media service ile stream oluşturulamadı: %w", err) }
 	l.Info().Msg("Media-Service'ten ses akışı başlatıldı.")
 
 	u, err := url.Parse(deps.STTClient.BaseURL())
-	if err != nil {
-		return "", fmt.Errorf("stt service url parse edilemedi: %w", err)
-	}
+	if err != nil { return result, fmt.Errorf("stt service url parse edilemedi: %w", err) }
 	sttURL := url.URL{Scheme: "ws", Host: u.Host, Path: "/api/v1/transcribe-stream"}
-
 	q := sttURL.Query()
 	q.Set("language", getLanguageCode(st.Event))
 	q.Set("logprob_threshold", fmt.Sprintf("%f", deps.Config.SttServiceLogprobThreshold))
 	q.Set("no_speech_threshold", fmt.Sprintf("%f", deps.Config.SttServiceNoSpeechThreshold))
-
 	vadLevel := "1"
 	if st.Event != nil && st.Event.Dialplan != nil && st.Event.Dialplan.Action != nil && st.Event.Dialplan.Action.ActionData != nil && st.Event.Dialplan.Action.ActionData.Data != nil {
 		if val, ok := st.Event.Dialplan.Action.ActionData.Data["stt_vad_level"]; ok {
@@ -167,43 +166,32 @@ func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.Call
 		}
 	}
 	q.Set("vad_aggressiveness", vadLevel)
-
 	sttURL.RawQuery = q.Encode()
 
 	l.Info().Str("url", sttURL.String()).Msg("STT-Service'e WebSocket bağlantısı kuruluyor...")
 	wsConn, _, err := websocket.DefaultDialer.Dial(sttURL.String(), nil)
-	if err != nil {
-		return "", fmt.Errorf("stt service websocket bağlantısı kurulamadı: %w", err)
-	}
+	if err != nil { return result, fmt.Errorf("stt service websocket bağlantısı kurulamadı: %w", err) }
 	defer wsConn.Close()
 	l.Info().Msg("STT-Service'e WebSocket bağlantısı başarılı.")
 
 	errChan := make(chan error, 2)
-	transcriptChan := make(chan string, 1)
+	resultChan := make(chan TranscriptionResult, 1) // Artık struct döndürüyor
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	go func() {
-		defer func() {
-			wsConn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-		}()
-
+		defer func() { wsConn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "")) }()
 		for {
 			select {
-			case <-ctx.Done():
-				return
+			case <-ctx.Done(): return
 			default:
 				chunk, err := mediaStream.Recv()
 				if err != nil {
-					if err != io.EOF && status.Code(err) != codes.Canceled {
-						errChan <- fmt.Errorf("media stream'den okuma hatası: %w", err)
-					}
+					if err != io.EOF && status.Code(err) != codes.Canceled { errChan <- fmt.Errorf("media stream'den okuma hatası: %w", err) }
 					return
 				}
 				if err := wsConn.WriteMessage(websocket.BinaryMessage, chunk.AudioData); err != nil {
-					if !websocket.IsCloseError(err) {
-						errChan <- fmt.Errorf("websocket'e yazma hatası: %w", err)
-					}
+					if !websocket.IsCloseError(err) { errChan <- fmt.Errorf("websocket'e yazma hatası: %w", err) }
 					return
 				}
 			}
@@ -211,17 +199,20 @@ func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.Call
 	}()
 
 	go func() {
-		defer close(transcriptChan)
+		defer close(resultChan)
 		for {
 			_, message, err := wsConn.ReadMessage()
-			if err != nil {
-				return
-			}
-			var result map[string]interface{}
-			if err := json.Unmarshal(message, &result); err == nil {
-				if resultType, ok := result["type"].(string); ok && resultType == "final" {
-					if text, ok := result["text"].(string); ok {
-						transcriptChan <- text
+			if err != nil { return }
+			var res map[string]interface{}
+			if err := json.Unmarshal(message, &res); err == nil {
+				if resType, ok := res["type"].(string); ok {
+					if resType == "final" {
+						if text, ok := res["text"].(string); ok {
+							resultChan <- TranscriptionResult{Text: text, IsNoSpeechTimeout: false}
+							return
+						}
+					} else if resType == "no_speech_timeout" { // --- YENİ ---
+						resultChan <- TranscriptionResult{Text: "", IsNoSpeechTimeout: true}
 						return
 					}
 				}
@@ -230,22 +221,24 @@ func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.Call
 	}()
 
 	select {
-	case transcript, ok := <-transcriptChan:
+	case res, ok := <-resultChan:
 		if !ok {
 			l.Warn().Msg("Transkript alınamadan STT bağlantısı kapandı.")
-			return "", nil
+			return TranscriptionResult{Text: "", IsNoSpeechTimeout: false}, nil
 		}
-		l.Info().Str("transcript", transcript).Msg("Nihai transkript alındı.")
-		return transcript, nil
+		l.Info().Interface("result", res).Msg("Nihai transkript sonucu alındı.")
+		return res, nil
 	case err := <-errChan:
 		l.Error().Err(err).Msg("Akış sırasında hata oluştu.")
-		return "", err
+		return result, err
 	case <-time.After(30 * time.Second):
 		l.Warn().Msg("Transkripsiyon için zaman aşımına ulaşıldı.")
-		return "", nil
+		return TranscriptionResult{Text: "", IsNoSpeechTimeout: true}, nil
 	}
 }
+// --- DEĞİŞİKLİK SONU ---
 
+// --- DEĞİŞİKLİK: playText fonksiyonu güncellendi ---
 func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *state.CallState, textToPlay string) {
 	l.Info().Str("text", textToPlay).Msg("Metin sese dönüştürülüyor...")
 
@@ -255,7 +248,7 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 	if st.Event != nil && st.Event.Dialplan != nil && st.Event.Dialplan.Action != nil && st.Event.Dialplan.Action.ActionData != nil && st.Event.Dialplan.Action.ActionData.Data != nil {
 		actionData := st.Event.Dialplan.Action.ActionData.Data
 		speakerURL, useCloning = actionData["speaker_wav_url"]
-		voiceSelector = actionData["voice_selector"]
+		voiceSelector = actionData["voice_selector"] // Bu değeri alıyoruz
 	}
 
 	mdCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", st.TraceID)
@@ -271,7 +264,8 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 		}
 		ttsReq.SpeakerWavUrl = &speakerURL
 	} else if voiceSelector != "" {
-		ttsReq.VoiceSelector = &voiceSelector
+		l.Info().Str("voice_selector", voiceSelector).Msg("Dinamik ses seçici kullanılıyor.")
+		ttsReq.VoiceSelector = &voiceSelector // ve isteğe ekliyoruz
 	}
 
 	ttsCtx, ttsCancel := context.WithTimeout(mdCtx, 20*time.Second)
@@ -302,7 +296,6 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 
 	rtpTargetVal, ok1 := st.Event.Media["caller_rtp_addr"]
 	serverPortVal, ok2 := st.Event.Media["server_rtp_port"]
-
 	if !ok1 || !ok2 {
 		l.Error().Msg("PlayAudio için medya bilgileri eksik (caller_rtp_addr veya server_rtp_port anahtarı yok).")
 		return
@@ -310,7 +303,6 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 
 	rtpTarget, ok1 := rtpTargetVal.(string)
 	serverPortFloat, ok2 := serverPortVal.(float64)
-
 	if !ok1 || !ok2 {
 		l.Error().Interface("rtp_target", rtpTargetVal).Interface("server_port", serverPortVal).Msg("PlayAudio için medya bilgileri geçersiz formatta.")
 		return
@@ -335,6 +327,7 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 		l.Info().Msg("Dinamik ses (TTS) başarıyla çalındı ve tamamlandı.")
 	}
 }
+// --- DEĞİŞİKLİK SONU ---
 
 func PlayAnnouncement(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *state.CallState, announcementID string) {
 	languageCode := getLanguageCode(st.Event)
