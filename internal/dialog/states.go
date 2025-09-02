@@ -1,4 +1,4 @@
-// File: internal/dialog/states.go
+// File: internal/dialog/states.go (TAM VE EKSİKSİZ SON HALİ)
 package dialog
 
 import (
@@ -40,12 +40,12 @@ type Dependencies struct {
 	EventsFailed        *prometheus.CounterVec
 }
 
-// =============================================================================
-// === ANA DURUM FONKSİYONLARI (STATE FUNCTIONS) ===============================
-// =============================================================================
-
 func StateFnWelcoming(ctx context.Context, deps *Dependencies, st *state.CallState) (*state.CallState, error) {
 	l := deps.Log.With().Str("call_id", st.CallID).Logger()
+
+	l.Info().Msg("İlk AI yanıtı öncesi 1.5 saniye bekleniyor...")
+	time.Sleep(1500 * time.Millisecond)
+
 	welcomeText, err := generateWelcomeText(ctx, deps, l, st)
 	if err != nil {
 		return st, err
@@ -61,7 +61,7 @@ func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallSta
 
 	if st.ConsecutiveFailures >= 2 {
 		l.Warn().Int("failures", st.ConsecutiveFailures).Msg("Art arda çok fazla anlama hatası. Çağrı sonlandırılıyor.")
-		PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_MAX_FAILURES")
+		PlayAnnouncement(ctx, deps, l, st, "ANNOUNCE_SYSTEM_MAX_FAILURES")
 		st.CurrentState = state.StateTerminated
 		return st, nil
 	}
@@ -73,14 +73,19 @@ func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallSta
 		if err == context.Canceled || status.Code(err) == codes.Canceled {
 			return st, context.Canceled
 		}
-		PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_ERROR")
+		PlayAnnouncement(ctx, deps, l, st, "ANNOUNCE_SYSTEM_ERROR")
 		st.ConsecutiveFailures++
 		return st, nil
 	}
 
 	if transcribedText == "" {
-		l.Warn().Msg("STT boş metin döndürdü, tekrar dinleniyor.")
-		PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_CANT_UNDERSTAND")
+		if st.ConsecutiveFailures == 0 {
+			l.Warn().Msg("STT boş metin döndürdü (ilk deneme), kullanıcıya bir şans daha veriliyor.")
+			st.ConsecutiveFailures++
+			return st, nil
+		}
+		l.Warn().Msg("STT tekrar boş metin döndürdü, 'anlayamadım' anonsu çalınacak.")
+		PlayAnnouncement(ctx, deps, l, st, "ANNOUNCE_SYSTEM_CANT_UNDERSTAND")
 		st.ConsecutiveFailures++
 		return st, nil
 	}
@@ -119,10 +124,6 @@ func StateFnSpeaking(ctx context.Context, deps *Dependencies, st *state.CallStat
 	st.CurrentState = state.StateListening
 	return st, nil
 }
-
-// =============================================================================
-// === YARDIMCI AKIŞ FONKSİYONLARI (HELPER FLOW FUNCTIONS) =====================
-// =============================================================================
 
 func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.CallState) (string, error) {
 	l := deps.Log.With().Str("call_id", st.CallID).Logger()
@@ -182,7 +183,6 @@ func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.Call
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Goroutine 1: Media Service'ten gelen sesi STT'ye aktar
 	go func() {
 		defer func() {
 			wsConn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
@@ -210,7 +210,6 @@ func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.Call
 		}
 	}()
 
-	// Goroutine 2: STT'den gelen nihai transkripti bekle
 	go func() {
 		defer close(transcriptChan)
 		for {
@@ -230,7 +229,6 @@ func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.Call
 		}
 	}()
 
-	// Sonucu bekle
 	select {
 	case transcript, ok := <-transcriptChan:
 		if !ok {
@@ -257,10 +255,7 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 	if st.Event != nil && st.Event.Dialplan != nil && st.Event.Dialplan.Action != nil && st.Event.Dialplan.Action.ActionData != nil && st.Event.Dialplan.Action.ActionData.Data != nil {
 		actionData := st.Event.Dialplan.Action.ActionData.Data
 		speakerURL, useCloning = actionData["speaker_wav_url"]
-		// --- DÜZELTME BAŞLANGICI (S1005) ---
-		// Artık 'ok' değerini kontrol etmediğimiz için, doğrudan atama yapmak daha temiz.
 		voiceSelector = actionData["voice_selector"]
-		// --- DÜZELTME SONU ---
 	}
 
 	mdCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", st.TraceID)
@@ -271,7 +266,7 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 		if !isAllowedSpeakerURL(speakerURL) {
 			l.Error().Str("speaker_url", speakerURL).Msg("GÜVENLİK UYARISI: İzin verilmeyen bir speaker_wav_url engellendi.")
 			deps.EventsFailed.WithLabelValues(st.Event.EventType, "ssrf_attempt_blocked").Inc()
-			PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_ERROR")
+			PlayAnnouncement(ctx, deps, l, st, "ANNOUNCE_SYSTEM_ERROR")
 			return
 		}
 		ttsReq.SpeakerWavUrl = &speakerURL
@@ -286,14 +281,14 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 	if err != nil {
 		l.Error().Err(err).Msg("TTS Gateway'den yanıt alınamadı (muhtemelen zaman aşımı).")
 		deps.EventsFailed.WithLabelValues(st.Event.EventType, "tts_gateway_failed").Inc()
-		PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_ERROR")
+		PlayAnnouncement(ctx, deps, l, st, "ANNOUNCE_SYSTEM_ERROR")
 		return
 	}
 
 	if ttsResp == nil {
 		l.Error().Msg("TTS Gateway'den hata dönmedi ancak yanıt boş (nil). Bu beklenmedik bir durum.")
 		deps.EventsFailed.WithLabelValues(st.Event.EventType, "tts_gateway_nil_response").Inc()
-		PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_ERROR")
+		PlayAnnouncement(ctx, deps, l, st, "ANNOUNCE_SYSTEM_ERROR")
 		return
 	}
 
@@ -341,7 +336,7 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 	}
 }
 
-func PlayAnnouncement(deps *Dependencies, l zerolog.Logger, st *state.CallState, announcementID string) {
+func PlayAnnouncement(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *state.CallState, announcementID string) {
 	languageCode := getLanguageCode(st.Event)
 	audioPath, err := database.GetAnnouncementPathFromDB(deps.DB, announcementID, st.TenantID, languageCode)
 	if err != nil {
@@ -355,11 +350,14 @@ func PlayAnnouncement(deps *Dependencies, l zerolog.Logger, st *state.CallState,
 
 	audioURI := fmt.Sprintf("file://%s", audioPath)
 	mediaInfo := st.Event.Media
+	if mediaInfo == nil {
+		l.Error().Str("announcement_id", announcementID).Msg("Anons çalınamadı: Medya bilgisi (MediaInfo) eksik.")
+		return
+	}
 	rtpTarget := mediaInfo["caller_rtp_addr"].(string)
 	serverPort := uint32(mediaInfo["server_rtp_port"].(float64))
 
-	ctx := metadata.AppendToOutgoingContext(context.Background(), "x-trace-id", st.TraceID)
-	playCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	playCtx, cancel := context.WithTimeout(metadata.AppendToOutgoingContext(ctx, "x-trace-id", st.TraceID), 30*time.Second)
 	defer cancel()
 
 	playReq := &mediav1.PlayAudioRequest{RtpTargetAddr: rtpTarget, ServerRtpPort: serverPort, AudioUri: audioURI}
@@ -368,17 +366,13 @@ func PlayAnnouncement(deps *Dependencies, l zerolog.Logger, st *state.CallState,
 	if err != nil {
 		stErr, _ := status.FromError(err)
 		if stErr.Code() == codes.Canceled || stErr.Code() == codes.DeadlineExceeded {
-			l.Error().Err(err).Str("announcement_id", announcementID).Msg("Hata: Anons çalma işlemi zaman aşımına uğradı veya iptal edildi.")
+			l.Warn().Err(err).Str("announcement_id", announcementID).Msg("Anons çalma işlemi zaman aşımına uğradı veya iptal edildi.")
 		} else {
 			l.Error().Err(err).Str("audio_uri", audioURI).Msg("Hata: Ses çalma komutu başarısız")
 			deps.EventsFailed.WithLabelValues(st.Event.EventType, "play_announcement_failed").Inc()
 		}
 	}
 }
-
-// =============================================================================
-// === VERİ HAZIRLAMA VE İŞLEME FONKSİYONLARI ==================================
-// =============================================================================
 
 func generateWelcomeText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *state.CallState) (string, error) {
 	languageCode := getLanguageCode(st.Event)
@@ -435,10 +429,7 @@ func getLanguageCode(event *state.CallEvent) string {
 
 var allowedSpeakerDomains = map[string]bool{"sentiric.github.io": true}
 
-// --- DÜZELTME BAŞLANGICI (unusedparams) ---
-// Artık 'ctx' parametresini almıyor çünkü kullanılmıyordu.
 func isAllowedSpeakerURL(rawURL string) bool {
-	// --- DÜZELTME SONU ---
 	u, e := url.Parse(rawURL)
 	return e == nil && (u.Scheme == "http" || u.Scheme == "https") && allowedSpeakerDomains[u.Hostname()]
 }

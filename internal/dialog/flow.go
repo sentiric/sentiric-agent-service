@@ -1,4 +1,4 @@
-// File: internal/dialog/flow.go
+// File: internal/dialog/flow.go (TAM VE EKSİKSİZ SON HALİ)
 package dialog
 
 import (
@@ -7,10 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sentiric/sentiric-agent-service/internal/state"
 	mediav1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/media/v1"
 	"google.golang.org/grpc/metadata"
-
-	"github.com/sentiric/sentiric-agent-service/internal/state"
 )
 
 type DialogFunc func(context.Context, *Dependencies, *state.CallState) (*state.CallState, error)
@@ -23,24 +22,17 @@ var stateMap = map[state.DialogState]DialogFunc{
 }
 
 type TerminationRequest struct {
-	CallID string `json:"callId"`
+	EventType string `json:"eventType"`
+	CallID    string `json:"callId"`
 }
 
 func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.Manager, initialSt *state.CallState) {
 	currentCallID := initialSt.CallID
 	l := deps.Log.With().Str("call_id", currentCallID).Str("trace_id", initialSt.TraceID).Logger()
 
-	// --- DÜZELTME BAŞLANGICI: Kayıt Tenant ID'sini doğru belirleme ---
-	// Çağrı kaydı S3 yolunu oluştururken, `dialplan`'in `tenant_id`'si yerine
-	// çağrının geldiği `inbound_route`'un `tenant_id`'sini kullanarak veri izolasyonunu sağlıyoruz.
-	recordingTenantID := initialSt.TenantID // Fallback
-	if initialSt.Event != nil && initialSt.Event.Dialplan != nil &&
-		initialSt.Event.Dialplan.GetInboundRoute() != nil && initialSt.Event.Dialplan.GetInboundRoute().TenantId != "" {
-		recordingTenantID = initialSt.Event.Dialplan.GetInboundRoute().TenantId
-	}
-	// --- DÜZELTME SONU ---
+	recordingTenantID := initialSt.TenantID
 
-	recordingURI := fmt.Sprintf("s3:///%s/%s_%s.wav",
+	recordingURI := fmt.Sprintf("s3://%s/%s_%s.wav",
 		recordingTenantID,
 		time.Now().UTC().Format("2006-01-02"),
 		currentCallID,
@@ -61,6 +53,12 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 		l.Error().Err(err).Msg("Media-service'e kayıt başlatma komutu gönderilemedi. Diyalog kayıtsız devam edecek.")
 		deps.EventsFailed.WithLabelValues(initialSt.Event.EventType, "start_recording_failed").Inc()
 	}
+
+	go func() {
+		announcementCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		PlayAnnouncement(announcementCtx, deps, l, initialSt, "ANNOUNCE_SYSTEM_CONNECTING")
+	}()
 
 	defer func() {
 		l.Info().Msg("Çağrı kaydı durduruluyor...")
@@ -84,15 +82,10 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 
 		if finalState.CurrentState == state.StateTerminated {
 			l.Info().Msg("Diyalog sonlandı, sip-signaling'e çağrıyı kapatma isteği gönderiliyor.")
-			// --- YENİ STRUCT TANIMI ---
-			terminationReq := struct {
-				EventType string `json:"eventType"`
-				CallID    string `json:"callId"`
-			}{
-				EventType: "call.terminate.request", // <-- EKSİK ALAN EKLENDİ
+			terminationReq := TerminationRequest{
+				EventType: "call.terminate.request",
 				CallID:    currentCallID,
 			}
-			// --- DEĞİŞİKLİK SONU ---
 			err := deps.Publisher.PublishJSON(context.Background(), "call.terminate.request", terminationReq)
 			if err != nil {
 				l.Error().Err(err).Msg("Çağrı sonlandırma isteği yayınlanamadı.")
@@ -147,7 +140,7 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 				return
 			}
 			l.Error().Err(err).Msg("Durum işlenirken hata oluştu, sonlandırma deneniyor.")
-			PlayAnnouncement(deps, l, st, "ANNOUNCE_SYSTEM_ERROR")
+			PlayAnnouncement(ctx, deps, l, st, "ANNOUNCE_SYSTEM_ERROR")
 			st.CurrentState = state.StateTerminated
 			if err := stateManager.Set(ctx, st); err != nil {
 				l.Error().Err(err).Msg("Hata sonrası 'Terminated' durumu güncellenemedi.")

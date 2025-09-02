@@ -1,4 +1,4 @@
-// File: internal/handler/event_handler.go
+// File: internal/handler/event_handler.go (TAM VE EKSİKSİZ SON HALİ)
 package handler
 
 import (
@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	// <-- YENİ: redis importu eklendi
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 	"github.com/sentiric/sentiric-agent-service/internal/client"
@@ -93,12 +92,7 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 }
 
 func (h *EventHandler) handleCallStarted(l zerolog.Logger, event *state.CallEvent) {
-	// --- YENİ: Yinelenen Çağrı İşlemesini Engelleme (DISTRIBUTED LOCK) ---
 	lockKey := "active_agent_lock:" + event.CallID
-	// SetNX (Set if Not Exists) atomik bir operasyondur.
-	// Bu anahtarı ilk oluşturan true alır, diğerleri false.
-	// 5 dakikalık bir TTL (Time To Live) ekleyerek, olası bir çökme durumunda
-	// anahtarın sonsuza dek Redis'te kalmasını engelliyoruz.
 	wasSet, err := h.stateManager.RedisClient().SetNX(context.Background(), lockKey, event.TraceID, 5*time.Minute).Result()
 	if err != nil {
 		l.Error().Err(err).Msg("Redis'e lock anahtarı yazılamadı.")
@@ -106,11 +100,9 @@ func (h *EventHandler) handleCallStarted(l zerolog.Logger, event *state.CallEven
 	}
 
 	if !wasSet {
-		// Bu anahtar zaten vardı, yani başka bir işlem bu çağrıyı yönetiyor.
 		l.Warn().Msg("Bu çağrı için zaten aktif bir agent süreci var. Yinelenen 'call.started' olayı görmezden geliniyor.")
 		return
 	}
-	// --- KİLİTLEME MANTIĞI SONU ---
 
 	if event.Dialplan == nil || event.Dialplan.Action == nil {
 		l.Error().Msg("Dialplan veya action bilgisi eksik, çağrı işlenemiyor.")
@@ -133,9 +125,6 @@ func (h *EventHandler) handleCallStarted(l zerolog.Logger, event *state.CallEven
 	}
 }
 
-// =============================================================
-// === BU FONKSİYON TAMAMEN YENİLENDİ ===
-// =============================================================
 func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.CallEvent) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -154,16 +143,13 @@ func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.Cal
 	l = l.With().Str("caller_number", callerNumber).Logger()
 	l.Info().Msg("Arayan numara parse edildi.")
 
-	// === DÜZELTME BAŞLANGICI (AGENT-BUG-06): Doğru Tenant ID'yi al ===
-	tenantID := "sentiric_demo" // Güvenli bir varsayılan
+	tenantID := "sentiric_demo"
 	if event.Dialplan.GetInboundRoute() != nil && event.Dialplan.GetInboundRoute().TenantId != "" {
 		tenantID = event.Dialplan.GetInboundRoute().TenantId
 	} else {
 		l.Warn().Msg("InboundRoute veya TenantId bulunamadı, fallback 'sentiric_demo' tenant'ı kullanılıyor.")
 	}
-	// === DÜZELTME SONU ===
 
-	// 1. ADIM: Önce kullanıcıyı bu numarayla bulmayı dene
 	findCtx, findCancel := context.WithTimeout(metadata.AppendToOutgoingContext(ctx, "x-trace-id", event.TraceID), 10*time.Second)
 	defer findCancel()
 
@@ -175,7 +161,6 @@ func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.Cal
 	foundUserRes, err := h.userClient.FindUserByContact(findCtx, findUserReq)
 
 	if err == nil && foundUserRes.User != nil {
-		// KULLANICI BULUNDU!
 		l.Info().Str("user_id", foundUserRes.User.Id).Msg("Mevcut kullanıcı bulundu, oluşturma adımı atlanıyor.")
 		event.Dialplan.MatchedUser = foundUserRes.User
 		for _, contact := range foundUserRes.User.Contacts {
@@ -184,9 +169,7 @@ func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.Cal
 				break
 			}
 		}
-
 	} else {
-		// KULLANICI BULUNAMADI, şimdi oluştur.
 		st, _ := status.FromError(err)
 		if st.Code() == codes.NotFound {
 			l.Info().Msg("Kullanıcı bulunamadı, yeni bir misafir kullanıcı oluşturulacak.")
@@ -195,7 +178,7 @@ func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.Cal
 			defer createCancel()
 
 			createUserReq := &userv1.CreateUserRequest{
-				TenantId: tenantID, // Düzeltilmiş tenantID kullanılıyor
+				TenantId: tenantID,
 				UserType: "caller",
 				InitialContact: &userv1.CreateUserRequest_InitialContact{
 					ContactType:  "phone",
@@ -216,7 +199,6 @@ func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.Cal
 				event.Dialplan.MatchedContact = createdUserRes.User.Contacts[0]
 			}
 		} else {
-			// FindUserByContact başka bir hata döndürdü
 			l.Error().Err(err).Msg("Kullanıcı aranırken beklenmedik bir hata oluştu.")
 			h.eventsFailed.WithLabelValues(event.EventType, "find_user_failed").Inc()
 			playInitialAnnouncement(ctx, h.dialogDeps, l, &state.CallState{Event: event, TenantID: tenantID, TraceID: event.TraceID}, "ANNOUNCE_SYSTEM_ERROR")
@@ -224,7 +206,6 @@ func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.Cal
 		}
 	}
 
-	// === DÜZELTME BAŞLANGICI (AGENT-BUG-04): user.identified.for_call olayını yayınla ===
 	if event.Dialplan.GetMatchedUser() != nil && event.Dialplan.GetMatchedContact() != nil {
 		l.Info().Msg("Kullanıcı kimliği belirlendi, user.identified.for_call olayı yayınlanacak.")
 
@@ -253,9 +234,7 @@ func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.Cal
 	} else {
 		l.Warn().Msg("Kullanıcı veya contact bilgisi eksik olduğu için user.identified.for_call olayı yayınlanamadı. CDR kaydı eksik olabilir.")
 	}
-	// === DÜZELTME SONU ===
 
-	// Akışın sonunda, kullanıcı ya bulundu ya da oluşturuldu. Standart diyalog akışını başlat.
 	h.handleStartAIConversation(l, event)
 }
 
@@ -277,18 +256,20 @@ func (h *EventHandler) handleStartAIConversation(l zerolog.Logger, event *state.
 		return
 	}
 
-	tenantID := "default"
-	if event.Dialplan != nil {
-		if event.Dialplan.TenantId != "" {
-			tenantID = event.Dialplan.TenantId
-		} else if event.Dialplan.InboundRoute != nil {
-			tenantID = event.Dialplan.InboundRoute.TenantId
-		}
+	tenantID := "sentiric_demo"
+	if event.Dialplan.GetMatchedUser() != nil && event.Dialplan.GetMatchedUser().TenantId != "" {
+		tenantID = event.Dialplan.GetMatchedUser().TenantId
+	} else if event.Dialplan.GetInboundRoute() != nil && event.Dialplan.GetInboundRoute().TenantId != "" {
+		tenantID = event.Dialplan.GetInboundRoute().TenantId
 	}
 
 	initialState := &state.CallState{
-		CallID: event.CallID, TraceID: event.TraceID, TenantID: tenantID,
-		CurrentState: state.StateWelcoming, Event: event, Conversation: []map[string]string{},
+		CallID:       event.CallID,
+		TraceID:      event.TraceID,
+		TenantID:     tenantID,
+		CurrentState: state.StateWelcoming,
+		Event:        event,
+		Conversation: []map[string]string{},
 	}
 
 	if err := h.stateManager.Set(ctx, initialState); err != nil {
@@ -296,7 +277,6 @@ func (h *EventHandler) handleStartAIConversation(l zerolog.Logger, event *state.
 		return
 	}
 
-	playInitialAnnouncement(ctx, h.dialogDeps, l, initialState, "ANNOUNCE_SYSTEM_CONNECTING")
 	dialog.RunDialogLoop(ctx, h.dialogDeps, h.stateManager, initialState)
 }
 
@@ -305,14 +285,12 @@ func (h *EventHandler) handleCallEnded(l zerolog.Logger, event *state.CallEvent)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// --- YENİ: Çağrı bittiğinde Distributed Lock'u temizle ---
 	lockKey := "active_agent_lock:" + event.CallID
 	if err := h.stateManager.RedisClient().Del(ctx, lockKey).Err(); err != nil {
 		l.Error().Err(err).Msg("Redis'ten lock anahtarı silinemedi.")
 	} else {
 		l.Info().Msg("Aktif agent lock'ı başarıyla temizlendi.")
 	}
-	// --- TEMİZLEME SONU ---
 
 	st, err := h.stateManager.Get(ctx, event.CallID)
 	if err != nil {
@@ -335,8 +313,7 @@ func (h *EventHandler) handleCallEnded(l zerolog.Logger, event *state.CallEvent)
 func playInitialAnnouncement(ctx context.Context, deps *dialog.Dependencies, l zerolog.Logger, st *state.CallState, announcementID string) {
 	languageCode := "tr"
 	if st.Event != nil && st.Event.Dialplan != nil {
-		// Düzeltme: MatchedUser veya InboundRoute'dan dil kodunu al
-		if st.Event.Dialplan.MatchedUser != nil && st.Event.Dialplan.MatchedUser.PreferredLanguageCode != nil {
+		if st.Event.Dialplan.MatchedUser != nil && st.Event.Dialplan.MatchedUser.PreferredLanguageCode != nil && *st.Event.Dialplan.MatchedUser.PreferredLanguageCode != "" {
 			languageCode = *st.Event.Dialplan.MatchedUser.PreferredLanguageCode
 		} else if st.Event.Dialplan.GetInboundRoute() != nil && st.Event.Dialplan.GetInboundRoute().DefaultLanguageCode != "" {
 			languageCode = st.Event.Dialplan.GetInboundRoute().DefaultLanguageCode
