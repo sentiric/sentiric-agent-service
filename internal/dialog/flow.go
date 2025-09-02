@@ -1,4 +1,4 @@
-// File: internal/dialog/flow.go (TAM VE EKSİKSİZ SON HALİ)
+// File: internal/dialog/flow.go (TAM VE NİHAİ SON HALİ)
 package dialog
 
 import (
@@ -21,15 +21,19 @@ var stateMap = map[state.DialogState]DialogFunc{
 	state.StateSpeaking:  StateFnSpeaking,
 }
 
+// === DEĞİŞİKLİK: TerminationRequest'e Timestamp eklendi ===
 type TerminationRequest struct {
-	EventType string `json:"eventType"`
-	CallID    string `json:"callId"`
+	EventType string    `json:"eventType"`
+	CallID    string    `json:"callId"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.Manager, initialSt *state.CallState) {
 	currentCallID := initialSt.CallID
 	l := deps.Log.With().Str("call_id", currentCallID).Str("trace_id", initialSt.TraceID).Logger()
 
+	// === DÜZELTME: S3 Tenant ID Mantığı ===
+	// initialSt.TenantID, handler'da doğru bir şekilde atandığı için güvenilir kaynaktır.
 	recordingTenantID := initialSt.TenantID
 
 	recordingURI := fmt.Sprintf("s3://%s/%s_%s.wav",
@@ -38,9 +42,7 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 		currentCallID,
 	)
 	l.Info().Str("uri", recordingURI).Msg("Çağrı kaydı başlatılıyor...")
-
 	startRecCtx, startRecCancel := context.WithTimeout(metadata.AppendToOutgoingContext(ctx, "x-trace-id", initialSt.TraceID), 10*time.Second)
-
 	_, err := deps.MediaClient.StartRecording(startRecCtx, &mediav1.StartRecordingRequest{
 		ServerRtpPort: uint32(initialSt.Event.Media["server_rtp_port"].(float64)),
 		OutputUri:     recordingURI,
@@ -48,17 +50,15 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 		Format:        &[]string{"wav"}[0],
 	})
 	startRecCancel()
-
 	if err != nil {
-		l.Error().Err(err).Msg("Media-service'e kayıt başlatma komutu gönderilemedi. Diyalog kayıtsız devam edecek.")
-		deps.EventsFailed.WithLabelValues(initialSt.Event.EventType, "start_recording_failed").Inc()
+		l.Error().Err(err).Msg("Media-service'e kayıt başlatma komutu gönderilemedi.")
 	}
 
-	go func() {
-		announcementCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		defer cancel()
-		PlayAnnouncement(announcementCtx, deps, l, initialSt, "ANNOUNCE_SYSTEM_CONNECTING")
-	}()
+	// === AKILLI ORKESTRASYON: "Bağlanıyor" anonsunu çal ve BİTMESİNİ BEKLE ===
+	l.Info().Msg("Bağlanıyor anonsu çalınıyor ve bitmesi bekleniyor...")
+	// Bu fonksiyon içindeki PlayAudio bir gRPC çağrısıdır ve tamamlanmasını bekleriz.
+	// Bu, bir sonraki adıma geçmeden önce anonsun bitmesini sağlar.
+	PlayAnnouncement(ctx, deps, l, initialSt, "ANNOUNCE_SYSTEM_CONNECTING")
 
 	defer func() {
 		l.Info().Msg("Çağrı kaydı durduruluyor...")
@@ -85,6 +85,7 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 			terminationReq := TerminationRequest{
 				EventType: "call.terminate.request",
 				CallID:    currentCallID,
+				Timestamp: time.Now().UTC(), // Zaman damgası eklendi
 			}
 			err := deps.Publisher.PublishJSON(context.Background(), "call.terminate.request", terminationReq)
 			if err != nil {
