@@ -100,6 +100,11 @@ Bu belge, platformun tam diyalog döngüsünü tamamlamasını engelleyen son kr
         -   [ ] `media-service`, kayıt tamamlandığında `call.recording.available` olayını RabbitMQ'ya yayınlamalıdır. (Bu `MEDIA-004` görevidir).
         -   [ ] `cdr-service`, bu olayı dinleyerek `calls` tablosundaki ilgili kaydın `recording_url` alanını güncellemelidir. (Bu `CDR-005` görevidir).
 
+---
+
+YENİ GÖREV (agent-service): AGENT-REFACTOR-02 - HTTP İstemci Soyutlaması
+Açıklama: STTClient ve LLMClient için ortak bir BaseHttpClient veya benzeri bir yapı oluşturarak, Generate ve Transcribe gibi metodlardaki tekrar eden http.NewRequestWithContext, httpClient.Do ve hata yönetimi mantığını merkezileştirmek.
+
 
 ### **FAZ 3: Gelişmiş Orkestrasyon (Sıradaki Öncelik)**
 
