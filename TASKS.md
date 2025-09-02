@@ -37,8 +37,8 @@ Bu belge, platformun tam diyalog döngüsünü tamamlamasını engelleyen son kr
 
 **Amaç:** Canlı testlerde tespit edilen ve diyalog döngüsünü engelleyen kritik hataları gidererek, platformun kullanıcıyla tam bir karşılıklı konuşma yapabilmesini sağlamak.
 
--   [ ] **Görev ID: AGENT-BUG-06 - Veritabanı Bütünlüğü ve Misafir Kullanıcı Oluşturma Hatası (KRİTİK & ACİL)**
-    -   **Durum:** ⬜ **Yapılacak (İLK GÖREV)**
+-   [x] **Görev ID: AGENT-BUG-06 - Veritabanı Bütünlüğü ve Misafir Kullanıcı Oluşturma Hatası (KRİTİK & ACİL)**
+    -   **Durum:** ✅ **Tamamlandı**
     -   **Bulgular:** `agent-service`, misafir bir kullanıcı oluştururken `tenant_id` olarak hard-code edilmiş `"default"` değerini `user-service`'e gönderiyor. Veritabanında bu isimde bir tenant olmadığı için `user-service` çöküyor ve tüm diyalog akışı `ANNOUNCE_SYSTEM_ERROR` ile sonlanıyor. Bu, anonsların duyulmaması ve STT/LLM döngüsünün hiç başlamamasının **kök nedenidir.**
     -   **Çözüm Stratejisi:** `agent-service`, tenant ID'sini hard-code etmek yerine, `dialplan`'den gelen dinamik veriyi kullanmalıdır.
     -   **Kabul Kriterleri:**
@@ -47,8 +47,8 @@ Bu belge, platformun tam diyalog döngüsünü tamamlamasını engelleyen son kr
         -   [ ] Düzeltme sonrası yapılan test çağrısında, `user-service` loglarında artık `violates foreign key constraint` hatasının görülmediği ve `agent-service` loglarında `Misafir kullanıcı başarıyla oluşturuldu` mesajının göründüğü doğrulanmalıdır.
     -   **Tahmini Süre:** ~1 saat
 
--   [ ] **Görev ID: AGENT-BUG-04 - `user.identified.for_call` Olayını Yayınlama (KRİTİK)**
-    -   **Durum:** ⬜ Planlandı (AGENT-BUG-06'ya bağımlı)
+-   [x] **Görev ID: AGENT-BUG-04 - `user.identified.for_call` Olayını Yayınlama (KRİTİK)**
+    -   **Durum:** ✅ **Tamamlandı**
     -   **Bulgular:** `calls` tablosundaki `user_id`, `contact_id`, `tenant_id` alanlarının `(NULL)` kalması, bu olayın yayınlanmadığını veya `cdr-service` tarafından işlenmediğini kanıtlamaktadır. Bu, raporlama ve veri bütünlüğü için kritik bir eksikliktir.
     -   **Çözüm Stratejisi:** `agent-service`, bir kullanıcıyı bulduğunda veya başarılı bir şekilde oluşturduğunda, bu bilgiyi asenkron olarak diğer servislere duyurmalıdır.
     -   **Kabul Kriterleri:**
@@ -69,8 +69,8 @@ Bu belge, platformun tam diyalog döngüsünü tamamlamasını engelleyen son kr
         *   [ ] Test çağrısı sonunda `calls` tablosundaki `user_id`, `contact_id` ve `tenant_id` alanlarının doğru bir şekilde doldurulduğu doğrulanmalıdır.
 
 
--   [ ] **Görev ID: AGENT-BUG-03 - `playText` Fonksiyonunda Kapsamlı Nil Pointer Koruması (KRİTİK & ACİL)**
-    -   **Durum:** ⬜ **Yapılacak (İLK GÖREV)**
+-   [x] **Görev ID: AGENT-BUG-03 - `playText` Fonksiyonunda Kapsamlı Nil Pointer Koruması (KRİTİK & ACİL)**
+    -   **Durum:** ✅ **Tamamlandı**
     -   **Engelleyici Mi?:** **EVET. TAM DİYALOG AKIŞINI BLOKE EDİYOR.**
     -   **Tahmini Süre:** ~1 saat
     -   **Açıklama:** `playText` fonksiyonu, `CallState` içindeki `st.Event.Media` map'ine ve içindeki `caller_rtp_addr`, `server_rtp_port` gibi anahtarlara erişmeden önce bu map'in veya anahtarların var olup olmadığını kontrol etmiyor. Bu, servisin çökmesine ve diyalog döngüsünün tamamlanamamasına neden oluyor.
