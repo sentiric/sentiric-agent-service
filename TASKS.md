@@ -71,3 +71,12 @@ Bu belge, agent-service'in canlı testlerde tespit edilen kritik hatalarını gi
     -   **Öncelik:** DÜŞÜK
     -   **Açıklama:** `STTClient` ve `LLMClient` için ortak bir yapı oluşturarak, tekrar eden `http.NewRequestWithContext`, `httpClient.Do` ve hata yönetimi mantığını merkezileştirmek.
     -   **Tahmini Süre:** ~3-4 Saat
+
+### **FAZ 4: Gerçek Zamanlı ve Akıllı Diyalog (Gelecek Vizyonu)**
+
+-   **Görev ID: AGENT-STREAM-01 - Tam Çift Yönlü (Full-Duplex) Diyalog Modu**
+    -   **Durum:** ⬜ **Planlandı**
+    -   **Öncelik:** DÜŞÜK
+    -   **Stratejik Önem:** Google Live API gibi yeni nesil, tek akışlı (single-stream) yapay zeka modelleriyle entegrasyonu sağlar. Bu, platformun en son teknolojileri kullanabilmesi için kritik bir yetenektir.
+    -   **Açıklama:** Mevcut "Durum Makinesi" döngüsüne bir alternatif olarak, `media-service`'ten gelen ses akışını doğrudan bir "Canlı Konuşma" modeline (örn: Google Live API) yönlendiren ve modelden gelen ses akışını da doğrudan `media-service`'e geri gönderen yeni bir `StreamHandler` implemente etmek.
+    -   **Bağımlılık:** `STT-ADAPT-01` görevinin tamamlanması ve Google API entegrasyon tecrübesi.    
