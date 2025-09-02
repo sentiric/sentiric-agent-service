@@ -60,15 +60,6 @@ Bu belge, platformun tam diyalog döngüsünü tamamlamasını engelleyen son kr
 -   [x] **Görev ID: AGENT-BUG-02 - Yanlış Tenant ID ile Prompt Sorgulama Hatası**
     -   **Durum:** ✅ **Tamamlandı ve Doğrulandı.**
 
--   [ ] **Görev ID:** `CDR-BUG-02` / `AGENT-BUG-04`
-    -   **Açıklama:** `cdr-service`'in `call.started` olayında kullanıcı bilgisi aramaktan vazgeçmesini sağla. Bunun yerine, `agent-service`'in, bir misafir kullanıcıyı oluşturduktan veya mevcut bir kullanıcıyı bulduktan sonra, `user_id`, `contact_id` ve `tenant_id` içeren yeni bir `user.identified.for_call` olayı yayınlamasını sağla. `cdr-service` bu yeni olayı dinleyerek mevcut `calls` kaydını güncellemeli.
-    -   **Kabul Kriterleri:**
-        *   [ ] `sentiric-contracts`'e yeni `UserIdentifiedForCallEvent` mesajı eklenmeli.
-        *   [ ] `agent-service`, kullanıcıyı bulduktan/oluşturduktan sonra bu olayı yayınlamalı.
-        *   [ ] `cdr-service`, bu olayı dinleyip ilgili `calls` satırını `UPDATE` etmeli.
-        *   [ ] Test çağrısı sonunda `calls` tablosundaki `user_id`, `contact_id` ve `tenant_id` alanlarının doğru bir şekilde doldurulduğu doğrulanmalıdır.
-
-
 -   [x] **Görev ID: AGENT-BUG-03 - `playText` Fonksiyonunda Kapsamlı Nil Pointer Koruması (KRİTİK & ACİL)**
     -   **Durum:** ✅ **Tamamlandı**
     -   **Engelleyici Mi?:** **EVET. TAM DİYALOG AKIŞINI BLOKE EDİYOR.**
@@ -79,6 +70,51 @@ Bu belge, platformun tam diyalog döngüsünü tamamlamasını engelleyen son kr
         -   [ ] Fonksiyon, `caller_rtp_addr` ve `server_rtp_port` anahtarlarının `Media` map'inde var olup olmadığını ve doğru tipte (`string`, `float64`) olduklarını güvenli bir şekilde kontrol etmelidir.
         -   [ ] Eğer bu kritik medya bilgileri eksikse, fonksiyon paniklemek yerine anlamlı bir hata logu basmalı ve `error` döndürerek diyalog döngüsünün çağrıyı güvenli bir şekilde sonlandırmasını sağlamalıdır.
         -   [ ] Düzeltme sonrası yapılan test çağrısında, `agent-service`'in artık `panic` yapmadığı, `StateWelcoming`'i tamamlayıp, sesi kullanıcıya çaldığı ve `StateListening`'e geçtiği **loglarda ve ses kaydında doğrulanmalıdır.**
+
+-   **Görev ID: AGENT-BUG-07 - STT Sessizlik/Timeout Durumunu Yönetme**
+    -   **Durum:** ⬜ **Yapılacak (Bloklandı)**
+    -   **Öncelik:** **KRİTİK**
+    -   **Stratejik Önem:** Bu hata, tüm diyalog akışının kopmasının ve çağrının "Sizi anlayamadım" diyerek sonlanmasının **kök nedenidir.** Bu çözülmeden platform işlevsel olamaz.
+    -   **Problem Tanımı:** `agent-service`, `stt-service`'e ses akışını başlattıktan sonra, kullanıcı konuşmasa veya `stt-service`'ten hiç yanıt gelmese bile sonsuza dek bekliyor. Sonunda `streamAndTranscribe` fonksiyonu boş metin döndürüyor ve `StateFnListening` içindeki hata sayacı tetiklenerek çağrı sonlandırılıyor.
+    -   **Çözüm Stratejisi:** `StateFnListening` fonksiyonu, STT'den veri gelmemesi durumuna karşı daha dayanıklı hale getirilmelidir. `streamAndTranscribe` fonksiyonu, sadece metin değil, aynı zamanda "no_speech_detected" veya "timeout" gibi durumları da döndürebilmelidir.
+    -   **Bağımlılıklar:** `STT-BUG-01` (STT servisinin timeout/sessizlik durumu bildirmesi)
+    -   **Kabul Kriterleri:**
+        -   [ ] Kullanıcı 15-20 saniye boyunca hiç konuşmadığında, `agent-service` loglarında "STT'den ses algılanmadı/zaman aşımı" gibi bir uyarı görülmelidir.
+        -   [ ] Bu durumda, `ANNOUNCE_SYSTEM_CANT_HEAR_YOU` ("Sizi duyamıyorum") anonsu çalınmalı ve servis tekrar `StateListening` durumuna dönerek kullanıcıya bir şans daha vermelidir.
+        -   [ ] Çağrı, `ANNOUNCE_SYSTEM_MAX_FAILURES` anonsuyla sonlandırılmamalıdır (kullanıcı hiç konuşmadığı sürece).
+    -   **Tahmini Süre:** ~4-6 Saat
+
+-   **Görev ID: AGENT-FEAT-01 - Dinamik TTS Ses Seçimi**
+    -   **Durum:** ⬜ **Yapılacak**
+    -   **Öncelik:** YÜKSEK
+    -   **Stratejik Önem:** Platformun, her kiracı veya senaryo için farklı ses kimlikleri sunabilmesini sağlar. Ürün esnekliği için önemlidir.
+    -   **Problem Tanımı:** Test çağrısında, `dialplan`'de `tr-TR-EmelNeural` sesi tanımlı olmasına rağmen, varsayılan `edge-tts` sesi duyulmaktadır. Loglar, `agent-service`'in `voice_selector` bilgisini `tts-gateway`'e göndermediğini doğrulamaktadır.
+    -   **Çözüm Stratejisi:** `playText` fonksiyonu, `SynthesizeRequest` oluştururken, `st.Event.Dialplan.Action.ActionData.Data` içinden `voice_selector` anahtarını okumalı ve isteğe eklemelidir.
+    -   **Kabul Kriterleri:**
+        -   [ ] `tts-gateway` loglarında, gelen isteğin `voice_selector` alanının doğru değeri (`tr-TR-EmelNeural`) içerdiği görülmelidir.
+        -   [ ] Test çağrısının ses kaydı dinlendiğinde, duyulan sesin `EmelNeural` olduğu doğrulanmalıdır.
+    -   **Tahmini Süre:** ~1-2 Saat
+
+-   **Görev ID: AGENT-RAG-01 - `knowledge-service` Entegrasyonu**
+    -   **Durum:** ⬜ **Planlandı**
+    -   **Öncelik:** ORTA
+    -   **Stratejik Önem:** Bu görev, platformu basit bir "konuşan bottan", kurumsal bilgiye sahip "akıllı bir asistana" dönüştüren en önemli adımdır.
+    -   **Bağımlılıklar:** `AGENT-BUG-07`'nin çözülerek diyalog döngüsünün stabil hale gelmesi.
+    -   **Kabul Kriterleri:**
+        -   [ ] `StateFnThinking` fonksiyonu, `llm-service`'i çağırmadan önce `knowledge-service`'in `/api/v1/query` endpoint'ine bir HTTP isteği göndermelidir.
+        -   [ ] `knowledge-service`'ten dönen sonuçlar, LLM prompt'una "Şu bilgiyi kullanarak cevapla: [SONUÇLAR]... Soru: [KULLANICI SORUSU]" formatında eklenmelidir.
+        -   [ ] **Uçtan Uca Test:** Kullanıcı "VIP Check-up paketine neler dahildir?" diye sorduğunda, sistemin `sentiric_health` bilgi tabanından aldığı doğru bilgiyle cevap verdiği ses kaydı ve loglarla kanıtlanmalıdır.
+    -   **Tahmini Süre:** ~1 Gün
+
+-   [ ] **Görev ID:** `CDR-BUG-02` / `AGENT-BUG-04`
+    -   **Açıklama:** `cdr-service`'in `call.started` olayında kullanıcı bilgisi aramaktan vazgeçmesini sağla. Bunun yerine, `agent-service`'in, bir misafir kullanıcıyı oluşturduktan veya mevcut bir kullanıcıyı bulduktan sonra, `user_id`, `contact_id` ve `tenant_id` içeren yeni bir `user.identified.for_call` olayı yayınlamasını sağla. `cdr-service` bu yeni olayı dinleyerek mevcut `calls` kaydını güncellemeli.
+    -   **Kabul Kriterleri:**
+        *   [ ] `sentiric-contracts`'e yeni `UserIdentifiedForCallEvent` mesajı eklenmeli.
+        *   [ ] `agent-service`, kullanıcıyı bulduktan/oluşturduktan sonra bu olayı yayınlamalı.
+        *   [ ] `cdr-service`, bu olayı dinleyip ilgili `calls` satırını `UPDATE` etmeli.
+        *   [ ] Test çağrısı sonunda `calls` tablosundaki `user_id`, `contact_id` ve `tenant_id` alanlarının doğru bir şekilde doldurulduğu doğrulanmalıdır.
+
+
 
 -   [ ] **Görev ID: AGENT-DIAG-01 - Tam Diyalog Döngüsü Sağlamlık Testi**
     -   **Durum:** ⬜ Planlandı
@@ -108,6 +144,12 @@ Açıklama: STTClient ve LLMClient için ortak bir BaseHttpClient veya benzeri b
 
 ### **FAZ 3: Gelişmiş Orkestrasyon (Sıradaki Öncelik)**
 
+-   [ ] **Görev ID: AGENT-REFACTOR-01 - Sorumlulukların Katmanlara Ayrılması**
+    -   **Durum:** ⬜ **Planlandı**
+    -   **Öncelik:** DÜŞÜK
+    -   **Stratejik Önem:** Kodun test edilebilirliğini ve bakımını kolaylaştırarak uzun vadeli proje sağlığını güvence altına alır.
+    -   **Tahmini Süre:** ~2-3 Gün
+    
 -   [ ] **Görev ID: AGENT-BUG-05 - Hatalı Olay Yayınlamayı Düzeltme**
     -   **Durum:** ⬜ Planlandı
     -   **Tahmini Süre:** ~15 dakika
