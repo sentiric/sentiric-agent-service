@@ -59,7 +59,7 @@ func StateFnWelcoming(ctx context.Context, deps *Dependencies, st *state.CallSta
 	return st, nil
 }
 
-// --- DÜZELTME: StateFnListening tamamen güncellendi (AGENT-BUG-07) ---
+// --- DÜZELTME: StateFnListening tamamen güncellendi (AGENT-BUG-07 ve Sonsuz Döngü için) ---
 func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallState) (*state.CallState, error) {
 	l := deps.Log.With().Str("call_id", st.CallID).Logger()
 
@@ -78,6 +78,7 @@ func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallSta
 			return st, context.Canceled
 		}
 		// streamAndTranscribe içinde genel bir hata olursa (örn: websocket bağlanamazsa)
+		l.Error().Err(err).Msg("Transkripsiyon akışında hata oluştu.")
 		PlayAnnouncement(ctx, deps, l, st, "ANNOUNCE_SYSTEM_ERROR")
 		st.ConsecutiveFailures++
 		// Bir sonraki adıma geçmek yerine dinlemeye devam et
@@ -387,6 +388,8 @@ func PlayAnnouncement(ctx context.Context, deps *Dependencies, l zerolog.Logger,
 			l.Error().Err(err).Str("audio_uri", audioURI).Msg("Hata: Ses çalma komutu başarısız")
 			deps.EventsFailed.WithLabelValues(st.Event.EventType, "play_announcement_failed").Inc()
 		}
+	} else {
+		l.Info().Str("announcement_id", announcementID).Msg("Anons başarıyla çalındı ve tamamlandı.")
 	}
 }
 
