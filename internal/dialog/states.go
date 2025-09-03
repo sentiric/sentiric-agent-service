@@ -27,15 +27,11 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// --- DEĞİŞİKLİK: streamAndTranscribe için yeni bir yanıt struct'ı ---
 type TranscriptionResult struct {
 	Text              string
 	IsNoSpeechTimeout bool
 }
 
-// --- DEĞİŞİKLİK SONU ---
-
-// Dependencies struct'ı aynı kalır...
 type Dependencies struct {
 	DB                  *sql.DB
 	Config              *config.Config
@@ -49,7 +45,6 @@ type Dependencies struct {
 	EventsFailed        *prometheus.CounterVec
 }
 
-// StateFnWelcoming aynı kalır...
 func StateFnWelcoming(ctx context.Context, deps *Dependencies, st *state.CallState) (*state.CallState, error) {
 	l := deps.Log.With().Str("call_id", st.CallID).Logger()
 	l.Info().Msg("İlk AI yanıtı öncesi 1.5 saniye bekleniyor...")
@@ -64,7 +59,7 @@ func StateFnWelcoming(ctx context.Context, deps *Dependencies, st *state.CallSta
 	return st, nil
 }
 
-// --- DEĞİŞİKLİK: StateFnListening tamamen güncellendi ---
+// --- DÜZELTME: StateFnListening tamamen güncellendi (AGENT-BUG-07) ---
 func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallState) (*state.CallState, error) {
 	l := deps.Log.With().Str("call_id", st.CallID).Logger()
 
@@ -82,20 +77,24 @@ func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallSta
 		if err == context.Canceled || status.Code(err) == codes.Canceled {
 			return st, context.Canceled
 		}
+		// streamAndTranscribe içinde genel bir hata olursa (örn: websocket bağlanamazsa)
 		PlayAnnouncement(ctx, deps, l, st, "ANNOUNCE_SYSTEM_ERROR")
 		st.ConsecutiveFailures++
-		return st, nil
-	}
-
-	// --- YENİ MANTIK BURADA ---
-	if transcriptionResult.IsNoSpeechTimeout {
-		l.Warn().Msg("STT'den ses algılanmadı (timeout). Kullanıcıya bir şans daha veriliyor.")
-		PlayAnnouncement(ctx, deps, l, st, "ANNOUNCE_SYSTEM_CANT_HEAR_YOU")
-		// Durumu tekrar Listening'e ayarlayarak döngüye devam etmesini sağlıyoruz, hata sayacını artırmıyoruz.
+		// Bir sonraki adıma geçmek yerine dinlemeye devam et
 		st.CurrentState = state.StateListening
 		return st, nil
 	}
 
+	// YENİ MANTIK: Sessizlik durumunu doğru yönet
+	if transcriptionResult.IsNoSpeechTimeout {
+		l.Warn().Msg("STT'den ses algılanmadı (timeout). Kullanıcıya bir şans daha veriliyor.")
+		PlayAnnouncement(ctx, deps, l, st, "ANNOUNCE_SYSTEM_CANT_HEAR_YOU")
+		// Hata sayacını ARTIRMA, sadece dinlemeye geri dön.
+		st.CurrentState = state.StateListening
+		return st, nil
+	}
+
+	// STT boş metin döndürdüyse (halüsinasyon filtresi vb. nedenlerle)
 	if transcriptionResult.Text == "" {
 		l.Warn().Msg("STT boş metin döndürdü, 'anlayamadım' anonsu çalınacak.")
 		PlayAnnouncement(ctx, deps, l, st, "ANNOUNCE_SYSTEM_CANT_UNDERSTAND")
@@ -105,15 +104,13 @@ func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallSta
 		return st, nil
 	}
 
+	// Başarılı transkripsiyon durumu
 	st.ConsecutiveFailures = 0
 	st.Conversation = append(st.Conversation, map[string]string{"user": transcriptionResult.Text})
 	st.CurrentState = state.StateThinking
 	return st, nil
 }
 
-// --- DEĞİŞİKLİK SONU ---
-
-// StateFnThinking aynı kalır...
 func StateFnThinking(ctx context.Context, deps *Dependencies, st *state.CallState) (*state.CallState, error) {
 	l := deps.Log.With().Str("call_id", st.CallID).Logger()
 	l.Info().Msg("LLM'den yanıt üretiliyor...")
@@ -130,7 +127,6 @@ func StateFnThinking(ctx context.Context, deps *Dependencies, st *state.CallStat
 	return st, nil
 }
 
-// StateFnSpeaking aynı kalır...
 func StateFnSpeaking(ctx context.Context, deps *Dependencies, st *state.CallState) (*state.CallState, error) {
 	l := deps.Log.With().Str("call_id", st.CallID).Logger()
 	lastAiMessage := st.Conversation[len(st.Conversation)-1]["ai"]
@@ -141,10 +137,9 @@ func StateFnSpeaking(ctx context.Context, deps *Dependencies, st *state.CallStat
 	return st, nil
 }
 
-// --- DEĞİŞİKLİK: streamAndTranscribe dönüş değeri güncellendi ---
 func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.CallState) (TranscriptionResult, error) {
 	l := deps.Log.With().Str("call_id", st.CallID).Logger()
-	var result TranscriptionResult // Varsayılan değerler: Text="", IsNoSpeechTimeout=false
+	var result TranscriptionResult
 
 	portVal, ok := st.Event.Media["server_rtp_port"]
 	if !ok {
@@ -193,7 +188,7 @@ func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.Call
 	l.Info().Msg("STT-Service'e WebSocket bağlantısı başarılı.")
 
 	errChan := make(chan error, 2)
-	resultChan := make(chan TranscriptionResult, 1) // Artık struct döndürüyor
+	resultChan := make(chan TranscriptionResult, 1)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -238,7 +233,7 @@ func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.Call
 							resultChan <- TranscriptionResult{Text: text, IsNoSpeechTimeout: false}
 							return
 						}
-					} else if resType == "no_speech_timeout" { // --- YENİ ---
+					} else if resType == "no_speech_timeout" {
 						resultChan <- TranscriptionResult{Text: "", IsNoSpeechTimeout: true}
 						return
 					}
@@ -264,12 +259,7 @@ func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.Call
 	}
 }
 
-// --- DEĞİŞİKLİK SONU ---
-
-// Diğer fonksiyonlar (playText, PlayAnnouncement, generateWelcomeText, buildLlmPrompt, getLanguageCode, isAllowedSpeakerURL) aynı kalır...
-
-// (Geri kalan fonksiyonların tamamını buraya ekliyorum)
-
+// --- DÜZELTME: playText güncellendi (AGENT-FEAT-01) ---
 func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *state.CallState, textToPlay string) {
 	l.Info().Str("text", textToPlay).Msg("Metin sese dönüştürülüyor...")
 
@@ -279,7 +269,8 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 	if st.Event != nil && st.Event.Dialplan != nil && st.Event.Dialplan.Action != nil && st.Event.Dialplan.Action.ActionData != nil && st.Event.Dialplan.Action.ActionData.Data != nil {
 		actionData := st.Event.Dialplan.Action.ActionData.Data
 		speakerURL, useCloning = actionData["speaker_wav_url"]
-		voiceSelector = actionData["voice_selector"] // Bu değeri alıyoruz
+		// voice_selector'ı buradan al
+		voiceSelector = actionData["voice_selector"]
 	}
 
 	mdCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", st.TraceID)
@@ -295,8 +286,9 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 		}
 		ttsReq.SpeakerWavUrl = &speakerURL
 	} else if voiceSelector != "" {
+		// Eğer voiceSelector varsa, isteğe ekle
 		l.Info().Str("voice_selector", voiceSelector).Msg("Dinamik ses seçici kullanılıyor.")
-		ttsReq.VoiceSelector = &voiceSelector // ve isteğe ekliyoruz
+		ttsReq.VoiceSelector = &voiceSelector
 	}
 
 	ttsCtx, ttsCancel := context.WithTimeout(mdCtx, 20*time.Second)
@@ -359,6 +351,7 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 	}
 }
 
+// ... (Geri kalan fonksiyonlar aynı kalır) ...
 func PlayAnnouncement(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *state.CallState, announcementID string) {
 	languageCode := getLanguageCode(st.Event)
 	audioPath, err := database.GetAnnouncementPathFromDB(deps.DB, announcementID, st.TenantID, languageCode)
