@@ -23,6 +23,13 @@ import (
 	"github.com/sentiric/sentiric-agent-service/internal/state"
 )
 
+// YENİ: ldflags ile doldurulacak değişkenler
+var (
+	ServiceVersion string
+	GitCommit      string
+	BuildDate      string
+)
+
 const serviceName = "agent-service"
 
 func connectToRedisWithRetry(cfg *config.Config, log zerolog.Logger) *redis.Client {
@@ -59,7 +66,14 @@ func main() {
 	}
 
 	appLog := logger.New(serviceName, cfg.Env)
-	appLog.Info().Msg("Konfigürasyon başarıyla yüklendi.")
+
+	// YENİ: Başlangıçta versiyon bilgisini logla
+	appLog.Info().
+		Str("version", ServiceVersion).
+		Str("commit", GitCommit).
+		Str("build_date", BuildDate).
+		Str("profile", cfg.Env).
+		Msg("🚀 agent-service başlatılıyor...")
 
 	go metrics.StartServer(cfg.MetricsPort, appLog)
 
@@ -75,7 +89,6 @@ func main() {
 	if rabbitCh != nil {
 		defer rabbitCh.Close()
 	}
-	// --- YENİ: Publisher'ı oluştur ---
 	publisher := queue.NewPublisher(rabbitCh, appLog)
 
 	// gRPC İstemcileri
@@ -100,7 +113,7 @@ func main() {
 		db,
 		cfg,
 		stateManager,
-		publisher, // <-- YENİ: Publisher'ı enjekte et
+		publisher,
 		mediaClient,
 		userClient,
 		ttsClient,

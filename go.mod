@@ -10,7 +10,7 @@ require (
 	github.com/prometheus/client_golang v1.23.0
 	github.com/rabbitmq/amqp091-go v1.10.0
 	github.com/rs/zerolog v1.34.0
-	github.com/sentiric/sentiric-contracts v1.8.7
+	github.com/sentiric/sentiric-contracts v1.8.8
 	google.golang.org/grpc v1.75.0
 )
 

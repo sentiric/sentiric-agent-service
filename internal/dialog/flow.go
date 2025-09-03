@@ -34,14 +34,19 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 
 	// === 1. ADIM: Kalıcı Kaydı Başlat ===
 	recordingTenantID := initialSt.TenantID
+	// DÜZELTME: S3 URI'sini daha standart hale getirelim.
 	recordingURI := fmt.Sprintf("s3://%s/%s_%s.wav", recordingTenantID, time.Now().UTC().Format("2006-01-02"), currentCallID)
 	l.Info().Str("uri", recordingURI).Msg("Çağrı kaydı başlatılıyor...")
 	startRecCtx, startRecCancel := context.WithTimeout(metadata.AppendToOutgoingContext(ctx, "x-trace-id", initialSt.TraceID), 10*time.Second)
+
+	// YENİ: StartRecordingRequest'e call_id ve trace_id'yi ekliyoruz.
 	_, err := deps.MediaClient.StartRecording(startRecCtx, &mediav1.StartRecordingRequest{
 		ServerRtpPort: uint32(initialSt.Event.Media["server_rtp_port"].(float64)),
 		OutputUri:     recordingURI,
 		SampleRate:    &deps.SttTargetSampleRate,
 		Format:        &[]string{"wav"}[0],
+		CallId:        currentCallID,
+		TraceId:       initialSt.TraceID,
 	})
 	startRecCancel()
 	if err != nil {
