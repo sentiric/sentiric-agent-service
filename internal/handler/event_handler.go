@@ -210,12 +210,13 @@ func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.Cal
 		l.Info().Msg("Kullanıcı kimliği belirlendi, user.identified.for_call olayı yayınlanacak.")
 
 		userIdentifiedPayload := struct {
-			EventType string `json:"eventType"`
-			TraceID   string `json:"traceId"`
-			CallID    string `json:"callId"`
-			UserID    string `json:"userId"`
-			ContactID int32  `json:"contactId"`
-			TenantID  string `json:"tenantId"`
+			EventType string    `json:"eventType"`
+			TraceID   string    `json:"traceId"`
+			CallID    string    `json:"callId"`
+			UserID    string    `json:"userId"`
+			ContactID int32     `json:"contactId"`
+			TenantID  string    `json:"tenantId"`
+			Timestamp time.Time `json:"timestamp"` // DÜZELTME
 		}{
 			EventType: "user.identified.for_call",
 			TraceID:   event.TraceID,
@@ -223,6 +224,7 @@ func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.Cal
 			UserID:    event.Dialplan.GetMatchedUser().GetId(),
 			ContactID: event.Dialplan.GetMatchedContact().GetId(),
 			TenantID:  event.Dialplan.GetMatchedUser().GetTenantId(),
+			Timestamp: time.Now().UTC(), // DÜZELTME
 		}
 
 		publishErr := h.publisher.PublishJSON(ctx, "user.identified.for_call", userIdentifiedPayload)
