@@ -287,6 +287,8 @@ func (h *EventHandler) handleCallEnded(l zerolog.Logger, event *state.CallEvent)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// --- YENİ MANTIK BAŞLANGICI ---
+	// 1. Aktif agent işleme kilidini temizle.
 	lockKey := "active_agent_lock:" + event.CallID
 	if err := h.stateManager.RedisClient().Del(ctx, lockKey).Err(); err != nil {
 		l.Error().Err(err).Msg("Redis'ten lock anahtarı silinemedi.")
@@ -294,22 +296,26 @@ func (h *EventHandler) handleCallEnded(l zerolog.Logger, event *state.CallEvent)
 		l.Info().Msg("Aktif agent lock'ı başarıyla temizlendi.")
 	}
 
+	// 2. Mevcut CallState'i al.
 	st, err := h.stateManager.Get(ctx, event.CallID)
 	if err != nil {
 		l.Error().Err(err).Msg("Sonlanan çağrı için durum Redis'ten alınamadı.")
-		return
+		// Durumu alamasak bile, anahtarı silmeyi deneyebiliriz.
 	}
 	if st == nil {
-		l.Warn().Msg("Sonlanan çağrı için aktif bir durum bulunamadı, işlem atlanıyor.")
-		return
+		l.Warn().Msg("Sonlanan çağrı için aktif bir durum bulunamadı, yine de anahtar silinecek.")
 	}
 
-	st.CurrentState = state.StateEnded
-	if err := h.stateManager.Set(ctx, st); err != nil {
-		l.Error().Err(err).Msg("Redis'e 'Ended' durumu yazılamadı.")
+	// 3. CallState kaydını tamamen sil.
+	//    Durumu sadece 'ENDED' olarak güncellemek, bir sonraki aynı Call-ID'li
+	//    çağrının işlenmesini engelliyordu ("Hayalet Oturum" sorunu).
+	stateKey := "callstate:" + event.CallID
+	if err := h.stateManager.RedisClient().Del(ctx, stateKey).Err(); err != nil {
+		l.Error().Err(err).Msg("Redis'ten 'callstate' anahtarı silinemedi.")
 	} else {
-		l.Info().Msg("Çağrı durumu Redis'te 'Ended' olarak güncellendi.")
+		l.Info().Msg("Çağrı durumu 'callstate' kaydı Redis'ten başarıyla silindi.")
 	}
+	// --- YENİ MANTIK SONU ---
 }
 
 func playInitialAnnouncement(ctx context.Context, deps *dialog.Dependencies, l zerolog.Logger, st *state.CallState, announcementID string) {
