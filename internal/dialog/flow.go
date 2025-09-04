@@ -1,4 +1,4 @@
-// File: internal/dialog/flow.go (TAM VE NİHAİ SON HALİ)
+// File: internal/dialog/flow.go (TAM VE NİHAİ DÜZELTİLMİŞ HALİ)
 package dialog
 
 import (
@@ -21,7 +21,6 @@ var stateMap = map[state.DialogState]DialogFunc{
 	state.StateSpeaking:  StateFnSpeaking,
 }
 
-// === DEĞİŞİKLİK: TerminationRequest'e Timestamp eklendi ===
 type TerminationRequest struct {
 	EventType string    `json:"eventType"`
 	CallID    string    `json:"callId"`
@@ -32,31 +31,7 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 	currentCallID := initialSt.CallID
 	l := deps.Log.With().Str("call_id", currentCallID).Str("trace_id", initialSt.TraceID).Logger()
 
-	// === 1. ADIM: Kalıcı Kaydı Başlat ===
-	recordingTenantID := initialSt.TenantID
-	// DÜZELTME: S3 URI'sini daha standart hale getirelim.
-	recordingURI := fmt.Sprintf("s3://%s/%s_%s.wav", recordingTenantID, time.Now().UTC().Format("2006-01-02"), currentCallID)
-	l.Info().Str("uri", recordingURI).Msg("Çağrı kaydı başlatılıyor...")
-	startRecCtx, startRecCancel := context.WithTimeout(metadata.AppendToOutgoingContext(ctx, "x-trace-id", initialSt.TraceID), 10*time.Second)
-
-	// YENİ: StartRecordingRequest'e call_id ve trace_id'yi ekliyoruz.
-	_, err := deps.MediaClient.StartRecording(startRecCtx, &mediav1.StartRecordingRequest{
-		ServerRtpPort: uint32(initialSt.Event.Media["server_rtp_port"].(float64)),
-		OutputUri:     recordingURI,
-		SampleRate:    &deps.SttTargetSampleRate,
-		Format:        &[]string{"wav"}[0],
-		CallId:        currentCallID,
-		TraceId:       initialSt.TraceID,
-	})
-	startRecCancel()
-	if err != nil {
-		l.Error().Err(err).Msg("Media-service'e kayıt başlatma komutu gönderilemedi.")
-	}
-
-	// === 2. ADIM: "Bağlanıyor" anonsunu ÇAL VE BİTMESİNİ BEKLE ===
-	l.Info().Msg("Bağlanıyor anonsu çalınıyor ve bitmesi bekleniyor...")
-	PlayAnnouncement(ctx, deps, l, initialSt, "ANNOUNCE_SYSTEM_CONNECTING")
-
+	// Defer bloğu, fonksiyonun sonunda çalışarak kaynakları temizler.
 	defer func() {
 		l.Info().Msg("Çağrı kaydı durduruluyor...")
 		stopRecCtx, stopRecCancel := context.WithTimeout(metadata.AppendToOutgoingContext(context.Background(), "x-trace-id", initialSt.TraceID), 10*time.Second)
@@ -65,7 +40,6 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 		_, err := deps.MediaClient.StopRecording(stopRecCtx, &mediav1.StopRecordingRequest{
 			ServerRtpPort: uint32(initialSt.Event.Media["server_rtp_port"].(float64)),
 		})
-
 		if err != nil {
 			l.Error().Err(err).Msg("Media-service'e kayıt durdurma komutu gönderilemedi.")
 			deps.EventsFailed.WithLabelValues(initialSt.Event.EventType, "stop_recording_failed").Inc()
@@ -82,7 +56,7 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 			terminationReq := TerminationRequest{
 				EventType: "call.terminate.request",
 				CallID:    currentCallID,
-				Timestamp: time.Now().UTC(), // Zaman damgası eklendi
+				Timestamp: time.Now().UTC(),
 			}
 			err := deps.Publisher.PublishJSON(context.Background(), "call.terminate.request", terminationReq)
 			if err != nil {
@@ -90,6 +64,43 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 			}
 		}
 	}()
+
+	// ===========================================================================
+	// === BAŞLANGIÇ AKIŞI DÜZELTMESİ: Eyleme Göre Doğru Anons ve Zamanında Kayıt ===
+	// ===========================================================================
+
+	// === 1. ADIM: Eyleme Göre Doğru Karşılama Anonsunu Çal ===
+	actionName := initialSt.Event.Dialplan.Action.Action
+	var initialAnnouncementID string
+
+	if actionName == "PROCESS_GUEST_CALL" {
+		initialAnnouncementID = "ANNOUNCE_GUEST_WELCOME"
+		l.Info().Msg("Misafir karşılama anonsu çalınıyor ('Bu görüşme kaydedilebilir...')...")
+	} else {
+		initialAnnouncementID = "ANNOUNCE_SYSTEM_CONNECTING"
+		l.Info().Msg("Standart bağlanma anonsu çalınıyor ('Sizi bağlıyorum...')...")
+	}
+
+	PlayAnnouncement(ctx, deps, l, initialSt, initialAnnouncementID)
+
+	// === 2. ADIM: Kalıcı Kaydı BAŞLAT (Anons Bittikten Sonra) ===
+	recordingTenantID := initialSt.TenantID
+	recordingURI := fmt.Sprintf("s3://%s/%s_%s.wav", recordingTenantID, time.Now().UTC().Format("2006-01-02"), currentCallID)
+	l.Info().Str("uri", recordingURI).Msg("Çağrı kaydı başlatılıyor...")
+	startRecCtx, startRecCancel := context.WithTimeout(metadata.AppendToOutgoingContext(ctx, "x-trace-id", initialSt.TraceID), 10*time.Second)
+	defer startRecCancel()
+
+	_, err := deps.MediaClient.StartRecording(startRecCtx, &mediav1.StartRecordingRequest{
+		ServerRtpPort: uint32(initialSt.Event.Media["server_rtp_port"].(float64)),
+		OutputUri:     recordingURI,
+		CallId:        currentCallID,
+		TraceId:       initialSt.TraceID,
+	})
+	if err != nil {
+		l.Error().Err(err).Msg("Media-service'e kayıt başlatma komutu gönderilemedi.")
+	}
+
+	// ======================== DÜZELTME SONU ========================
 
 	// === 3. ADIM: Ana diyalog döngüsünü başlat ===
 	for {
