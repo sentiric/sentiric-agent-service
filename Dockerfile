@@ -1,4 +1,4 @@
-### File: `sentiric-agent-service/Dockerfile`
+### File: `sentiric-agent-service/Dockerfile` (GÜNCELLENMİŞ)
 
 # --- İNŞA AŞAMASI (DEBIAN TABANLI) ---
 FROM golang:1.24-bullseye AS builder
@@ -26,14 +26,15 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-X main.GitCommit=${GIT_COMMIT} -X main.BuildDate=${BUILD_DATE} -X main.ServiceVersion=${SERVICE_VERSION} -w -s" \
     -o /app/bin/sentiric-agent-service ./cmd/agent-service
 
-# --- ÇALIŞTIRMA AŞAMASI (ALPINE) ---
-FROM alpine:latest
+# --- ÇALIŞTIRMA AŞAMASI (DEBIAN SLIM) ---
+# DEĞİŞİKLİK: Alpine yerine Debian Slim kullanarak daha geniş sertifika ve kütüphane desteği sağlıyoruz.
+FROM debian:bookworm-slim
 
 # TLS doğrulaması için ca-certificates gerekli
-RUN apk add --no-cache ca-certificates
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 
 # GÜVENLİK: Root olmayan bir kullanıcı oluştur
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+RUN addgroup -S --gid 1001 appgroup && adduser -S --uid 1001 --ingroup appgroup appuser
 
 WORKDIR /app
 
