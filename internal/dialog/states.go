@@ -166,7 +166,14 @@ func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.Call
 	if err != nil {
 		return result, fmt.Errorf("stt service url parse edilemedi: %w", err)
 	}
-	sttURL := url.URL{Scheme: "ws", Host: u.Host, Path: "/api/v1/transcribe-stream"}
+
+	// GÜVENLİK DÜZELTMESİ: ws yerine wss kullan ve TLS yapılandırması ekle
+	scheme := "wss"
+	if u.Scheme == "http" {
+		scheme = "ws" // Geliştirme ortamı için
+	}
+
+	sttURL := url.URL{Scheme: scheme, Host: u.Host, Path: "/api/v1/transcribe-stream"}
 	q := sttURL.Query()
 	q.Set("language", getLanguageCode(st.Event))
 	q.Set("logprob_threshold", fmt.Sprintf("%f", deps.Config.SttServiceLogprobThreshold))
@@ -181,6 +188,7 @@ func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.Call
 	sttURL.RawQuery = q.Encode()
 
 	l.Info().Str("url", sttURL.String()).Msg("STT-Service'e WebSocket bağlantısı kuruluyor...")
+
 	wsConn, _, err := websocket.DefaultDialer.Dial(sttURL.String(), nil)
 	if err != nil {
 		return result, fmt.Errorf("stt service websocket bağlantısı kurulamadı: %w", err)
