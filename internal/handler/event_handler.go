@@ -216,7 +216,7 @@ func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.Cal
 			UserID    string    `json:"userId"`
 			ContactID int32     `json:"contactId"`
 			TenantID  string    `json:"tenantId"`
-			Timestamp time.Time `json:"timestamp"` // DÜZELTME
+			Timestamp time.Time `json:"timestamp"`
 		}{
 			EventType: "user.identified.for_call",
 			TraceID:   event.TraceID,
@@ -224,7 +224,7 @@ func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.Cal
 			UserID:    event.Dialplan.GetMatchedUser().GetId(),
 			ContactID: event.Dialplan.GetMatchedContact().GetId(),
 			TenantID:  event.Dialplan.GetMatchedUser().GetTenantId(),
-			Timestamp: time.Now().UTC(), // DÜZELTME
+			Timestamp: time.Now().UTC(),
 		}
 
 		publishErr := h.publisher.PublishJSON(ctx, "user.identified.for_call", userIdentifiedPayload)
