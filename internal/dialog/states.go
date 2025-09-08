@@ -13,9 +13,9 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/rs/zerolog"
 	"github.com/sentiric/sentiric-agent-service/internal/client"
 	"github.com/sentiric/sentiric-agent-service/internal/config"
+	"github.com/sentiric/sentiric-agent-service/internal/ctxlogger"
 	"github.com/sentiric/sentiric-agent-service/internal/database"
 	"github.com/sentiric/sentiric-agent-service/internal/queue"
 	"github.com/sentiric/sentiric-agent-service/internal/state"
@@ -39,31 +39,30 @@ type Dependencies struct {
 	TTSClient           ttsv1.TextToSpeechServiceClient
 	LLMClient           *client.LlmClient
 	STTClient           *client.SttClient
-	Log                 zerolog.Logger
 	SttTargetSampleRate uint32
 	EventsFailed        *prometheus.CounterVec
 }
 
 func StateFnWelcoming(ctx context.Context, deps *Dependencies, st *state.CallState) (*state.CallState, error) {
-	l := deps.Log.With().Str("call_id", st.CallID).Logger()
+	l := ctxlogger.FromContext(ctx)
 	l.Info().Msg("İlk AI yanıtı öncesi 1.5 saniye bekleniyor...")
 	time.Sleep(1500 * time.Millisecond)
-	welcomeText, err := generateWelcomeText(ctx, deps, l, st)
+	welcomeText, err := generateWelcomeText(ctx, deps, st)
 	if err != nil {
 		return st, err
 	}
 	st.Conversation = append(st.Conversation, map[string]string{"ai": welcomeText})
-	playText(ctx, deps, l, st, welcomeText)
+	playText(ctx, deps, st, welcomeText)
 	st.CurrentState = state.StateListening
 	return st, nil
 }
 
 func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallState) (*state.CallState, error) {
-	l := deps.Log.With().Str("call_id", st.CallID).Logger()
+	l := ctxlogger.FromContext(ctx)
 
 	if st.ConsecutiveFailures >= deps.Config.AgentMaxConsecutiveFailures {
 		l.Warn().Int("failures", st.ConsecutiveFailures).Int("max_failures", deps.Config.AgentMaxConsecutiveFailures).Msg("Art arda çok fazla anlama hatası. Çağrı sonlandırılıyor.")
-		PlayAnnouncement(ctx, deps, l, st, "ANNOUNCE_SYSTEM_MAX_FAILURES")
+		PlayAnnouncement(ctx, deps, st, "ANNOUNCE_SYSTEM_MAX_FAILURES")
 		st.CurrentState = state.StateTerminated
 		return st, nil
 	}
@@ -76,7 +75,7 @@ func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallSta
 			return st, context.Canceled
 		}
 		l.Error().Err(err).Msg("Transkripsiyon akışında hata oluştu.")
-		PlayAnnouncement(ctx, deps, l, st, "ANNOUNCE_SYSTEM_ERROR")
+		PlayAnnouncement(ctx, deps, st, "ANNOUNCE_SYSTEM_ERROR")
 		st.ConsecutiveFailures++
 		st.CurrentState = state.StateListening
 		return st, nil
@@ -84,7 +83,7 @@ func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallSta
 
 	if transcriptionResult.IsNoSpeechTimeout {
 		l.Warn().Msg("STT'den ses algılanmadı (timeout). Kullanıcıya bir şans daha veriliyor.")
-		PlayAnnouncement(ctx, deps, l, st, "ANNOUNCE_SYSTEM_CANT_HEAR_YOU")
+		PlayAnnouncement(ctx, deps, st, "ANNOUNCE_SYSTEM_CANT_HEAR_YOU")
 		st.CurrentState = state.StateListening
 		return st, nil
 	}
@@ -94,7 +93,7 @@ func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallSta
 
 	if isMeaningless {
 		l.Warn().Str("stt_result", cleanedText).Msg("STT anlamsız veya çok kısa metin döndürdü, 'anlayamadım' anonsu çalınacak.")
-		PlayAnnouncement(ctx, deps, l, st, "ANNOUNCE_SYSTEM_CANT_UNDERSTAND")
+		PlayAnnouncement(ctx, deps, st, "ANNOUNCE_SYSTEM_CANT_UNDERSTAND")
 		st.ConsecutiveFailures++
 		st.CurrentState = state.StateListening
 		return st, nil
@@ -107,7 +106,7 @@ func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallSta
 }
 
 func StateFnThinking(ctx context.Context, deps *Dependencies, st *state.CallState) (*state.CallState, error) {
-	l := deps.Log.With().Str("call_id", st.CallID).Logger()
+	l := ctxlogger.FromContext(ctx)
 	l.Info().Msg("LLM'den yanıt üretiliyor...")
 	prompt, err := buildLlmPrompt(ctx, deps, st)
 	if err != nil {
@@ -123,17 +122,17 @@ func StateFnThinking(ctx context.Context, deps *Dependencies, st *state.CallStat
 }
 
 func StateFnSpeaking(ctx context.Context, deps *Dependencies, st *state.CallState) (*state.CallState, error) {
-	l := deps.Log.With().Str("call_id", st.CallID).Logger()
+	l := ctxlogger.FromContext(ctx)
 	lastAiMessage := st.Conversation[len(st.Conversation)-1]["ai"]
 	l.Info().Str("text", lastAiMessage).Msg("AI yanıtı seslendiriliyor...")
-	playText(ctx, deps, l, st, lastAiMessage)
+	playText(ctx, deps, st, lastAiMessage)
 	time.Sleep(250 * time.Millisecond)
 	st.CurrentState = state.StateListening
 	return st, nil
 }
 
 func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.CallState) (TranscriptionResult, error) {
-	l := deps.Log.With().Str("call_id", st.CallID).Logger()
+	l := ctxlogger.FromContext(ctx)
 	var result TranscriptionResult
 
 	portVal, ok := st.Event.Media["server_rtp_port"]
@@ -261,7 +260,8 @@ func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.Call
 	}
 }
 
-func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *state.CallState, textToPlay string) {
+func playText(ctx context.Context, deps *Dependencies, st *state.CallState, textToPlay string) {
+	l := ctxlogger.FromContext(ctx)
 	l.Info().Str("text", textToPlay).Msg("Metin sese dönüştürülüyor...")
 
 	var speakerURL, voiceSelector string
@@ -281,7 +281,7 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 		if !isAllowedSpeakerURL(speakerURL, deps.Config.AgentAllowedSpeakerDomains) {
 			l.Error().Str("speaker_url", speakerURL).Msg("GÜVENLİK UYARISI: İzin verilmeyen bir speaker_wav_url engellendi.")
 			deps.EventsFailed.WithLabelValues(st.Event.EventType, "ssrf_attempt_blocked").Inc()
-			PlayAnnouncement(ctx, deps, l, st, "ANNOUNCE_SYSTEM_ERROR")
+			PlayAnnouncement(ctx, deps, st, "ANNOUNCE_SYSTEM_ERROR")
 			return
 		}
 		ttsReq.SpeakerWavUrl = &speakerURL
@@ -297,14 +297,14 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 	if err != nil {
 		l.Error().Err(err).Msg("TTS Gateway'den yanıt alınamadı (muhtemelen zaman aşımı).")
 		deps.EventsFailed.WithLabelValues(st.Event.EventType, "tts_gateway_failed").Inc()
-		PlayAnnouncement(ctx, deps, l, st, "ANNOUNCE_SYSTEM_ERROR")
+		PlayAnnouncement(ctx, deps, st, "ANNOUNCE_SYSTEM_ERROR")
 		return
 	}
 
 	if ttsResp == nil {
 		l.Error().Msg("TTS Gateway'den hata dönmedi ancak yanıt boş (nil). Bu beklenmedik bir durum.")
 		deps.EventsFailed.WithLabelValues(st.Event.EventType, "tts_gateway_nil_response").Inc()
-		PlayAnnouncement(ctx, deps, l, st, "ANNOUNCE_SYSTEM_ERROR")
+		PlayAnnouncement(ctx, deps, st, "ANNOUNCE_SYSTEM_ERROR")
 		return
 	}
 
@@ -350,7 +350,8 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 	}
 }
 
-func PlayAnnouncement(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *state.CallState, announcementID string) {
+func PlayAnnouncement(ctx context.Context, deps *Dependencies, st *state.CallState, announcementID string) {
+	l := ctxlogger.FromContext(ctx)
 	languageCode := getLanguageCode(st.Event)
 	audioPath, err := database.GetAnnouncementPathFromDB(deps.DB, announcementID, st.TenantID, languageCode)
 	if err != nil {
@@ -390,7 +391,8 @@ func PlayAnnouncement(ctx context.Context, deps *Dependencies, l zerolog.Logger,
 	}
 }
 
-func generateWelcomeText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *state.CallState) (string, error) {
+func generateWelcomeText(ctx context.Context, deps *Dependencies, st *state.CallState) (string, error) {
+	l := ctxlogger.FromContext(ctx)
 	languageCode := getLanguageCode(st.Event)
 	var promptID string
 	if st.Event != nil && st.Event.Dialplan != nil && st.Event.Dialplan.MatchedUser != nil && st.Event.Dialplan.MatchedUser.Name != nil {
@@ -411,10 +413,11 @@ func generateWelcomeText(ctx context.Context, deps *Dependencies, l zerolog.Logg
 }
 
 func buildLlmPrompt(ctx context.Context, deps *Dependencies, st *state.CallState) (string, error) {
+	l := ctxlogger.FromContext(ctx)
 	languageCode := getLanguageCode(st.Event)
 	systemPrompt, err := database.GetTemplateFromDB(deps.DB, "PROMPT_SYSTEM_DEFAULT", languageCode, st.TenantID)
 	if err != nil {
-		deps.Log.Error().Err(err).Str("call_id", st.CallID).Msg("Sistem prompt'u alınamadı, fallback kullanılıyor.")
+		l.Error().Err(err).Msg("Sistem prompt'u alınamadı, fallback kullanılıyor.")
 		systemPrompt = "Aşağıdaki diyaloğa devam et. Cevapların kısa olsun."
 	}
 	var promptBuilder strings.Builder

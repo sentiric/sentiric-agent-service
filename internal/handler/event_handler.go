@@ -13,6 +13,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/sentiric/sentiric-agent-service/internal/client"
 	"github.com/sentiric/sentiric-agent-service/internal/config"
+	"github.com/sentiric/sentiric-agent-service/internal/ctxlogger"
 	"github.com/sentiric/sentiric-agent-service/internal/database"
 	"github.com/sentiric/sentiric-agent-service/internal/dialog"
 	"github.com/sentiric/sentiric-agent-service/internal/queue"
@@ -58,7 +59,6 @@ func NewEventHandler(
 		TTSClient:           tc,
 		LLMClient:           llmC,
 		STTClient:           sttC,
-		Log:                 log,
 		SttTargetSampleRate: sttSampleRate,
 		EventsFailed:        failed,
 	}
@@ -115,6 +115,10 @@ func (h *EventHandler) handleCallStarted(l zerolog.Logger, event *state.CallEven
 		return
 	}
 
+	// CONTEXT-AWARE LOGGING: Context'e zenginleştirilmiş logger'ı burada ekliyoruz.
+	ctx := context.Background()
+	ctx = ctxlogger.ToContext(ctx, l)
+
 	actionName := event.Dialplan.Action.Action
 	l = l.With().Str("action", actionName).Logger()
 	l.Info().Msg("Dialplan eylemine göre çağrı yönlendiriliyor.")
@@ -122,17 +126,18 @@ func (h *EventHandler) handleCallStarted(l zerolog.Logger, event *state.CallEven
 	switch actionName {
 	case "PROCESS_GUEST_CALL":
 		h.dialogWg.Add(1)
-		go h.handleProcessGuestCall(l, event)
+		go h.handleProcessGuestCall(ctx, event)
 	case "START_AI_CONVERSATION":
 		h.dialogWg.Add(1)
-		go h.handleStartAIConversation(l, event)
+		go h.handleStartAIConversation(ctx, event)
 	default:
 		l.Error().Msg("Bilinmeyen veya desteklenmeyen dialplan eylemi.")
 		h.eventsFailed.WithLabelValues(event.EventType, "unsupported_action").Inc()
 	}
 }
 
-func (h *EventHandler) publishUserIdentifiedEvent(ctx context.Context, l zerolog.Logger, event *state.CallEvent) {
+func (h *EventHandler) publishUserIdentifiedEvent(ctx context.Context, event *state.CallEvent) {
+	l := ctxlogger.FromContext(ctx)
 	if event.Dialplan.GetMatchedUser() != nil && event.Dialplan.GetMatchedContact() != nil {
 		l.Info().Msg("Kullanıcı kimliği belirlendi, user.identified.for_call olayı yayınlanacak.")
 
@@ -165,9 +170,11 @@ func (h *EventHandler) publishUserIdentifiedEvent(ctx context.Context, l zerolog
 	}
 }
 
-func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.CallEvent) {
+func (h *EventHandler) handleProcessGuestCall(ctx context.Context, event *state.CallEvent) {
 	defer h.dialogWg.Done()
-	ctx, cancel := context.WithCancel(context.Background())
+	l := ctxlogger.FromContext(ctx)
+
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	l.Info().Msg("Misafir kullanıcı akışı başlatıldı: Önce bul, yoksa oluştur.")
@@ -181,7 +188,10 @@ func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.Cal
 			callerNumber = uriPart
 		}
 	}
+
+	// CONTEXT-AWARE LOGGING: Yeni logger'ı context'e ekleyip devam edelim.
 	l = l.With().Str("caller_number", callerNumber).Logger()
+	ctx = ctxlogger.ToContext(ctx, l)
 	l.Info().Msg("Arayan numara parse edildi.")
 
 	tenantID := "sentiric_demo"
@@ -231,7 +241,7 @@ func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.Cal
 			if createErr != nil {
 				l.Error().Err(createErr).Msg("User-service'de misafir kullanıcı oluşturulamadı.")
 				h.eventsFailed.WithLabelValues(event.EventType, "guest_user_creation_failed").Inc()
-				playInitialAnnouncement(ctx, h.dialogDeps, l, &state.CallState{Event: event, TenantID: tenantID, TraceID: event.TraceID}, "ANNOUNCE_SYSTEM_ERROR")
+				playInitialAnnouncement(ctx, h.dialogDeps, &state.CallState{Event: event, TenantID: tenantID, TraceID: event.TraceID}, "ANNOUNCE_SYSTEM_ERROR")
 				return
 			}
 			l.Info().Str("user_id", createdUserRes.User.Id).Msg("Misafir kullanıcı başarıyla oluşturuldu.")
@@ -242,26 +252,28 @@ func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.Cal
 		} else {
 			l.Error().Err(err).Msg("Kullanıcı aranırken beklenmedik bir hata oluştu.")
 			h.eventsFailed.WithLabelValues(event.EventType, "find_user_failed").Inc()
-			playInitialAnnouncement(ctx, h.dialogDeps, l, &state.CallState{Event: event, TenantID: tenantID, TraceID: event.TraceID}, "ANNOUNCE_SYSTEM_ERROR")
+			playInitialAnnouncement(ctx, h.dialogDeps, &state.CallState{Event: event, TenantID: tenantID, TraceID: event.TraceID}, "ANNOUNCE_SYSTEM_ERROR")
 			return
 		}
 	}
 
-	h.publishUserIdentifiedEvent(ctx, l, event)
+	h.publishUserIdentifiedEvent(ctx, event)
 
-	h.handleStartAIConversation(l, event)
+	h.handleStartAIConversation(ctx, event)
 }
 
-func (h *EventHandler) handleStartAIConversation(l zerolog.Logger, event *state.CallEvent) {
+func (h *EventHandler) handleStartAIConversation(ctx context.Context, event *state.CallEvent) {
 	defer h.dialogWg.Done()
-	ctx, cancel := context.WithCancel(context.Background())
+	l := ctxlogger.FromContext(ctx)
+
+	ctx, cancel := context.WithCancel(ctx)
 	go func() {
 		<-ctx.Done()
 		cancel()
-		l.Info().Str("call_id", event.CallID).Msg("Diyalog context'i ve kaynakları başarıyla temizlendi.")
+		l.Info().Msg("Diyalog context'i ve kaynakları başarıyla temizlendi.")
 	}()
 
-	h.publishUserIdentifiedEvent(ctx, l, event)
+	h.publishUserIdentifiedEvent(ctx, event)
 
 	st, err := h.stateManager.Get(ctx, event.CallID)
 	if err != nil {
@@ -325,7 +337,8 @@ func (h *EventHandler) handleCallEnded(l zerolog.Logger, event *state.CallEvent)
 	}
 }
 
-func playInitialAnnouncement(ctx context.Context, deps *dialog.Dependencies, l zerolog.Logger, st *state.CallState, announcementID string) {
+func playInitialAnnouncement(ctx context.Context, deps *dialog.Dependencies, st *state.CallState, announcementID string) {
+	l := ctxlogger.FromContext(ctx)
 	languageCode := "tr"
 	if st.Event != nil && st.Event.Dialplan != nil {
 		if st.Event.Dialplan.MatchedUser != nil && st.Event.Dialplan.MatchedUser.PreferredLanguageCode != nil && *st.Event.Dialplan.MatchedUser.PreferredLanguageCode != "" {

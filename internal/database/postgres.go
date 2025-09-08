@@ -1,8 +1,7 @@
-// File: sentiric-agent-service/internal/database/postgres.go
-
 package database
 
 import (
+	"context" // YENİ İMPORT
 	"database/sql"
 	"fmt"
 	"time"
@@ -13,28 +12,31 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// Connect, standartlaştırılmış, connection pooler'a dayanıklı bir veritabanı bağlantısı kurar.
-func Connect(url string, log zerolog.Logger) (*sql.DB, error) {
+// DEĞİŞİKLİK: Fonksiyon artık context alıyor.
+func Connect(ctx context.Context, url string, log zerolog.Logger) (*sql.DB, error) {
 	var db *sql.DB
 	var err error
 
-	// 1. URL'yi parse et
 	config, err := pgxpool.ParseConfig(url)
 	if err != nil {
-		log.Fatal().Err(err).Msg("PostgreSQL URL parse edilemedi")
-		return nil, err // Fatal zaten çıkar ama yine de ekleyelim
+		return nil, fmt.Errorf("PostgreSQL URL parse edilemedi: %w", err)
 	}
 
-	// 2. Connection Pooler ile uyumluluk için prepared statement'ları devre dışı bırak
 	config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 
-	// 3. Yeni, yapılandırılmış URL ile bağlantıyı yeniden dene
 	finalURL := stdlib.RegisterConnConfig(config.ConnConfig)
 
 	for i := 0; i < 10; i++ {
+		// DEĞİŞİKLİK: Döngünün başında context'in iptal edilip edilmediğini kontrol et.
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err() // Context iptal edildiyse hatayla çık.
+		default:
+			// Context iptal edilmediyse devam et.
+		}
+
 		db, err = sql.Open("pgx", finalURL)
 		if err == nil {
-			// Bağlantı havuzu ayarları
 			db.SetConnMaxLifetime(time.Minute * 3)
 			db.SetMaxIdleConns(5)
 			db.SetMaxOpenConns(10)
@@ -47,14 +49,18 @@ func Connect(url string, log zerolog.Logger) (*sql.DB, error) {
 			}
 		}
 		log.Warn().Err(err).Int("attempt", i+1).Int("max_attempts", 10).Msg("Veritabanına bağlanılamadı, 5 saniye sonra tekrar denenecek...")
-		time.Sleep(5 * time.Second)
+
+		// DEĞİŞİKLİK: time.Sleep yerine context-aware bekleme yapılıyor.
+		select {
+		case <-time.After(5 * time.Second):
+			// 5 saniye doldu, döngüye devam et.
+		case <-ctx.Done():
+			return nil, ctx.Err() // Bekleme sırasında context iptal edilirse hatayla çık.
+		}
 	}
-	// 'Fatal' yerine hata döndürmek, çağıran fonksiyonun karar vermesine olanak tanır.
-	// Ama main.go'da bu zaten fatal ile sonuçlanıyor, bu yüzden tutarlı.
 	return nil, fmt.Errorf("maksimum deneme (%d) sonrası veritabanına bağlanılamadı: %w", 10, err)
 }
 
-// Bu servise özgü veritabanı fonksiyonları burada kalmaya devam eder.
 func GetAnnouncementPathFromDB(db *sql.DB, announcementID, tenantID, languageCode string) (string, error) {
 	var audioPath string
 	query := `
@@ -71,9 +77,6 @@ func GetAnnouncementPathFromDB(db *sql.DB, announcementID, tenantID, languageCod
 	return audioPath, nil
 }
 
-// --- DÜZELTME BAŞLANGICI (AGENT-BUG-02) ---
-// Sorgu, artık hem verilen tenant_id'yi hem de 'system' tenant'ını arayacak
-// ve eğer ikisi de varsa, spesifik olanı (verilen tenant_id) önceliklendirecek.
 func GetTemplateFromDB(db *sql.DB, templateID, languageCode, tenantID string) (string, error) {
 	var content string
 	query := `
@@ -89,5 +92,3 @@ func GetTemplateFromDB(db *sql.DB, templateID, languageCode, tenantID string) (s
 	}
 	return content, nil
 }
-
-// --- DÜZELTME SONU ---

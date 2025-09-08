@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sentiric/sentiric-agent-service/internal/ctxlogger"
 	"github.com/sentiric/sentiric-agent-service/internal/state"
 	mediav1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/media/v1"
 	"google.golang.org/grpc/metadata"
@@ -27,8 +28,8 @@ type TerminationRequest struct {
 }
 
 func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.Manager, initialSt *state.CallState) {
+	l := ctxlogger.FromContext(ctx)
 	currentCallID := initialSt.CallID
-	l := deps.Log.With().Str("call_id", currentCallID).Str("trace_id", initialSt.TraceID).Logger()
 
 	defer func() {
 		l.Info().Msg("Çağrı kaydı durduruluyor...")
@@ -74,7 +75,7 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 		l.Info().Msg("Standart bağlanma anonsu çalınıyor ('Sizi bağlıyorum...')...")
 	}
 
-	PlayAnnouncement(ctx, deps, l, initialSt, initialAnnouncementID)
+	PlayAnnouncement(ctx, deps, initialSt, initialAnnouncementID)
 
 	recordingTenantID := initialSt.TenantID
 	recordingURI := fmt.Sprintf("s3://sentiric-recordings/%s/%s.wav", recordingTenantID, currentCallID)
@@ -139,7 +140,7 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 				return
 			}
 			l.Error().Err(err).Msg("Durum işlenirken hata oluştu, sonlandırma deneniyor.")
-			PlayAnnouncement(ctx, deps, l, st, "ANNOUNCE_SYSTEM_ERROR")
+			PlayAnnouncement(ctx, deps, st, "ANNOUNCE_SYSTEM_ERROR")
 			st.CurrentState = state.StateTerminated
 			if err := stateManager.Set(ctx, st); err != nil {
 				l.Error().Err(err).Msg("Hata sonrası 'Terminated' durumu güncellenemedi.")

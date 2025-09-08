@@ -1,11 +1,9 @@
-// File: sentiric-agent-service/internal/queue/rabbitmq.go
-
-// ========== FILE: sentiric-agent-service/internal/queue/rabbitmq.go (Publisher Eklendi) ==========
 package queue
 
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 
@@ -18,7 +16,6 @@ const (
 	agentQueueName = "sentiric.agent_service.events"
 )
 
-// --- YENİ: Publisher yapısı ---
 type Publisher struct {
 	ch  *amqp091.Channel
 	log zerolog.Logger
@@ -28,7 +25,6 @@ func NewPublisher(ch *amqp091.Channel, log zerolog.Logger) *Publisher {
 	return &Publisher{ch: ch, log: log}
 }
 
-// --- YENİ: Mesaj yayınlama fonksiyonu ---
 func (p *Publisher) PublishJSON(ctx context.Context, routingKey string, body interface{}) error {
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
@@ -40,14 +36,14 @@ func (p *Publisher) PublishJSON(ctx context.Context, routingKey string, body int
 
 	err = p.ch.PublishWithContext(
 		ctx,
-		exchangeName, // exchange
-		routingKey,   // routing key
-		false,        // mandatory
-		false,        // immediate
+		exchangeName,
+		routingKey,
+		false,
+		false,
 		amqp091.Publishing{
 			ContentType:  "application/json",
 			Body:         jsonBody,
-			DeliveryMode: amqp091.Persistent, // Mesajın kalıcı olmasını sağla
+			DeliveryMode: amqp091.Persistent,
 		},
 	)
 	if err != nil {
@@ -57,32 +53,46 @@ func (p *Publisher) PublishJSON(ctx context.Context, routingKey string, body int
 	return nil
 }
 
-func Connect(url string, log zerolog.Logger) (*amqp091.Channel, <-chan *amqp091.Error) {
+// DEĞİŞİKLİK: Fonksiyon artık context alıyor.
+func Connect(ctx context.Context, url string, log zerolog.Logger) (*amqp091.Channel, <-chan *amqp091.Error, error) {
 	var conn *amqp091.Connection
 	var err error
 	for i := 0; i < 10; i++ {
+		// DEĞİŞİKLİK: Döngünün başında context'in iptal edilip edilmediğini kontrol et.
+		select {
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		default:
+		}
+
 		conn, err = amqp091.Dial(url)
 		if err == nil {
 			log.Info().Msg("RabbitMQ bağlantısı başarılı.")
-			ch, err := conn.Channel()
-			if err != nil {
-				log.Fatal().Err(err).Msg("RabbitMQ kanalı oluşturulamadı")
+			ch, chErr := conn.Channel()
+			if chErr != nil {
+				return nil, nil, fmt.Errorf("RabbitMQ kanalı oluşturulamadı: %w", chErr)
 			}
 			closeChan := make(chan *amqp091.Error)
 			conn.NotifyClose(closeChan)
-			return ch, closeChan
+			return ch, closeChan, nil
 		}
 		log.Warn().Err(err).Int("attempt", i+1).Int("max_attempts", 10).Msg("RabbitMQ'ya bağlanılamadı, 5 saniye sonra tekrar denenecek...")
-		time.Sleep(5 * time.Second)
+
+		// DEĞİŞİKLİK: time.Sleep yerine context-aware bekleme yapılıyor.
+		select {
+		case <-time.After(5 * time.Second):
+			// 5 saniye doldu, döngüye devam et.
+		case <-ctx.Done():
+			return nil, nil, ctx.Err() // Bekleme sırasında context iptal edilirse hatayla çık.
+		}
 	}
-	log.Fatal().Err(err).Msgf("Maksimum deneme (%d) sonrası RabbitMQ'ya bağlanılamadı", 10)
-	return nil, nil
+	return nil, nil, fmt.Errorf("maksimum deneme (%d) sonrası RabbitMQ'ya bağlanılamadı: %w", 10, err)
 }
 
 func StartConsumer(ctx context.Context, ch *amqp091.Channel, handlerFunc func([]byte), log zerolog.Logger, wg *sync.WaitGroup) {
 	err := ch.ExchangeDeclare(
 		exchangeName,
-		"topic", // DİKKAT: Artık "topic" exchange kullanıyoruz, "fanout" değil.
+		"topic",
 		true,
 		false,
 		false,
@@ -105,11 +115,9 @@ func StartConsumer(ctx context.Context, ch *amqp091.Channel, handlerFunc func([]
 		log.Fatal().Err(err).Msg("Kalıcı agent kuyruğu oluşturulamadı")
 	}
 
-	// Agent'ın dinleyeceği "routing key"leri bağlıyoruz.
-	// "#" wildcard'ı, tüm olayları dinlemesini sağlar.
 	err = ch.QueueBind(
 		q.Name,
-		"#", // Tüm olayları dinle
+		"#",
 		exchangeName,
 		false,
 		nil,

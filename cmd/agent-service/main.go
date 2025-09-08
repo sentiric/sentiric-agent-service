@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"log"
 	"os"
 	"os/signal"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-redis/redis/v8"
+	"github.com/rabbitmq/amqp091-go"
 	"github.com/rs/zerolog"
 	"github.com/sentiric/sentiric-agent-service/internal/client"
 	"github.com/sentiric/sentiric-agent-service/internal/config"
@@ -21,7 +23,6 @@ import (
 	"github.com/sentiric/sentiric-agent-service/internal/state"
 )
 
-// DÜZELTME: Kopyalama sırasında atlanan global değişkenler geri eklendi.
 var (
 	ServiceVersion string
 	GitCommit      string
@@ -30,32 +31,120 @@ var (
 
 const serviceName = "agent-service"
 
-// DÜZELTME: Kopyalama sırasında atlanan fonksiyon geri eklendi.
-func connectToRedisWithRetry(cfg *config.Config, log zerolog.Logger) *redis.Client {
-	var rdb *redis.Client
-	var err error
+// setupInfrastructure, tüm altyapı bağlantılarını kendi goroutine'lerinde,
+// başarılı olana kadar periyodik olarak deneyen bir fonksiyondur.
+// DÜZELTME: Kullanılmayan `wg` parametresi kaldırıldı.
+func setupInfrastructure(ctx context.Context, cfg *config.Config, appLog zerolog.Logger) (
+	db *sql.DB,
+	redisClient *redis.Client,
+	rabbitCh *amqp091.Channel,
+	closeChan <-chan *amqp091.Error,
+) {
+	var infraWg sync.WaitGroup
+	infraWg.Add(3)
 
-	opt, err := redis.ParseURL(cfg.RedisURL)
-	if err != nil {
-		log.Fatal().Err(err).Msg("Redis URL'si parse edilemedi")
-	}
+	// --- PostgreSQL Bağlantısı ---
+	go func() {
+		defer infraWg.Done()
+		for {
+			select {
+			case <-ctx.Done():
+				appLog.Info().Msg("PostgreSQL bağlantı denemesi context iptaliyle durduruldu.")
+				return
+			default:
+				var err error
+				db, err = database.Connect(ctx, cfg.PostgresURL, appLog)
+				if err == nil {
+					return
+				}
+				if ctx.Err() == nil {
+					appLog.Warn().Err(err).Msg("PostgreSQL'e bağlanılamadı, 5 saniye sonra tekrar denenecek...")
+				}
 
-	for i := 0; i < 10; i++ {
-		rdb = redis.NewClient(opt)
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		if _, err = rdb.Ping(ctx).Result(); err == nil {
-			log.Info().Msg("Redis bağlantısı başarılı.")
-			return rdb
+				select {
+				case <-time.After(5 * time.Second):
+				case <-ctx.Done():
+					appLog.Info().Msg("PostgreSQL bağlantı beklemesi context iptaliyle durduruldu.")
+					return
+				}
+			}
 		}
+	}()
 
-		log.Warn().Err(err).Int("attempt", i+1).Msg("Redis'e bağlanılamadı, 5 saniye sonra tekrar denenecek...")
-		time.Sleep(5 * time.Second)
+	// --- Redis Bağlantısı ---
+	go func() {
+		defer infraWg.Done()
+		for {
+			select {
+			case <-ctx.Done():
+				appLog.Info().Msg("Redis bağlantı denemesi context iptaliyle durduruldu.")
+				return
+			default:
+				opt, err := redis.ParseURL(cfg.RedisURL)
+				if err != nil {
+					if ctx.Err() == nil {
+						appLog.Error().Err(err).Msg("redis URL'si parse edilemedi, 5 saniye sonra tekrar denenecek...")
+					}
+				} else {
+					redisClient = redis.NewClient(opt)
+					pingCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+					err := redisClient.Ping(pingCtx).Err()
+					cancel()
+
+					if err == nil {
+						appLog.Info().Msg("Redis bağlantısı başarılı.")
+						return
+					}
+					if ctx.Err() == nil {
+						appLog.Warn().Err(err).Msg("Redis'e bağlanılamadı, 5 saniye sonra tekrar denenecek...")
+					}
+				}
+
+				select {
+				case <-time.After(5 * time.Second):
+				case <-ctx.Done():
+					appLog.Info().Msg("Redis bağlantı beklemesi context iptaliyle durduruldu.")
+					return
+				}
+			}
+		}
+	}()
+
+	// --- RabbitMQ Bağlantısı ---
+	go func() {
+		defer infraWg.Done()
+		for {
+			select {
+			case <-ctx.Done():
+				appLog.Info().Msg("RabbitMQ bağlantı denemesi context iptaliyle durduruldu.")
+				return
+			default:
+				var err error
+				rabbitCh, closeChan, err = queue.Connect(ctx, cfg.RabbitMQURL, appLog)
+				if err == nil {
+					return
+				}
+				if ctx.Err() == nil {
+					appLog.Warn().Err(err).Msg("RabbitMQ'ya bağlanılamadı, 5 saniye sonra tekrar denenecek...")
+				}
+
+				select {
+				case <-time.After(5 * time.Second):
+				case <-ctx.Done():
+					appLog.Info().Msg("RabbitMQ bağlantı beklemesi context iptaliyle durduruldu.")
+					return
+				}
+			}
+		}
+	}()
+
+	infraWg.Wait()
+	if ctx.Err() != nil {
+		appLog.Info().Msg("Altyapı kurulumu, servis kapatıldığı için iptal edildi.")
+		return
 	}
-
-	log.Fatal().Err(err).Msgf("Maksimum deneme (%d) sonrası Redis'e bağlanılamadı", 10)
-	return nil
+	appLog.Info().Msg("Tüm altyapı bağlantıları başarıyla kuruldu.")
+	return
 }
 
 func main() {
@@ -65,7 +154,6 @@ func main() {
 	}
 
 	appLog := logger.New(serviceName, cfg.Env)
-
 	appLog.Info().
 		Str("version", ServiceVersion).
 		Str("commit", GitCommit).
@@ -75,101 +163,66 @@ func main() {
 
 	go metrics.StartServer(cfg.MetricsPort, appLog)
 
-	db, err := database.Connect(cfg.PostgresURL, appLog)
-	if err != nil {
-		appLog.Fatal().Err(err).Msg("Veritabanı bağlantısı kurulamadı")
-	}
-	defer db.Close()
-
-	redisClient := connectToRedisWithRetry(cfg, appLog)
-
-	rabbitCh, closeChan := queue.Connect(cfg.RabbitMQURL, appLog)
-	if rabbitCh != nil {
-		defer rabbitCh.Close()
-	}
-	publisher := queue.NewPublisher(rabbitCh, appLog)
-
-	mediaClient, err := client.NewMediaServiceClient(cfg)
-	if err != nil {
-		appLog.Fatal().Err(err).Msg("Media Service gRPC istemcisi oluşturulamadı")
-	}
-	userClient, err := client.NewUserServiceClient(cfg)
-	if err != nil {
-		appLog.Fatal().Err(err).Msg("User Service gRPC istemcisi oluşturulamadı")
-	}
-	ttsClient, err := client.NewTTSServiceClient(cfg)
-	if err != nil {
-		appLog.Fatal().Err(err).Msg("TTS Gateway gRPC istemcisi oluşturulamadı")
-	}
-
-	stateManager := state.NewManager(redisClient)
-	llmClient := client.NewLlmClient(cfg.LlmServiceURL, appLog)
-	sttClient := client.NewSttClient(cfg.SttServiceURL, appLog)
-
-	eventHandler := handler.NewEventHandler(
-		db,
-		cfg,
-		stateManager,
-		publisher,
-		mediaClient,
-		userClient,
-		ttsClient,
-		llmClient,
-		sttClient,
-		appLog,
-		metrics.EventsProcessed,
-		metrics.EventsFailed,
-		cfg.SttServiceTargetSampleRate,
-	)
-
 	ctx, cancel := context.WithCancel(context.Background())
-	var consumerWg sync.WaitGroup // DEĞİŞİKLİK: WaitGroup'in adı daha açıklayıcı hale getirildi.
+	var wg sync.WaitGroup
 
-	go queue.StartConsumer(ctx, rabbitCh, eventHandler.HandleRabbitMQMessage, appLog, &consumerWg)
+	var db *sql.DB
+	var redisClient *redis.Client
+	var rabbitCh *amqp091.Channel
+	var rabbitCloseChan <-chan *amqp091.Error
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		// DÜZELTME: Kullanılmayan `wg` parametresi kaldırıldı.
+		db, redisClient, rabbitCh, rabbitCloseChan = setupInfrastructure(ctx, cfg, appLog)
+		if db != nil {
+			defer db.Close()
+		}
+		if redisClient != nil {
+			defer redisClient.Close()
+		}
+		if rabbitCh != nil {
+			defer rabbitCh.Close()
+		}
+		if ctx.Err() != nil {
+			return
+		}
+
+		publisher := queue.NewPublisher(rabbitCh, appLog)
+		mediaClient, _ := client.NewMediaServiceClient(cfg)
+		userClient, _ := client.NewUserServiceClient(cfg)
+		ttsClient, _ := client.NewTTSServiceClient(cfg)
+		stateManager := state.NewManager(redisClient)
+		llmClient := client.NewLlmClient(cfg.LlmServiceURL, appLog)
+		sttClient := client.NewSttClient(cfg.SttServiceURL, appLog)
+		eventHandler := handler.NewEventHandler(db, cfg, stateManager, publisher, mediaClient, userClient, ttsClient, llmClient, sttClient, appLog, metrics.EventsProcessed, metrics.EventsFailed, cfg.SttServiceTargetSampleRate)
+
+		var consumerWg sync.WaitGroup
+		go queue.StartConsumer(ctx, rabbitCh, eventHandler.HandleRabbitMQMessage, appLog, &consumerWg)
+
+		select {
+		case <-ctx.Done():
+		case err := <-rabbitCloseChan:
+			if err != nil {
+				appLog.Error().Err(err).Msg("RabbitMQ bağlantısı koptu, servis durduruluyor.")
+			}
+			cancel()
+		}
+
+		appLog.Info().Msg("RabbitMQ tüketicisinin bitmesi bekleniyor...")
+		consumerWg.Wait()
+		appLog.Info().Msg("Aktif diyalogların bitmesi bekleniyor...")
+		eventHandler.WaitOnDialogs()
+	}()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
 
-	select {
-	case sig := <-quit:
-		appLog.Info().Str("signal", sig.String()).Msg("Kapatma sinyali alındı, servis durduruluyor...")
-	case err := <-closeChan:
-		if err != nil {
-			appLog.Error().Err(err).Msg("RabbitMQ bağlantısı koptu.")
-		}
-	}
+	appLog.Info().Msg("Kapatma sinyali alındı, servis durduruluyor...")
+	cancel()
 
-	cancel() // Tüketiciye ve diğer context'lere durma sinyali gönder
-
-	// --- DEĞİŞİKLİK: Graceful Shutdown Mantığı İyileştirildi (AGENT-BUG-09) ---
-
-	// 1. Adım: RabbitMQ tüketicisinin yeni mesaj almayı durdurup mevcutları bitirmesini bekle
-	appLog.Info().Msg("RabbitMQ tüketicisinin bitmesi bekleniyor...")
-	waitChan := make(chan struct{})
-	go func() {
-		consumerWg.Wait()
-		close(waitChan)
-	}()
-
-	select {
-	case <-waitChan:
-		appLog.Info().Msg("RabbitMQ tüketicisi başarıyla durduruldu.")
-	case <-time.After(10 * time.Second):
-		appLog.Warn().Msg("Tüketiciyi beklerken zaman aşımına uğradı.")
-	}
-
-	// 2. Adım: Aktif diyalogların (goroutine'lerin) tamamlanmasını bekle
-	appLog.Info().Msg("Aktif diyalogların bitmesi bekleniyor...")
-	dialogWaitChan := make(chan struct{})
-	go func() {
-		eventHandler.WaitOnDialogs()
-		close(dialogWaitChan)
-	}()
-
-	select {
-	case <-dialogWaitChan:
-		appLog.Info().Msg("Tüm aktif diyaloglar başarıyla tamamlandı. Çıkış yapılıyor.")
-	case <-time.After(15 * time.Second): // Diyaloglar için biraz daha uzun bir bekleme süresi
-		appLog.Warn().Msg("Graceful shutdown (diyalog bekleme) zaman aşımına uğradı. Çıkış yapılıyor.")
-	}
+	wg.Wait()
+	appLog.Info().Msg("Tüm servisler başarıyla durduruldu. Çıkış yapılıyor.")
 }
