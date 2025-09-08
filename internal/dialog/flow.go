@@ -1,4 +1,3 @@
-// File: internal/dialog/flow.go (TAM VE NİHAİ DÜZELTİLMİŞ HALİ)
 package dialog
 
 import (
@@ -31,7 +30,6 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 	currentCallID := initialSt.CallID
 	l := deps.Log.With().Str("call_id", currentCallID).Str("trace_id", initialSt.TraceID).Logger()
 
-	// Defer bloğu, fonksiyonun sonunda çalışarak kaynakları temizler.
 	defer func() {
 		l.Info().Msg("Çağrı kaydı durduruluyor...")
 		stopRecCtx, stopRecCancel := context.WithTimeout(metadata.AppendToOutgoingContext(context.Background(), "x-trace-id", initialSt.TraceID), 10*time.Second)
@@ -65,11 +63,6 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 		}
 	}()
 
-	// ===========================================================================
-	// === BAŞLANGIÇ AKIŞI DÜZELTMESİ: Eyleme Göre Doğru Anons ve Zamanında Kayıt ===
-	// ===========================================================================
-
-	// === 1. ADIM: Eyleme Göre Doğru Karşılama Anonsunu Çal ===
 	actionName := initialSt.Event.Dialplan.Action.Action
 	var initialAnnouncementID string
 
@@ -83,9 +76,8 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 
 	PlayAnnouncement(ctx, deps, l, initialSt, initialAnnouncementID)
 
-	// === 2. ADIM: Kalıcı Kaydı BAŞLAT (Anons Bittikten Sonra) ===
 	recordingTenantID := initialSt.TenantID
-	recordingURI := fmt.Sprintf("s3://%s/%s_%s.wav", recordingTenantID, time.Now().UTC().Format("2006-01-02"), currentCallID)
+	recordingURI := fmt.Sprintf("s3://sentiric-recordings/%s/%s.wav", recordingTenantID, currentCallID)
 	l.Info().Str("uri", recordingURI).Msg("Çağrı kaydı başlatılıyor...")
 	startRecCtx, startRecCancel := context.WithTimeout(metadata.AppendToOutgoingContext(ctx, "x-trace-id", initialSt.TraceID), 10*time.Second)
 	defer startRecCancel()
@@ -100,9 +92,6 @@ func RunDialogLoop(ctx context.Context, deps *Dependencies, stateManager *state.
 		l.Error().Err(err).Msg("Media-service'e kayıt başlatma komutu gönderilemedi.")
 	}
 
-	// ======================== DÜZELTME SONU ========================
-
-	// === 3. ADIM: Ana diyalog döngüsünü başlat ===
 	for {
 		select {
 		case <-ctx.Done():

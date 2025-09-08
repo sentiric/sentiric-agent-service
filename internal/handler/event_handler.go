@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -32,6 +33,7 @@ type EventHandler struct {
 	eventsProcessed *prometheus.CounterVec
 	eventsFailed    *prometheus.CounterVec
 	userClient      userv1.UserServiceClient
+	dialogWg        sync.WaitGroup
 }
 
 func NewEventHandler(
@@ -69,6 +71,10 @@ func NewEventHandler(
 		eventsFailed:    failed,
 		userClient:      uc,
 	}
+}
+
+func (h *EventHandler) WaitOnDialogs() {
+	h.dialogWg.Wait()
 }
 
 func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
@@ -115,8 +121,10 @@ func (h *EventHandler) handleCallStarted(l zerolog.Logger, event *state.CallEven
 
 	switch actionName {
 	case "PROCESS_GUEST_CALL":
+		h.dialogWg.Add(1)
 		go h.handleProcessGuestCall(l, event)
 	case "START_AI_CONVERSATION":
+		h.dialogWg.Add(1)
 		go h.handleStartAIConversation(l, event)
 	default:
 		l.Error().Msg("Bilinmeyen veya desteklenmeyen dialplan eylemi.")
@@ -124,7 +132,6 @@ func (h *EventHandler) handleCallStarted(l zerolog.Logger, event *state.CallEven
 	}
 }
 
-// YENİ: `user.identified.for_call` olayını yayınlamak için yardımcı fonksiyon (AGENT-BUG-04)
 func (h *EventHandler) publishUserIdentifiedEvent(ctx context.Context, l zerolog.Logger, event *state.CallEvent) {
 	if event.Dialplan.GetMatchedUser() != nil && event.Dialplan.GetMatchedContact() != nil {
 		l.Info().Msg("Kullanıcı kimliği belirlendi, user.identified.for_call olayı yayınlanacak.")
@@ -159,6 +166,7 @@ func (h *EventHandler) publishUserIdentifiedEvent(ctx context.Context, l zerolog
 }
 
 func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.CallEvent) {
+	defer h.dialogWg.Done()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -239,13 +247,13 @@ func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.Cal
 		}
 	}
 
-	// DEĞİŞİKLİK: Kullanıcı bulunduktan veya oluşturulduktan hemen sonra olayı yayınla (AGENT-BUG-04)
 	h.publishUserIdentifiedEvent(ctx, l, event)
 
 	h.handleStartAIConversation(l, event)
 }
 
 func (h *EventHandler) handleStartAIConversation(l zerolog.Logger, event *state.CallEvent) {
+	defer h.dialogWg.Done()
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		<-ctx.Done()
@@ -253,7 +261,6 @@ func (h *EventHandler) handleStartAIConversation(l zerolog.Logger, event *state.
 		l.Info().Str("call_id", event.CallID).Msg("Diyalog context'i ve kaynakları başarıyla temizlendi.")
 	}()
 
-	// DEĞİŞİKLİK: Bu işleyici doğrudan çağrıldığında da olayın yayınlandığından emin ol (AGENT-BUG-04)
 	h.publishUserIdentifiedEvent(ctx, l, event)
 
 	st, err := h.stateManager.Get(ctx, event.CallID)
@@ -334,7 +341,6 @@ func playInitialAnnouncement(ctx context.Context, deps *dialog.Dependencies, l z
 		return
 	}
 
-	// DÜZELTME: Eksik string sonlandırması ve path formatı düzeltildi.
 	audioURI := fmt.Sprintf("file://%s", audioPath)
 	mediaInfo := st.Event.Media
 	rtpTargetVal, ok1 := mediaInfo["caller_rtp_addr"]

@@ -61,8 +61,8 @@ func StateFnWelcoming(ctx context.Context, deps *Dependencies, st *state.CallSta
 func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallState) (*state.CallState, error) {
 	l := deps.Log.With().Str("call_id", st.CallID).Logger()
 
-	if st.ConsecutiveFailures >= 2 {
-		l.Warn().Int("failures", st.ConsecutiveFailures).Msg("Art arda çok fazla anlama hatası. Çağrı sonlandırılıyor.")
+	if st.ConsecutiveFailures >= deps.Config.AgentMaxConsecutiveFailures {
+		l.Warn().Int("failures", st.ConsecutiveFailures).Int("max_failures", deps.Config.AgentMaxConsecutiveFailures).Msg("Art arda çok fazla anlama hatası. Çağrı sonlandırılıyor.")
 		PlayAnnouncement(ctx, deps, l, st, "ANNOUNCE_SYSTEM_MAX_FAILURES")
 		st.CurrentState = state.StateTerminated
 		return st, nil
@@ -89,9 +89,8 @@ func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallSta
 		return st, nil
 	}
 
-	// DEĞİŞİKLİK: STT halüsinasyonlarını ve anlamsız metinleri engellemek için "sanity check" (AGENT-BUG-08)
 	cleanedText := strings.TrimSpace(transcriptionResult.Text)
-	isMeaningless := len(cleanedText) < 3 || strings.Contains(cleanedText, "Bu dizinin betimlemesi") // Gelecekte daha fazla kural eklenebilir.
+	isMeaningless := len(cleanedText) < 3 || strings.Contains(cleanedText, "Bu dizinin betimlemesi")
 
 	if isMeaningless {
 		l.Warn().Str("stt_result", cleanedText).Msg("STT anlamsız veya çok kısa metin döndürdü, 'anlayamadım' anonsu çalınacak.")
@@ -100,10 +99,9 @@ func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallSta
 		st.CurrentState = state.StateListening
 		return st, nil
 	}
-	// -- DEĞİŞİKLİK SONU --
 
 	st.ConsecutiveFailures = 0
-	st.Conversation = append(st.Conversation, map[string]string{"user": cleanedText}) // cleanedText kullanılıyor
+	st.Conversation = append(st.Conversation, map[string]string{"user": cleanedText})
 	st.CurrentState = state.StateThinking
 	return st, nil
 }
@@ -280,7 +278,7 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 	ttsReq := &ttsv1.SynthesizeRequest{Text: textToPlay, LanguageCode: languageCode}
 
 	if useCloning && speakerURL != "" {
-		if !isAllowedSpeakerURL(speakerURL) {
+		if !isAllowedSpeakerURL(speakerURL, deps.Config.AgentAllowedSpeakerDomains) {
 			l.Error().Str("speaker_url", speakerURL).Msg("GÜVENLİK UYARISI: İzin verilmeyen bir speaker_wav_url engellendi.")
 			deps.EventsFailed.WithLabelValues(st.Event.EventType, "ssrf_attempt_blocked").Inc()
 			PlayAnnouncement(ctx, deps, l, st, "ANNOUNCE_SYSTEM_ERROR")
@@ -364,7 +362,6 @@ func PlayAnnouncement(ctx context.Context, deps *Dependencies, l zerolog.Logger,
 		}
 	}
 
-	// DÜZELTME: Eksik string sonlandırması ve path formatı düzeltildi.
 	audioURI := fmt.Sprintf("file://%s", audioPath)
 	mediaInfo := st.Event.Media
 	if mediaInfo == nil {
@@ -446,9 +443,20 @@ func getLanguageCode(event *state.CallEvent) string {
 	return "tr"
 }
 
-var allowedSpeakerDomains = map[string]bool{"sentiric.github.io": true}
+func isAllowedSpeakerURL(rawURL, allowedDomainsCSV string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return false
+	}
 
-func isAllowedSpeakerURL(rawURL string) bool {
-	u, e := url.Parse(rawURL)
-	return e == nil && (u.Scheme == "http" || u.Scheme == "https") && allowedSpeakerDomains[u.Hostname()]
+	allowedDomains := strings.Split(allowedDomainsCSV, ",")
+	domainMap := make(map[string]bool)
+	for _, domain := range allowedDomains {
+		trimmedDomain := strings.TrimSpace(domain)
+		if trimmedDomain != "" {
+			domainMap[trimmedDomain] = true
+		}
+	}
+
+	return domainMap[u.Hostname()]
 }

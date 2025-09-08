@@ -9,15 +9,14 @@ import (
 )
 
 type Config struct {
-	Env                        string
-	PostgresURL                string
-	RabbitMQURL                string
-	RedisURL                   string
-	MetricsPort                string
-	LlmServiceURL              string
-	SttServiceURL              string
-	SttServiceTargetSampleRate uint32
-	// YENİ: STT İnce Ayar Parametreleri
+	Env                         string
+	PostgresURL                 string
+	RabbitMQURL                 string
+	RedisURL                    string
+	MetricsPort                 string
+	LlmServiceURL               string
+	SttServiceURL               string
+	SttServiceTargetSampleRate  uint32
 	SttServiceLogprobThreshold  float64
 	SttServiceNoSpeechThreshold float64
 	TtsServiceGrpcURL           string
@@ -26,6 +25,9 @@ type Config struct {
 	AgentServiceCertPath        string
 	AgentServiceKeyPath         string
 	GrpcTlsCaPath               string
+	// YENİ: Yapılandırılabilir diyalog parametreleri (AGENT-IMPRV-01)
+	AgentMaxConsecutiveFailures int
+	AgentAllowedSpeakerDomains  string
 }
 
 func Load() (*Config, error) {
@@ -37,7 +39,6 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("geçersiz STT_SERVICE_TARGET_SAMPLE_RATE: %w", err)
 	}
 
-	// YENİ: Threshold değerlerini oku
 	sttLogprobStr := getEnvWithDefault("STT_SERVICE_LOGPROB_THRESHOLD", "-1.0")
 	sttLogprob, err := strconv.ParseFloat(sttLogprobStr, 64)
 	if err != nil {
@@ -50,6 +51,13 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("geçersiz STT_SERVICE_NO_SPEECH_THRESHOLD: %w", err)
 	}
 
+	// YENİ: AGENT_MAX_CONSECUTIVE_FAILURES yükleniyor (AGENT-IMPRV-01)
+	maxFailuresStr := getEnvWithDefault("AGENT_MAX_CONSECUTIVE_FAILURES", "2")
+	maxFailures, err := strconv.Atoi(maxFailuresStr)
+	if err != nil {
+		return nil, fmt.Errorf("geçersiz AGENT_MAX_CONSECUTIVE_FAILURES: %w", err)
+	}
+
 	cfg := &Config{
 		Env:                         getEnvWithDefault("ENV", "production"),
 		PostgresURL:                 getEnv("POSTGRES_URL"),
@@ -59,16 +67,18 @@ func Load() (*Config, error) {
 		LlmServiceURL:               getEnv("LLM_SERVICE_URL"),
 		SttServiceURL:               getEnv("STT_SERVICE_URL"),
 		SttServiceTargetSampleRate:  uint32(sttSampleRate),
-		SttServiceLogprobThreshold:  sttLogprob,  // YENİ
-		SttServiceNoSpeechThreshold: sttNoSpeech, // YENİ
+		SttServiceLogprobThreshold:  sttLogprob,
+		SttServiceNoSpeechThreshold: sttNoSpeech,
 		TtsServiceGrpcURL:           getEnv("TTS_GATEWAY_URL"),
 		MediaServiceGrpcURL:         getEnv("MEDIA_SERVICE_GRPC_URL"),
 		UserServiceGrpcURL:          getEnv("USER_SERVICE_GRPC_URL"),
 		AgentServiceCertPath:        getEnv("AGENT_SERVICE_CERT_PATH"),
 		AgentServiceKeyPath:         getEnv("AGENT_SERVICE_KEY_PATH"),
 		GrpcTlsCaPath:               getEnv("GRPC_TLS_CA_PATH"),
+		// YENİ: Değerler atanıyor (AGENT-IMPRV-01)
+		AgentMaxConsecutiveFailures: maxFailures,
+		AgentAllowedSpeakerDomains:  getEnvWithDefault("AGENT_ALLOWED_SPEAKER_DOMAINS", "sentiric.github.io"),
 	}
-	// ... (geri kalan kontrol aynı)
 	return cfg, nil
 }
 

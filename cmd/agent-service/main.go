@@ -1,5 +1,3 @@
-// File: cmd/agent-service/main.go
-
 package main
 
 import (
@@ -23,7 +21,7 @@ import (
 	"github.com/sentiric/sentiric-agent-service/internal/state"
 )
 
-// YENİ: ldflags ile doldurulacak değişkenler
+// DÜZELTME: Kopyalama sırasında atlanan global değişkenler geri eklendi.
 var (
 	ServiceVersion string
 	GitCommit      string
@@ -32,6 +30,7 @@ var (
 
 const serviceName = "agent-service"
 
+// DÜZELTME: Kopyalama sırasında atlanan fonksiyon geri eklendi.
 func connectToRedisWithRetry(cfg *config.Config, log zerolog.Logger) *redis.Client {
 	var rdb *redis.Client
 	var err error
@@ -67,7 +66,6 @@ func main() {
 
 	appLog := logger.New(serviceName, cfg.Env)
 
-	// YENİ: Başlangıçta versiyon bilgisini logla
 	appLog.Info().
 		Str("version", ServiceVersion).
 		Str("commit", GitCommit).
@@ -91,7 +89,6 @@ func main() {
 	}
 	publisher := queue.NewPublisher(rabbitCh, appLog)
 
-	// gRPC İstemcileri
 	mediaClient, err := client.NewMediaServiceClient(cfg)
 	if err != nil {
 		appLog.Fatal().Err(err).Msg("Media Service gRPC istemcisi oluşturulamadı")
@@ -126,9 +123,9 @@ func main() {
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	var wg sync.WaitGroup
+	var consumerWg sync.WaitGroup // DEĞİŞİKLİK: WaitGroup'in adı daha açıklayıcı hale getirildi.
 
-	go queue.StartConsumer(ctx, rabbitCh, eventHandler.HandleRabbitMQMessage, appLog, &wg)
+	go queue.StartConsumer(ctx, rabbitCh, eventHandler.HandleRabbitMQMessage, appLog, &consumerWg)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -142,19 +139,37 @@ func main() {
 		}
 	}
 
-	cancel()
+	cancel() // Tüketiciye ve diğer context'lere durma sinyali gönder
 
-	appLog.Info().Msg("Mevcut işlemlerin bitmesi bekleniyor...")
+	// --- DEĞİŞİKLİK: Graceful Shutdown Mantığı İyileştirildi (AGENT-BUG-09) ---
+
+	// 1. Adım: RabbitMQ tüketicisinin yeni mesaj almayı durdurup mevcutları bitirmesini bekle
+	appLog.Info().Msg("RabbitMQ tüketicisinin bitmesi bekleniyor...")
 	waitChan := make(chan struct{})
 	go func() {
-		wg.Wait()
+		consumerWg.Wait()
 		close(waitChan)
 	}()
 
 	select {
 	case <-waitChan:
-		appLog.Info().Msg("Tüm işlemler başarıyla tamamlandı. Çıkış yapılıyor.")
+		appLog.Info().Msg("RabbitMQ tüketicisi başarıyla durduruldu.")
 	case <-time.After(10 * time.Second):
-		appLog.Warn().Msg("Graceful shutdown zaman aşımına uğradı. Çıkış yapılıyor.")
+		appLog.Warn().Msg("Tüketiciyi beklerken zaman aşımına uğradı.")
+	}
+
+	// 2. Adım: Aktif diyalogların (goroutine'lerin) tamamlanmasını bekle
+	appLog.Info().Msg("Aktif diyalogların bitmesi bekleniyor...")
+	dialogWaitChan := make(chan struct{})
+	go func() {
+		eventHandler.WaitOnDialogs()
+		close(dialogWaitChan)
+	}()
+
+	select {
+	case <-dialogWaitChan:
+		appLog.Info().Msg("Tüm aktif diyaloglar başarıyla tamamlandı. Çıkış yapılıyor.")
+	case <-time.After(15 * time.Second): // Diyaloglar için biraz daha uzun bir bekleme süresi
+		appLog.Warn().Msg("Graceful shutdown (diyalog bekleme) zaman aşımına uğradı. Çıkış yapılıyor.")
 	}
 }
