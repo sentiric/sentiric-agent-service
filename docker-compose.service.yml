@@ -7,6 +7,7 @@ volumes:
   postgres_data:
   rabbitmq_data:
   redis_data:
+  qdrant_data:
   stt-model-cache:
 
 services:
@@ -32,6 +33,14 @@ services:
     networks: [sentiric-net]
     depends_on: { postgres: { condition: service_healthy } }
     restart: always  
+
+  qdrant:
+    build: { context: ../sentiric-qdrant }
+    env_file: ["${ENV_FILE_PATH}"]
+    ports: ["${VECTOR_DB_PORT:-6333}:6333"]
+    volumes: [qdrant_data:/qdrant/storage]
+    networks: [sentiric-net]
+    restart: always    
 
   rabbitmq:
     build: { context: ../sentiric-rabbitmq }
@@ -165,3 +174,12 @@ services:
       llm-service: { condition: service_healthy }
 
 
+  # --- ARKA PLAN VE VERİ İŞLEME SERVİSLERİ ---
+  knowledge-service:
+    build: { context: ../sentiric-knowledge-service }
+    env_file: ["${ENV_FILE_PATH}"]
+    ports: ["${KNOWLEDGE_SERVICE_PORT:-50055}:50055"]
+    volumes: ["./data:/app/data", "stt-model-cache:/root/.cache/torch"]
+    networks: [sentiric-net]
+    restart: always
+    depends_on: { postgres: { condition: service_healthy }, qdrant: { condition: service_started } }

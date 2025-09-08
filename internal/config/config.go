@@ -22,10 +22,10 @@ type Config struct {
 	TtsServiceGrpcURL           string
 	MediaServiceGrpcURL         string
 	UserServiceGrpcURL          string
+	KnowledgeServiceGrpcURL     string // YENİ: Knowledge Service URL'si
 	AgentServiceCertPath        string
 	AgentServiceKeyPath         string
 	GrpcTlsCaPath               string
-	// YENİ: Yapılandırılabilir diyalog parametreleri (AGENT-IMPRV-01)
 	AgentMaxConsecutiveFailures int
 	AgentAllowedSpeakerDomains  string
 }
@@ -51,7 +51,6 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("geçersiz STT_SERVICE_NO_SPEECH_THRESHOLD: %w", err)
 	}
 
-	// YENİ: AGENT_MAX_CONSECUTIVE_FAILURES yükleniyor (AGENT-IMPRV-01)
 	maxFailuresStr := getEnvWithDefault("AGENT_MAX_CONSECUTIVE_FAILURES", "2")
 	maxFailures, err := strconv.Atoi(maxFailuresStr)
 	if err != nil {
@@ -72,10 +71,10 @@ func Load() (*Config, error) {
 		TtsServiceGrpcURL:           getEnv("TTS_GATEWAY_URL"),
 		MediaServiceGrpcURL:         getEnv("MEDIA_SERVICE_GRPC_URL"),
 		UserServiceGrpcURL:          getEnv("USER_SERVICE_GRPC_URL"),
+		KnowledgeServiceGrpcURL:     getEnv("KNOWLEDGE_SERVICE_GRPC_URL"), // YENİ
 		AgentServiceCertPath:        getEnv("AGENT_SERVICE_CERT_PATH"),
 		AgentServiceKeyPath:         getEnv("AGENT_SERVICE_KEY_PATH"),
 		GrpcTlsCaPath:               getEnv("GRPC_TLS_CA_PATH"),
-		// YENİ: Değerler atanıyor (AGENT-IMPRV-01)
 		AgentMaxConsecutiveFailures: maxFailures,
 		AgentAllowedSpeakerDomains:  getEnvWithDefault("AGENT_ALLOWED_SPEAKER_DOMAINS", "sentiric.github.io"),
 	}

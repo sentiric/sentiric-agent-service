@@ -10,17 +10,14 @@ import (
 	"github.com/sentiric/sentiric-agent-service/internal/state"
 )
 
-// TemplateProvider, veritabanından prompt şablonlarını almakla sorumludur.
 type TemplateProvider struct {
 	db *sql.DB
 }
 
-// NewTemplateProvider, yeni bir TemplateProvider örneği oluşturur.
 func NewTemplateProvider(db *sql.DB) *TemplateProvider {
 	return &TemplateProvider{db: db}
 }
 
-// GetWelcomePrompt, kullanıcı durumuna göre uygun karşılama prompt'unu döndürür.
 func (tp *TemplateProvider) GetWelcomePrompt(ctx context.Context, callState *state.CallState) (string, error) {
 	l := ctxlogger.FromContext(ctx)
 	languageCode := getLanguageCode(callState.Event)
@@ -42,25 +39,49 @@ func (tp *TemplateProvider) GetWelcomePrompt(ctx context.Context, callState *sta
 	return prompt, nil
 }
 
-// BuildLlmPrompt, konuşma geçmişini kullanarak LLM için tam bir prompt oluşturur.
-func (tp *TemplateProvider) BuildLlmPrompt(ctx context.Context, callState *state.CallState) (string, error) {
+func (tp *TemplateProvider) BuildLlmPrompt(ctx context.Context, callState *state.CallState, ragContext string) (string, error) {
 	l := ctxlogger.FromContext(ctx)
 	languageCode := getLanguageCode(callState.Event)
-	systemPrompt, err := database.GetTemplateFromDB(tp.db, "PROMPT_SYSTEM_DEFAULT", languageCode, callState.TenantID)
-	if err != nil {
-		l.Error().Err(err).Msg("Sistem prompt'u alınamadı, fallback kullanılıyor.")
-		systemPrompt = "Aşağıdaki diyaloğa devam et. Cevapların kısa olsun."
-	}
-	var promptBuilder strings.Builder
-	promptBuilder.WriteString(systemPrompt)
-	promptBuilder.WriteString("\n\n--- KONUŞMA GEÇMİŞİ ---\n")
-	for _, msg := range callState.Conversation {
-		if text, ok := msg["user"]; ok {
-			promptBuilder.WriteString("Kullanıcı: " + text + "\n")
-		} else if text, ok := msg["ai"]; ok {
-			promptBuilder.WriteString("Asistan: " + text + "\n")
+
+	var systemPrompt string
+	var err error
+
+	if ragContext != "" {
+		systemPrompt, err = database.GetTemplateFromDB(tp.db, "PROMPT_SYSTEM_RAG", languageCode, callState.TenantID)
+		if err != nil {
+			l.Error().Err(err).Msg("RAG sistem prompt'u alınamadı, fallback kullanılıyor.")
+			systemPrompt = "Sana sağlanan İlgili Bilgiler'i kullanarak kullanıcının sorusuna cevap ver. Eğer bilgi yoksa, olmadığını belirt.\n\n{context}\n\nKullanıcının Sorusu: {query}"
 		}
+		systemPrompt = strings.Replace(systemPrompt, "{context}", ragContext, -1)
+
+		lastUserMessage := ""
+		for i := len(callState.Conversation) - 1; i >= 0; i-- {
+			if msg, ok := callState.Conversation[i]["user"]; ok {
+				lastUserMessage = msg
+				break
+			}
+		}
+		systemPrompt = strings.Replace(systemPrompt, "{query}", lastUserMessage, -1)
+		return systemPrompt, nil
+
+	} else {
+		systemPrompt, err = database.GetTemplateFromDB(tp.db, "PROMPT_SYSTEM_DEFAULT", languageCode, callState.TenantID)
+		if err != nil {
+			l.Error().Err(err).Msg("Sistem prompt'u alınamadı, fallback kullanılıyor.")
+			systemPrompt = "Aşağıdaki diyaloğa devam et. Cevapların kısa olsun."
+		}
+
+		var promptBuilder strings.Builder
+		promptBuilder.WriteString(systemPrompt)
+		promptBuilder.WriteString("\n\n--- KONUŞMA GEÇMİŞİ ---\n")
+		for _, msg := range callState.Conversation {
+			if text, ok := msg["user"]; ok {
+				promptBuilder.WriteString("Kullanıcı: " + text + "\n")
+			} else if text, ok := msg["ai"]; ok {
+				promptBuilder.WriteString("Asistan: " + text + "\n")
+			}
+		}
+		promptBuilder.WriteString("Asistan:")
+		return promptBuilder.String(), nil
 	}
-	promptBuilder.WriteString("Asistan:")
-	return promptBuilder.String(), nil
 }

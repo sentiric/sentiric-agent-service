@@ -12,7 +12,6 @@ import (
 	"github.com/sentiric/sentiric-agent-service/internal/state"
 )
 
-// DialogManager, bir çağrının baştan sona diyalog akışını ve durum makinesini yönetir.
 type DialogManager struct {
 	cfg              *config.Config
 	stateManager     *state.Manager
@@ -22,7 +21,6 @@ type DialogManager struct {
 	publisher        *queue.Publisher
 }
 
-// NewDialogManager, yeni bir DialogManager örneği oluşturur.
 func NewDialogManager(
 	cfg *config.Config,
 	sm *state.Manager,
@@ -41,11 +39,8 @@ func NewDialogManager(
 	}
 }
 
-// Start, yeni bir diyalog döngüsü başlatır.
 func (dm *DialogManager) Start(ctx context.Context, event *state.CallEvent) {
 	l := ctxlogger.FromContext(ctx)
-
-	// `user.identified.for_call` olayını burada, diyalog başlamadan hemen önce yayınlayalım.
 	dm.publishUserIdentifiedEvent(ctx, event)
 
 	tenantID := "sentiric_demo"
@@ -107,7 +102,6 @@ func (dm *DialogManager) publishUserIdentifiedEvent(ctx context.Context, event *
 	}
 }
 
-// runDialogLoop, diyalog durum makinesini çalıştırır.
 func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.CallState) {
 	l := ctxlogger.FromContext(ctx)
 	currentCallID := initialSt.CallID
@@ -123,7 +117,6 @@ func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.Cal
 
 		if finalState.CurrentState == state.StateTerminated {
 			l.Info().Msg("Diyalog sonlandı, sip-signaling'e çağrıyı kapatma isteği gönderiliyor.")
-
 			type TerminationRequest struct {
 				EventType string    `json:"eventType"`
 				CallID    string    `json:"callId"`
@@ -205,8 +198,6 @@ func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.Cal
 	}
 }
 
-// --- Durum Fonksiyonları ---
-
 func (dm *DialogManager) stateFnWelcoming(ctx context.Context, st *state.CallState) (*state.CallState, error) {
 	l := ctxlogger.FromContext(ctx)
 	l.Info().Msg("İlk AI yanıtı öncesi 1.5 saniye bekleniyor...")
@@ -249,7 +240,7 @@ func (dm *DialogManager) stateFnListening(ctx context.Context, st *state.CallSta
 		dm.mediaManager.PlayAnnouncement(ctx, st, "ANNOUNCE_SYSTEM_ERROR")
 		st.ConsecutiveFailures++
 		st.CurrentState = state.StateListening
-		return st, nil // Hata loglandı, döngüye devam etsin.
+		return st, nil
 	}
 
 	if transcriptionResult.IsNoSpeechTimeout {
@@ -278,9 +269,25 @@ func (dm *DialogManager) stateFnListening(ctx context.Context, st *state.CallSta
 
 func (dm *DialogManager) stateFnThinking(ctx context.Context, st *state.CallState) (*state.CallState, error) {
 	l := ctxlogger.FromContext(ctx)
-	l.Info().Msg("LLM'den yanıt üretiliyor...")
+	l.Info().Msg("LLM'den yanıt üretiliyor (RAG akışı)...")
 
-	prompt, err := dm.templateProvider.BuildLlmPrompt(ctx, st)
+	lastUserMessage := ""
+	for i := len(st.Conversation) - 1; i >= 0; i-- {
+		if msg, ok := st.Conversation[i]["user"]; ok {
+			lastUserMessage = msg
+			break
+		}
+	}
+	if lastUserMessage == "" {
+		return st, fmt.Errorf("düşünme durumu için son kullanıcı mesajı bulunamadı")
+	}
+
+	ragContext, err := dm.aiOrchestrator.QueryKnowledgeBase(ctx, lastUserMessage, st)
+	if err != nil {
+		return st, fmt.Errorf("knowledge base sorgulanamadı: %w", err)
+	}
+
+	prompt, err := dm.templateProvider.BuildLlmPrompt(ctx, st, ragContext)
 	if err != nil {
 		return st, fmt.Errorf("LLM prompt'u oluşturulamadı: %w", err)
 	}

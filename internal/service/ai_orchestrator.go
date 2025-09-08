@@ -2,7 +2,7 @@ package service
 
 import (
 	"context"
-	"encoding/base64" // DÜZELTME: 'b64' yerine standart paket adı kullanılıyor.
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,6 +15,7 @@ import (
 	"github.com/sentiric/sentiric-agent-service/internal/config"
 	"github.com/sentiric/sentiric-agent-service/internal/ctxlogger"
 	"github.com/sentiric/sentiric-agent-service/internal/state"
+	knowledgev1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/knowledge/v1"
 	mediav1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/media/v1"
 	ttsv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/tts/v1"
 	"google.golang.org/grpc/codes"
@@ -22,44 +23,87 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// TranscriptionResult, STT servisinden dönen sonucu taşır.
 type TranscriptionResult struct {
 	Text              string
 	IsNoSpeechTimeout bool
 }
 
-// AIOrchestrator, STT, LLM ve TTS servisleri ile olan tüm etkileşimleri yönetir.
 type AIOrchestrator struct {
-	cfg         *config.Config
-	llmClient   *client.LlmClient
-	sttClient   *client.SttClient
-	ttsClient   ttsv1.TextToSpeechServiceClient
-	mediaClient mediav1.MediaServiceClient
+	cfg             *config.Config
+	llmClient       *client.LlmClient
+	sttClient       *client.SttClient
+	ttsClient       ttsv1.TextToSpeechServiceClient
+	mediaClient     mediav1.MediaServiceClient
+	knowledgeClient knowledgev1.KnowledgeServiceClient
 }
 
-// NewAIOrchestrator, yeni bir AIOrchestrator örneği oluşturur.
 func NewAIOrchestrator(
 	cfg *config.Config,
 	llmC *client.LlmClient,
 	sttC *client.SttClient,
 	ttsC ttsv1.TextToSpeechServiceClient,
 	mediaC mediav1.MediaServiceClient,
+	knowC knowledgev1.KnowledgeServiceClient,
 ) *AIOrchestrator {
 	return &AIOrchestrator{
-		cfg:         cfg,
-		llmClient:   llmC,
-		sttClient:   sttC,
-		ttsClient:   ttsC,
-		mediaClient: mediaC,
+		cfg:             cfg,
+		llmClient:       llmC,
+		sttClient:       sttC,
+		ttsClient:       ttsC,
+		mediaClient:     mediaC,
+		knowledgeClient: knowC,
 	}
 }
 
-// GenerateResponse, bir prompt alıp LLM'den yanıt üretir.
+func (a *AIOrchestrator) QueryKnowledgeBase(ctx context.Context, query string, callState *state.CallState) (string, error) {
+	l := ctxlogger.FromContext(ctx)
+	l.Info().Str("query", query).Msg("Knowledge base sorgulanıyor...")
+
+	if a.knowledgeClient == nil {
+		l.Warn().Msg("Knowledge service istemcisi yapılandırılmamış, sorgulama atlanıyor.")
+		return "", nil
+	}
+
+	req := &knowledgev1.QueryRequest{
+		TenantId: callState.TenantID,
+		Query:    query,
+		TopK:     3,
+	}
+
+	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	res, err := a.knowledgeClient.Query(queryCtx, req)
+	if err != nil {
+		st, ok := status.FromError(err)
+		if ok && (st.Code() == codes.NotFound || st.Code() == codes.Unavailable) {
+			l.Warn().Err(err).Msg("Knowledge service'e ulaşılamadı veya sonuç bulunamadı, RAG olmadan devam edilecek.")
+			return "", nil
+		}
+		l.Error().Err(err).Msg("Knowledge base sorgulanırken beklenmedik bir hata oluştu.")
+		return "", err
+	}
+
+	if len(res.GetResults()) == 0 {
+		l.Info().Msg("Knowledge base'de ilgili sonuç bulunamadı.")
+		return "", nil
+	}
+
+	var contextBuilder strings.Builder
+	contextBuilder.WriteString("İlgili Bilgiler:\n")
+	for i, result := range res.GetResults() {
+		contextBuilder.WriteString(fmt.Sprintf("%d. %s\n", i+1, result.GetContent()))
+	}
+
+	contextStr := contextBuilder.String()
+	l.Info().Int("result_count", len(res.GetResults())).Msg("Knowledge base'den sonuçlar başarıyla alındı.")
+	return contextStr, nil
+}
+
 func (a *AIOrchestrator) GenerateResponse(ctx context.Context, prompt string, callState *state.CallState) (string, error) {
 	return a.llmClient.Generate(ctx, prompt, callState.TraceID)
 }
 
-// SynthesizeAndGetAudio, metni sese dönüştürür ve base64-encoded audio URI'si döndürür.
 func (a *AIOrchestrator) SynthesizeAndGetAudio(ctx context.Context, callState *state.CallState, textToPlay string) (string, error) {
 	l := ctxlogger.FromContext(ctx)
 	l.Info().Str("text", textToPlay).Msg("Metin sese dönüştürülüyor...")
@@ -67,7 +111,7 @@ func (a *AIOrchestrator) SynthesizeAndGetAudio(ctx context.Context, callState *s
 	var speakerURL, voiceSelector string
 	var useCloning bool
 
-	if callState.Event != nil && callState.Event.Dialplan != nil && callState.Event.Dialplan.Action != nil && callState.Event.Dialplan.Action.ActionData != nil && callState.Event.Dialplan.Action.ActionData.Data != nil {
+	if callState.Event.Dialplan.Action.ActionData != nil && callState.Event.Dialplan.Action.ActionData.Data != nil {
 		actionData := callState.Event.Dialplan.Action.ActionData.Data
 		speakerURL, useCloning = actionData["speaker_wav_url"]
 		voiceSelector = actionData["voice_selector"]
@@ -104,12 +148,10 @@ func (a *AIOrchestrator) SynthesizeAndGetAudio(ctx context.Context, callState *s
 	}
 
 	audioBytes := ttsResp.GetAudioContent()
-	// DÜZELTME: 'b64' yerine 'base64' kullanılıyor.
 	audioURI := fmt.Sprintf("data:audio/wav;base64,%s", base64.StdEncoding.EncodeToString(audioBytes))
 	return audioURI, nil
 }
 
-// StreamAndTranscribe, media-service'ten ses akışı alıp STT servisine gönderir ve sonucu döndürür.
 func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *state.CallState) (TranscriptionResult, error) {
 	l := ctxlogger.FromContext(ctx)
 	var result TranscriptionResult
@@ -239,8 +281,6 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 		return TranscriptionResult{Text: "", IsNoSpeechTimeout: true}, nil
 	}
 }
-
-// --- Yardımcı Fonksiyonlar ---
 
 func getLanguageCode(event *state.CallEvent) string {
 	if event != nil && event.Dialplan != nil {

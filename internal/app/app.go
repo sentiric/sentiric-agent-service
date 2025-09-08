@@ -22,14 +22,11 @@ import (
 	"github.com/sentiric/sentiric-agent-service/internal/state"
 )
 
-// Dependencies, uygulamanın farklı katmanları arasında paylaşılan
-// tüm servisleri ve istemcileri bir araya getiren bir yapıdır.
 type Dependencies struct {
 	CallHandler  *handler.CallHandler
 	EventHandler *handler.EventHandler
 }
 
-// App, uygulamanın tüm bileşenlerini ve yaşam döngüsünü yönetir.
 type App struct {
 	Cfg    *config.Config
 	Log    zerolog.Logger
@@ -37,7 +34,6 @@ type App struct {
 	cancel context.CancelFunc
 }
 
-// NewApp, yeni bir uygulama örneği oluşturur.
 func NewApp(cfg *config.Config, log zerolog.Logger) *App {
 	return &App{
 		Cfg: cfg,
@@ -45,7 +41,6 @@ func NewApp(cfg *config.Config, log zerolog.Logger) *App {
 	}
 }
 
-// Run, uygulamanın ana başlatma ve graceful shutdown mantığını içerir.
 func (a *App) Run() {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
@@ -55,7 +50,7 @@ func (a *App) Run() {
 		defer a.wg.Done()
 		db, redisClient, rabbitCh, rabbitCloseChan := a.setupInfrastructure(ctx)
 		if ctx.Err() != nil {
-			return // Kurulum iptal edildi.
+			return
 		}
 		if db != nil {
 			defer db.Close()
@@ -98,27 +93,24 @@ func (a *App) Run() {
 	a.Log.Info().Msg("Tüm servisler başarıyla durduruldu. Çıkış yapılıyor.")
 }
 
-// buildDependencies, tüm servisleri, yöneticileri ve işleyicileri oluşturup birbirine bağlar.
 func (a *App) buildDependencies(db *sql.DB, redisClient *redis.Client, rabbitCh *amqp091.Channel) *Dependencies {
 	// Clients
 	mediaClient, _ := client.NewMediaServiceClient(a.Cfg)
 	userClient, _ := client.NewUserServiceClient(a.Cfg)
 	ttsClient, _ := client.NewTTSServiceClient(a.Cfg)
+	knowledgeClient, _ := client.NewKnowledgeServiceClient(a.Cfg)
 	llmClient := client.NewLlmClient(a.Cfg.LlmServiceURL, a.Log)
 	sttClient := client.NewSttClient(a.Cfg.SttServiceURL, a.Log)
 
-	// Infrastructure Wrappers
 	stateManager := state.NewManager(redisClient)
 	publisher := queue.NewPublisher(rabbitCh, a.Log)
 
-	// Service Layer
 	templateProvider := service.NewTemplateProvider(db)
 	mediaManager := service.NewMediaManager(db, mediaClient, metrics.EventsFailed)
-	aiOrchestrator := service.NewAIOrchestrator(a.Cfg, llmClient, sttClient, ttsClient, mediaClient)
+	aiOrchestrator := service.NewAIOrchestrator(a.Cfg, llmClient, sttClient, ttsClient, mediaClient, knowledgeClient)
 	dialogManager := service.NewDialogManager(a.Cfg, stateManager, aiOrchestrator, mediaManager, templateProvider, publisher)
 	userManager := service.NewUserManager(userClient)
 
-	// Handler Layer
 	callHandler := handler.NewCallHandler(userManager, dialogManager, stateManager)
 	eventHandler := handler.NewEventHandler(a.Log, metrics.EventsProcessed, metrics.EventsFailed, callHandler)
 
@@ -128,7 +120,6 @@ func (a *App) buildDependencies(db *sql.DB, redisClient *redis.Client, rabbitCh 
 	}
 }
 
-// setupInfrastructure, altyapı bağlantılarını kurar.
 func (a *App) setupInfrastructure(ctx context.Context) (
 	db *sql.DB,
 	redisClient *redis.Client,
@@ -154,7 +145,6 @@ func (a *App) setupInfrastructure(ctx context.Context) (
 				if ctx.Err() == nil {
 					a.Log.Warn().Err(err).Msg("PostgreSQL'e bağlanılamadı, 5 saniye sonra tekrar denenecek...")
 				}
-
 				select {
 				case <-time.After(5 * time.Second):
 				case <-ctx.Done():
@@ -191,7 +181,6 @@ func (a *App) setupInfrastructure(ctx context.Context) (
 						a.Log.Warn().Err(err).Msg("Redis'e bağlanılamadı, 5 saniye sonra tekrar denenecek...")
 					}
 				}
-
 				select {
 				case <-time.After(5 * time.Second):
 				case <-ctx.Done():
@@ -218,7 +207,6 @@ func (a *App) setupInfrastructure(ctx context.Context) (
 				if ctx.Err() == nil {
 					a.Log.Warn().Err(err).Msg("RabbitMQ'ya bağlanılamadı, 5 saniye sonra tekrar denenecek...")
 				}
-
 				select {
 				case <-time.After(5 * time.Second):
 				case <-ctx.Done():

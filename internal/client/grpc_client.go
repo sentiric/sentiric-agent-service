@@ -1,5 +1,3 @@
-// File: internal/client/grpc_client.go
-// AÇIKLAMA: Bu paket, diğer servislere gRPC istemci bağlantıları oluşturmaktan sorumludur.
 package client
 
 import (
@@ -12,16 +10,14 @@ import (
 	"time"
 
 	"github.com/sentiric/sentiric-agent-service/internal/config"
-
+	knowledgev1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/knowledge/v1"
 	mediav1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/media/v1"
 	ttsv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/tts/v1"
 	userv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/user/v1"
-
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
 
-// NewMediaServiceClient, Media servisi için bir gRPC istemcisi oluşturur.
 func NewMediaServiceClient(cfg *config.Config) (mediav1.MediaServiceClient, error) {
 	conn, err := createSecureGrpcClient(cfg, cfg.MediaServiceGrpcURL)
 	if err != nil {
@@ -30,7 +26,6 @@ func NewMediaServiceClient(cfg *config.Config) (mediav1.MediaServiceClient, erro
 	return mediav1.NewMediaServiceClient(conn), nil
 }
 
-// NewUserServiceClient, User servisi için bir gRPC istemcisi oluşturur.
 func NewUserServiceClient(cfg *config.Config) (userv1.UserServiceClient, error) {
 	conn, err := createSecureGrpcClient(cfg, cfg.UserServiceGrpcURL)
 	if err != nil {
@@ -39,7 +34,6 @@ func NewUserServiceClient(cfg *config.Config) (userv1.UserServiceClient, error) 
 	return userv1.NewUserServiceClient(conn), nil
 }
 
-// NewTTSServiceClient, TTS Gateway servisi için bir gRPC istemcisi oluşturur.
 func NewTTSServiceClient(cfg *config.Config) (ttsv1.TextToSpeechServiceClient, error) {
 	conn, err := createSecureGrpcClient(cfg, cfg.TtsServiceGrpcURL)
 	if err != nil {
@@ -48,7 +42,17 @@ func NewTTSServiceClient(cfg *config.Config) (ttsv1.TextToSpeechServiceClient, e
 	return ttsv1.NewTextToSpeechServiceClient(conn), nil
 }
 
-// createSecureGrpcClient, verilen adrese güvenli (mTLS) bir gRPC istemci bağlantısı kurar.
+func NewKnowledgeServiceClient(cfg *config.Config) (knowledgev1.KnowledgeServiceClient, error) {
+	if cfg.KnowledgeServiceGrpcURL == "" {
+		return nil, nil // Yapılandırılmamışsa istemci oluşturma, hata da verme.
+	}
+	conn, err := createSecureGrpcClient(cfg, cfg.KnowledgeServiceGrpcURL)
+	if err != nil {
+		return nil, fmt.Errorf("knowledge service istemcisi için bağlantı oluşturulamadı: %w", err)
+	}
+	return knowledgev1.NewKnowledgeServiceClient(conn), nil
+}
+
 func createSecureGrpcClient(cfg *config.Config, addr string) (*grpc.ClientConn, error) {
 	clientCert, err := tls.LoadX509KeyPair(cfg.AgentServiceCertPath, cfg.AgentServiceKeyPath)
 	if err != nil {
