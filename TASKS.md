@@ -1,48 +1,46 @@
-# 🧠 Sentiric Agent Service - Görev Listesi (v5.6 - Diyalog Stabilizasyonu)
+# 🧠 Sentiric Agent Service - Görev Listesi (v5.7 - Diyalog ve Veri Bütünlüğü)
 
-Bu belge, agent-service'in canlı testlerde tespit edilen kritik hatalarını gidermek ve platformun temel diyalog akışını kararlı hale getirmek için gereken görevleri tanımlar.
-
----
-
-### **FAZ 1: Temel Orkestrasyon (Tamamlanmış Görevler)**
-*   [x] **AGENT-CORE-01**: Olay Tüketimi ve Servis İstemcileri
-*   [x] **AGENT-CORE-02**: Misafir Kullanıcı Oluşturma
-*   [x] **AGENT-CORE-03**: Temel Durum Makinesi
-*   [x] **AGENT-CORE-04**: Anında Sesli Geri Bildirim
-*   [x] **AGENT-CORE-05**: Yarış Durumuna Karşı Dayanıklılık
-*   [x] **AGENT-BUG-01**: Çağrı Kaydı Tenant ID Düzeltmesi
-*   [x] **AGENT-BUG-06**: Veritabanı Bütünlüğü ve Misafir Kullanıcı Oluşturma Hatası
-*   [x] **AGENT-BUG-04**: `user.identified.for_call` Olayını Yayınlama
-*   [x] **AGENT-BUG-03**: `playText` Fonksiyonunda Kapsamlı Nil Pointer Koruması
+Bu belge, agent-service'in geliştirme yol haritasını, tamamlanan görevleri ve mevcut öncelikleri tanımlar.
 
 ---
 
-### **FAZ 2: Akıllı Diyalog ve Veri Zenginleştirme (Mevcut Odak)**
+### **FAZ 1: Temel Olay Orkestrasyonu (Mevcut Durum)**
 
-**Amaç:** Kırık diyalog döngüsünü onarmak, platformu daha zeki hale getirmek ve mimariyi iyileştirmek.
+**Amaç:** Gelen çağrı olaylarını işleyerek temel diyalog adımlarını ve medya eylemlerini yöneten çekirdek altyapıyı kurmak.
 
--   **Görev ID: AGENT-BUG-07 - STT Sessizlik/Timeout Durumunu Yönetme**
-    -   **Durum:** ✅ **Tamamlandı**
-    -   **Öncelik:** **KRİTİK**
-    -   **Problem Tanımı:** `agent-service`, `stt-service`'ten gelen "no_speech_timeout" durumunu doğru yönetemiyor, bunu bir anlama hatası olarak kabul edip hata sayacını artırıyor ve çağrıyı erken sonlandırıyordu.
-    -   **Çözüm Stratejisi:** `StateFnListening` fonksiyonu, `streamAndTranscribe`'dan dönen `TranscriptionResult` nesnesini kontrol edecek şekilde güncellendi. Eğer `IsNoSpeechTimeout` alanı `true` ise, hata sayacı artırılmaz, bunun yerine "Sizi duyamıyorum" anonsu çalınır ve durum tekrar `StateListening`'e ayarlanarak kullanıcıya bir şans daha verilir. Bu, diyalog döngüsünün sonsuz bir hata döngüsüne girmesini engeller.
+-   [x] **Görev ID: AGENT-CORE-01 - Olay Tüketimi ve Servis İstemcileri:** RabbitMQ'dan `call.started` gibi olayları dinler ve diğer servislere (media, user, tts, llm) gRPC/HTTP ile bağlanır.
+-   [x] **Görev ID: AGENT-CORE-02 - Misafir Kullanıcı Akışı:** `PROCESS_GUEST_CALL` eylemi geldiğinde `user-service`'i çağırarak yeni bir misafir kullanıcı oluşturur.
+-   [x] **Görev ID: AGENT-CORE-03 - Temel Durum Makinesi:** Redis üzerinde çağrı durumunu (`CallState`) yönetir ve `WELCOMING`, `LISTENING` gibi temel durumlar arasında geçiş yapar.
+-   [x] **Görev ID: AGENT-BUG-07 - STT Sessizlik/Timeout Yönetimi:** `stt-service`'ten gelen "no_speech_timeout" durumunu doğru yöneterek "Sizi duyamıyorum" anonsu çalar ve hata sayacını artırmaz.
+-   [x] **Görev ID: AGENT-FEAT-01 - Dinamik TTS Ses Seçimi:** `dialplan`'de belirtilen `voice_selector` değerini `tts-gateway`'e ileterek doğru sesin kullanılmasını sağlar.
+
+---
+
+### **FAZ 2: Dayanıklılık ve Veri Bütünlüğü (Mevcut Odak)**
+
+**Amaç:** Canlı testlerde tespit edilen kritik hataları gidererek platformun temel diyalog akışını kararlı hale getirmek ve raporlama için veri bütünlüğünü sağlamak.
+
+-   **Görev ID: AGENT-BUG-04 - `user.identified.for_call` Olayını Yayınlama (KRİTİK)**
+    -   **Durum:** ⬜ **Yapılacak (Öncelik 1)**
+    -   **Problem Tanımı:** Veritabanı kayıtları, `calls` tablosundaki `user_id` ve `tenant_id` alanlarının `NULL` olduğunu gösteriyor. Bu, `agent-service`'in, bir kullanıcıyı tanımladıktan sonra bu bilgiyi `user.identified.for_call` olayı ile platforma (özellikle `cdr-service`'e) duyurma görevini yerine getirmediğini kanıtlamaktadır. Bu, temel raporlama için kritik bir hatadır.
     -   **Kabul Kriterleri:**
-        -   [x] Kullanıcı 10-15 saniye konuşmadığında, `agent-service` "Sizi duyamıyorum" anonsunu çalar.
-        -   [x] Bu durumda `consecutive_failures` sayacı artırılmaz.
-        -   [x] Çağrı, sadece kullanıcı gerçekten konuşup anlaşılamadığında sonlandırılır.
+        -   [ ] `handleProcessGuestCall` ve `handleStartAIConversation` fonksiyonlarının içinde, `event.Dialplan.MatchedUser` ve `MatchedContact` bilgileri mevcut olduğunda, bu bilgilerle dolu bir `user.identified.for_call` olayı oluşturulmalı ve RabbitMQ üzerinden yayınlanmalıdır.
+        -   [ ] Bir çağrı başladığında, `agent-service` loglarında "user.identified.for_call olayı yayınlanıyor..." mesajı görülmelidir.
+        -   [ ] Bu değişiklik sonrası `cdr-service`'in `calls` tablosunu doğru bir şekilde güncellediği doğrulanmalıdır.
 
--   **Görev ID: AGENT-FEAT-01 - Dinamik TTS Ses Seçimi**
-    -   **Durum:** ✅ **Tamamlandı**
-    -   **Öncelik:** YÜKSEK
-    -   **Problem Tanımı:** `dialplan`'de belirtilen `voice_selector` değeri (`tr-TR-EmelNeural`) `tts-gateway`'e iletilmiyordu ve varsayılan ses kullanılıyordu.
-    -   **Çözüm Stratejisi:** `playText` fonksiyonu, `SynthesizeRequest` oluştururken `st.Event.Dialplan.Action.ActionData.Data` içinden `voice_selector` anahtarını okuyacak ve isteğe ekleyecek şekilde güncellendi.
+-   **Görev ID: AGENT-BUG-08 - STT Halüsinasyonlarına Karşı Savunma (KRİTİK)**
+    -   **Durum:** ⬜ **Yapılacak (Öncelik 2)**
+    -   **Problem Tanımı:** Canlı testler, `stt-service`'in anlamsız gürültüleri "Bu dizinin betimlemesi..." gibi alakasız metinler olarak yorumladığını göstermiştir. `agent-service` bu hatalı metni doğru kabul ederek anlamsız AI yanıtları üretmekte ve diyalog akışını bozmaktadır.
+    -   **Çözüm Stratejisi:** `StateFnListening` fonksiyonunda, STT'den dönen metin üzerinde basit bir "anlamlılık kontrolü" (sanity check) yapılmalıdır.
     -   **Kabul Kriterleri:**
-        -   [x] Test çağrısında, `dialplan`'de belirtilen `EmelNeural` sesinin duyulduğu doğrulandı.
-        -   [x] `tts-gateway` loglarında, gelen isteğin `voice_selector` alanını içerdiği görüldü.
+        -   [ ] STT'den dönen metin, çok kısa (örn: 3 karakterden az) veya bilinen anlamsız kalıplar içeriyorsa, bu bir anlama hatası olarak kabul edilmelidir.
+        -   [ ] Bu durumda metin LLM'e gönderilmemeli; bunun yerine `ANNOUNCE_SYSTEM_CANT_UNDERSTAND` anonsu çalınmalı ve `consecutive_failures` sayacı artırılmalıdır.
+        -   [ ] Bu, LLM'in hatalı verilerle beslenmesini engelleyecektir.
 
--   **Görev ID: AGENT-RAG-01 - `knowledge-service` Entegrasyonu**
+---
+
+### **FAZ 3: Akıllı RAG ve Gelişmiş Görevler (Gelecek Vizyonu)**
+
+-   [ ] **Görev ID: AGENT-RAG-01 - `knowledge-service` Entegrasyonu:**
     -   **Durum:** ⬜ **Planlandı**
-    -   **Öncelik:** ORTA
-    -   **Tahmini Süre:** ~1 Gün
-
----
+    -   **Açıklama:** Kullanıcıdan gelen bilgi taleplerini, önce `knowledge-service`'e sorarak RAG bağlamı oluşturmak ve bu bağlamla zenginleştirilmiş prompt'u LLM'e göndermek.
