@@ -14,17 +14,17 @@ Bu servis, platformun asenkron iş mantığını yürüten ana işçisidir (work
 *   **İş Akışı Orkestrasyonu:** Gelen olayın içerdiği `dialplan` kararına göre bir dizi eylemi yönetir. Örneğin:
     *   Bir kullanıcıyı `user-service`'e kaydeder.
     *   Bir anonsu `media-service`'e çaldırır.
-    *   Bir yapay zeka diyaloğu başlatmak için `llm-service`'e istek gönderir.
+    *   **RAG (Retrieval-Augmented Generation):** Bir yapay zeka diyaloğu başlatmak için önce `knowledge-service`'i sorgular, ardından bu bilgiyle zenginleştirilmiş bir isteği `llm-service`'e gönderir.
 *   **Servis İstemcisi:** Platformdaki diğer tüm uzman mikroservisler için birincil istemci (client) olarak görev yapar. İletişim için gRPC (iç servisler) ve HTTP/REST (AI servisleri) kullanır.
-*   **Durum Yönetimi (Gelecek):** Uzun süren diyalogların durumunu yönetmek için Redis veya benzeri bir in-memory veritabanı ile entegre olacaktır.
+*   **Durum Yönetimi:** Uzun süren diyalogların durumunu yönetmek için Redis kullanır.
 
 ## 🛠️ Teknoloji Yığını
 
 *   **Dil:** Go
 *   **Asenkron İletişim:** RabbitMQ (`amqp091-go` kütüphanesi)
 *   **Servisler Arası İletişim:**
-    *   **gRPC:** İç, yüksek performanslı servislere (`media`, `user`, `tts-gateway`) bağlanmak için.
-    *   **HTTP/REST:** Dış veya bağımlılıkları izole edilmiş AI servislerine (`llm-service`) bağlanmak için.
+    *   **gRPC:** İç, yüksek performanslı servislere (`media`, `user`, `tts-gateway`, `knowledge`) bağlanmak için.
+    *   **HTTP/REST:** Dış veya bağımlılıkları izole edilmiş AI servislerine (`llm-service`, `stt-service`) bağlanmak için.
 *   **Veritabanı Erişimi:** PostgreSQL (`pgx` kütüphanesi)
 *   **Gözlemlenebilirlik:** Prometheus metrikleri ve `zerolog` ile yapılandırılmış loglama.
 
@@ -37,19 +37,22 @@ Bu servis bir sunucu değil, bir **istemci ve tüketicidir.** Dışarıya bir po
 *   **Giden (İstemci):**
     *   `sentiric-media-service` (gRPC): Medya işlemlerini yönetmek için.
     *   `sentiric-user-service` (gRPC): Kullanıcı işlemlerini yönetmek için.
+    *   `sentiric-knowledge-service` (gRPC): RAG için kurumsal bilgi tabanını sorgulamak.
+    *   `sentiric-tts-gateway-service` (gRPC): Metni sese çevirmek için.
     *   `sentiric-llm-service` (HTTP/REST): Yapay zeka metin üretimi için.
-    *   `sentiric-tts-gateway-service` (gRPC): Metni sese çevirmek için akıllı ses santraline bağlanmak.
+    *   `sentiric-stt-service` (HTTP/WebSocket): Sesi metne çevirmek için.
     *   `PostgreSQL`: Anons yolları gibi konfigürasyon verilerini okumak için.
+    *   `Redis`: Çağrı durumunu yönetmek için.
 
 ## 🚀 Yerel Geliştirme
 
 1.  **Bağımlılıkları Yükleyin:** `go mod tidy`
 2.  **Ortam Değişkenlerini Ayarlayın:** `.env.docker` dosyasını `.env` olarak kopyalayın. Platformun diğer tüm servisleri Docker üzerinde çalışıyorsa, adresler doğru olacaktır.
-3.  **Servisi Çalıştırın:** `go run ./cmd/agent-service`
+3.  **Servisi Çalıştırın:** `go run cmd/agent-service/main.go`
 
 ## 🤝 Katkıda Bulunma
 
-Katkılarınızı bekliyorsunuz! Lütfen projenin ana [Sentiric Governance](https://github.com/sentiric/sentiric-governance) reposundaki kodlama standartlarına ve katkıda bulunma rehberine göz atın.
+Katkılarınızı bekliyoruz! Lütfen projenin ana [Sentiric Governance](https://github.com/sentiric/sentiric-governance) reposundaki kodlama standartlarına ve katkıda bulunma rehberine göz atın.
 
 ---
 ## 🏛️ Anayasal Konum

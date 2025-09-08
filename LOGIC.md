@@ -34,30 +34,34 @@ sequenceDiagram
     participant User as Kullanıcı
     participant AgentService as Agent Service (Orkestratör)
     participant STTService as STT Service
-    participant KnowledgeService as Knowledge Service
-    participant LLMService as LLM Service
-    participant TTSGateway as TTS Gateway
-    participant MediaService as Media Service
+    participant KnowledgeService as Knowledge Service (gRPC)
+    participant LLMService as LLM Service (HTTP)
+    participant TTSGateway as TTS Gateway (gRPC)
+    participant MediaService as Media Service (gRPC)
 
     Note over AgentService: Karşılama ve ilk dinleme adımları tamamlandı...
 
-    User->>AgentService: (Sesli olarak) "VIP Check-up paketi hakkında bilgi alabilir miyim?"
+    User->>+MediaService: (Sesli olarak) "VIP Check-up paketi hakkında bilgi alabilir miyim?"
+    MediaService->>-AgentService: Ses akışı
 
-    AgentService->>STTService: Sesi metne çevir
+    AgentService->>STTService: Sesi metne çevir (HTTP Stream)
     STTService-->>AgentService: "VIP Check-up paketi hakkında bilgi alabilir miyim?"
 
     Note right of AgentService: Niyetin "bilgi talebi" olduğunu anlar. <br> **RAG akışını başlatır.**
     
-    AgentService->>KnowledgeService: Sorgu: "VIP Check-up paketi"
-    KnowledgeService-->>AgentService: İlgili dokümanlar (context)
+    AgentService->>+KnowledgeService: Sorgu: "VIP Check-up paketi" (gRPC)
+    KnowledgeService-->>-AgentService: İlgili dokümanlar (context)
 
     Note right of AgentService: LLM için prompt'u zenginleştirir.
 
-    AgentService->>LLMService: Prompt: (Dokümanlar + Kullanıcı Sorusu)
-    LLMService-->>AgentService: "VIP Check-up paketimiz kan tahlilleri, EKG..."
+    AgentService->>+LLMService: Prompt: (Dokümanlar + Kullanıcı Sorusu) (HTTP)
+    LLMService-->>-AgentService: "VIP Check-up paketimiz kan tahlilleri, EKG..."
     
-    AgentService->>TTSGateway: Metni sese çevir
-    TTSGateway-->>AgentService: Ses verisi (.wav)
+    AgentService->>+TTSGateway: Metni sese çevir (gRPC)
+    TTSGateway-->>-AgentService: Ses verisi (.wav)
 
-    AgentService->>MediaService: Sesi kullanıcıya çal
+    AgentService->>+MediaService: Sesi kullanıcıya çal (gRPC)
+    MediaService-->>-User: (Sesli olarak) "VIP Check-up paketimiz..."
 ```
+
+---
