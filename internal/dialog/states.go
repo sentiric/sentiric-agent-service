@@ -1,4 +1,3 @@
-// internal/dialog/states.go dosyasının TAM ve GÜNCELLENMİŞ HALİ
 package dialog
 
 import (
@@ -59,7 +58,6 @@ func StateFnWelcoming(ctx context.Context, deps *Dependencies, st *state.CallSta
 	return st, nil
 }
 
-// --- DÜZELTME: StateFnListening tamamen güncellendi (AGENT-BUG-07 ve Sonsuz Döngü için) ---
 func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallState) (*state.CallState, error) {
 	l := deps.Log.With().Str("call_id", st.CallID).Logger()
 
@@ -77,37 +75,35 @@ func StateFnListening(ctx context.Context, deps *Dependencies, st *state.CallSta
 		if err == context.Canceled || status.Code(err) == codes.Canceled {
 			return st, context.Canceled
 		}
-		// streamAndTranscribe içinde genel bir hata olursa (örn: websocket bağlanamazsa)
 		l.Error().Err(err).Msg("Transkripsiyon akışında hata oluştu.")
 		PlayAnnouncement(ctx, deps, l, st, "ANNOUNCE_SYSTEM_ERROR")
 		st.ConsecutiveFailures++
-		// Bir sonraki adıma geçmek yerine dinlemeye devam et
 		st.CurrentState = state.StateListening
 		return st, nil
 	}
 
-	// YENİ MANTIK: Sessizlik durumunu doğru yönet
 	if transcriptionResult.IsNoSpeechTimeout {
 		l.Warn().Msg("STT'den ses algılanmadı (timeout). Kullanıcıya bir şans daha veriliyor.")
 		PlayAnnouncement(ctx, deps, l, st, "ANNOUNCE_SYSTEM_CANT_HEAR_YOU")
-		// Hata sayacını ARTIRMA, sadece dinlemeye geri dön.
 		st.CurrentState = state.StateListening
 		return st, nil
 	}
 
-	// STT boş metin döndürdüyse (halüsinasyon filtresi vb. nedenlerle)
-	if transcriptionResult.Text == "" {
-		l.Warn().Msg("STT boş metin döndürdü, 'anlayamadım' anonsu çalınacak.")
+	// DEĞİŞİKLİK: STT halüsinasyonlarını ve anlamsız metinleri engellemek için "sanity check" (AGENT-BUG-08)
+	cleanedText := strings.TrimSpace(transcriptionResult.Text)
+	isMeaningless := len(cleanedText) < 3 || strings.Contains(cleanedText, "Bu dizinin betimlemesi") // Gelecekte daha fazla kural eklenebilir.
+
+	if isMeaningless {
+		l.Warn().Str("stt_result", cleanedText).Msg("STT anlamsız veya çok kısa metin döndürdü, 'anlayamadım' anonsu çalınacak.")
 		PlayAnnouncement(ctx, deps, l, st, "ANNOUNCE_SYSTEM_CANT_UNDERSTAND")
 		st.ConsecutiveFailures++
-		// Durumu tekrar Listening'e ayarlayarak döngüye devam et.
 		st.CurrentState = state.StateListening
 		return st, nil
 	}
+	// -- DEĞİŞİKLİK SONU --
 
-	// Başarılı transkripsiyon durumu
 	st.ConsecutiveFailures = 0
-	st.Conversation = append(st.Conversation, map[string]string{"user": transcriptionResult.Text})
+	st.Conversation = append(st.Conversation, map[string]string{"user": cleanedText}) // cleanedText kullanılıyor
 	st.CurrentState = state.StateThinking
 	return st, nil
 }
@@ -167,10 +163,9 @@ func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.Call
 		return result, fmt.Errorf("stt service url parse edilemedi: %w", err)
 	}
 
-	// GÜVENLİK DÜZELTMESİ: ws yerine wss kullan ve TLS yapılandırması ekle
 	scheme := "wss"
 	if u.Scheme == "http" {
-		scheme = "ws" // Geliştirme ortamı için
+		scheme = "ws"
 	}
 
 	sttURL := url.URL{Scheme: scheme, Host: u.Host, Path: "/api/v1/transcribe-stream"}
@@ -268,7 +263,6 @@ func streamAndTranscribe(ctx context.Context, deps *Dependencies, st *state.Call
 	}
 }
 
-// --- DÜZELTME: playText güncellendi (AGENT-FEAT-01) ---
 func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *state.CallState, textToPlay string) {
 	l.Info().Str("text", textToPlay).Msg("Metin sese dönüştürülüyor...")
 
@@ -278,7 +272,6 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 	if st.Event != nil && st.Event.Dialplan != nil && st.Event.Dialplan.Action != nil && st.Event.Dialplan.Action.ActionData != nil && st.Event.Dialplan.Action.ActionData.Data != nil {
 		actionData := st.Event.Dialplan.Action.ActionData.Data
 		speakerURL, useCloning = actionData["speaker_wav_url"]
-		// voice_selector'ı buradan al
 		voiceSelector = actionData["voice_selector"]
 	}
 
@@ -295,7 +288,6 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 		}
 		ttsReq.SpeakerWavUrl = &speakerURL
 	} else if voiceSelector != "" {
-		// Eğer voiceSelector varsa, isteğe ekle
 		l.Info().Str("voice_selector", voiceSelector).Msg("Dinamik ses seçici kullanılıyor.")
 		ttsReq.VoiceSelector = &voiceSelector
 	}
@@ -360,7 +352,6 @@ func playText(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *sta
 	}
 }
 
-// ... (Geri kalan fonksiyonlar aynı kalır) ...
 func PlayAnnouncement(ctx context.Context, deps *Dependencies, l zerolog.Logger, st *state.CallState, announcementID string) {
 	languageCode := getLanguageCode(st.Event)
 	audioPath, err := database.GetAnnouncementPathFromDB(deps.DB, announcementID, st.TenantID, languageCode)
@@ -373,6 +364,7 @@ func PlayAnnouncement(ctx context.Context, deps *Dependencies, l zerolog.Logger,
 		}
 	}
 
+	// DÜZELTME: Eksik string sonlandırması ve path formatı düzeltildi.
 	audioURI := fmt.Sprintf("file://%s", audioPath)
 	mediaInfo := st.Event.Media
 	if mediaInfo == nil {

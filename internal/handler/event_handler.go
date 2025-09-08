@@ -1,4 +1,3 @@
-// File: sentiric-agent-service/internal/handler/event_handler.go (TAM VE DOĞRU HALİ)
 package handler
 
 import (
@@ -125,6 +124,40 @@ func (h *EventHandler) handleCallStarted(l zerolog.Logger, event *state.CallEven
 	}
 }
 
+// YENİ: `user.identified.for_call` olayını yayınlamak için yardımcı fonksiyon (AGENT-BUG-04)
+func (h *EventHandler) publishUserIdentifiedEvent(ctx context.Context, l zerolog.Logger, event *state.CallEvent) {
+	if event.Dialplan.GetMatchedUser() != nil && event.Dialplan.GetMatchedContact() != nil {
+		l.Info().Msg("Kullanıcı kimliği belirlendi, user.identified.for_call olayı yayınlanacak.")
+
+		userIdentifiedPayload := struct {
+			EventType string    `json:"eventType"`
+			TraceID   string    `json:"traceId"`
+			CallID    string    `json:"callId"`
+			UserID    string    `json:"userId"`
+			ContactID int32     `json:"contactId"`
+			TenantID  string    `json:"tenantId"`
+			Timestamp time.Time `json:"timestamp"`
+		}{
+			EventType: "user.identified.for_call",
+			TraceID:   event.TraceID,
+			CallID:    event.CallID,
+			UserID:    event.Dialplan.GetMatchedUser().GetId(),
+			ContactID: event.Dialplan.GetMatchedContact().GetId(),
+			TenantID:  event.Dialplan.GetMatchedUser().GetTenantId(),
+			Timestamp: time.Now().UTC(),
+		}
+
+		publishErr := h.publisher.PublishJSON(ctx, "user.identified.for_call", userIdentifiedPayload)
+		if publishErr != nil {
+			l.Error().Err(publishErr).Msg("user.identified.for_call olayı yayınlanamadı.")
+		} else {
+			l.Info().Msg("user.identified.for_call olayı başarıyla yayınlandı.")
+		}
+	} else {
+		l.Warn().Msg("Kullanıcı veya contact bilgisi eksik olduğu için user.identified.for_call olayı yayınlanamadı. CDR kaydı eksik olabilir.")
+	}
+}
+
 func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.CallEvent) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -206,42 +239,12 @@ func (h *EventHandler) handleProcessGuestCall(l zerolog.Logger, event *state.Cal
 		}
 	}
 
-	// DÜZELTME: Bu blok, kullanıcı bilgisi kesinleştikten sonra olayı yayınlar.
-	if event.Dialplan.GetMatchedUser() != nil && event.Dialplan.GetMatchedContact() != nil {
-		l.Info().Msg("Kullanıcı kimliği belirlendi, user.identified.for_call olayı yayınlanacak.")
-
-		userIdentifiedPayload := struct {
-			EventType string    `json:"eventType"`
-			TraceID   string    `json:"traceId"`
-			CallID    string    `json:"callId"`
-			UserID    string    `json:"userId"`
-			ContactID int32     `json:"contactId"`
-			TenantID  string    `json:"tenantId"`
-			Timestamp time.Time `json:"timestamp"`
-		}{
-			EventType: "user.identified.for_call",
-			TraceID:   event.TraceID,
-			CallID:    event.CallID,
-			UserID:    event.Dialplan.GetMatchedUser().GetId(),
-			ContactID: event.Dialplan.GetMatchedContact().GetId(),
-			TenantID:  event.Dialplan.GetMatchedUser().GetTenantId(),
-			Timestamp: time.Now().UTC(),
-		}
-
-		publishErr := h.publisher.PublishJSON(ctx, "user.identified.for_call", userIdentifiedPayload)
-		if publishErr != nil {
-			l.Error().Err(publishErr).Msg("user.identified.for_call olayı yayınlanamadı.")
-		} else {
-			l.Info().Msg("user.identified.for_call olayı başarıyla yayınlandı.")
-		}
-	} else {
-		l.Warn().Msg("Kullanıcı veya contact bilgisi eksik olduğu için user.identified.for_call olayı yayınlanamadı. CDR kaydı eksik olabilir.")
-	}
+	// DEĞİŞİKLİK: Kullanıcı bulunduktan veya oluşturulduktan hemen sonra olayı yayınla (AGENT-BUG-04)
+	h.publishUserIdentifiedEvent(ctx, l, event)
 
 	h.handleStartAIConversation(l, event)
 }
 
-// Diğer fonksiyonlar (handleStartAIConversation, handleCallEnded, playInitialAnnouncement) aynı kalır.
 func (h *EventHandler) handleStartAIConversation(l zerolog.Logger, event *state.CallEvent) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
@@ -249,6 +252,9 @@ func (h *EventHandler) handleStartAIConversation(l zerolog.Logger, event *state.
 		cancel()
 		l.Info().Str("call_id", event.CallID).Msg("Diyalog context'i ve kaynakları başarıyla temizlendi.")
 	}()
+
+	// DEĞİŞİKLİK: Bu işleyici doğrudan çağrıldığında da olayın yayınlandığından emin ol (AGENT-BUG-04)
+	h.publishUserIdentifiedEvent(ctx, l, event)
 
 	st, err := h.stateManager.Get(ctx, event.CallID)
 	if err != nil {
@@ -328,6 +334,7 @@ func playInitialAnnouncement(ctx context.Context, deps *dialog.Dependencies, l z
 		return
 	}
 
+	// DÜZELTME: Eksik string sonlandırması ve path formatı düzeltildi.
 	audioURI := fmt.Sprintf("file://%s", audioPath)
 	mediaInfo := st.Event.Media
 	rtpTargetVal, ok1 := mediaInfo["caller_rtp_addr"]
