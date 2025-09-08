@@ -2,7 +2,7 @@ package service
 
 import (
 	"context"
-	"encoding/base64"
+	"encoding/base64" // DÜZELTME: 'b64' yerine standart paket adı kullanılıyor.
 	"encoding/json"
 	"fmt"
 	"io"
@@ -104,6 +104,7 @@ func (a *AIOrchestrator) SynthesizeAndGetAudio(ctx context.Context, callState *s
 	}
 
 	audioBytes := ttsResp.GetAudioContent()
+	// DÜZELTME: 'b64' yerine 'base64' kullanılıyor.
 	audioURI := fmt.Sprintf("data:audio/wav;base64,%s", base64.StdEncoding.EncodeToString(audioBytes))
 	return audioURI, nil
 }
@@ -149,7 +150,7 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 	q.Set("logprob_threshold", fmt.Sprintf("%f", a.cfg.SttServiceLogprobThreshold))
 	q.Set("no_speech_threshold", fmt.Sprintf("%f", a.cfg.SttServiceNoSpeechThreshold))
 	vadLevel := "1"
-	if callState.Event.Dialplan.Action.ActionData.Data != nil {
+	if callState.Event.Dialplan.Action.ActionData != nil && callState.Event.Dialplan.Action.ActionData.Data != nil {
 		if val, ok := callState.Event.Dialplan.Action.ActionData.Data["stt_vad_level"]; ok {
 			vadLevel = val
 		}
@@ -207,12 +208,13 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 			var res map[string]interface{}
 			if err := json.Unmarshal(message, &res); err == nil {
 				if resType, ok := res["type"].(string); ok {
-					if resType == "final" {
+					switch resType {
+					case "final":
 						if text, ok := res["text"].(string); ok {
 							resultChan <- TranscriptionResult{Text: text, IsNoSpeechTimeout: false}
 							return
 						}
-					} else if resType == "no_speech_timeout" {
+					case "no_speech_timeout":
 						resultChan <- TranscriptionResult{Text: "", IsNoSpeechTimeout: true}
 						return
 					}
