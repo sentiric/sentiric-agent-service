@@ -1,10 +1,10 @@
-# 🧠 Sentiric Agent Service - Görev Listesi (v5.7 - Diyalog ve Veri Bütünlüğü)
+# 🧠 Sentiric Agent Service - Görev Listesi (v5.8 - Bütünlük ve Sağlamlaştırma)
 
 Bu belge, agent-service'in geliştirme yol haritasını, tamamlanan görevleri ve mevcut öncelikleri tanımlar.
 
 ---
 
-### **FAZ 1: Temel Olay Orkestrasyonu (Mevcut Durum)**
+### **FAZ 1: Temel Olay Orkestrasyonu (Tamamlandı)**
 
 **Amaç:** Gelen çağrı olaylarını işleyerek temel diyalog adımlarını ve medya eylemlerini yöneten çekirdek altyapıyı kurmak.
 
@@ -36,6 +36,36 @@ Bu belge, agent-service'in geliştirme yol haritasını, tamamlanan görevleri v
         -   [ ] STT'den dönen metin, çok kısa (örn: 3 karakterden az) veya bilinen anlamsız kalıplar içeriyorsa, bu bir anlama hatası olarak kabul edilmelidir.
         -   [ ] Bu durumda metin LLM'e gönderilmemeli; bunun yerine `ANNOUNCE_SYSTEM_CANT_UNDERSTAND` anonsu çalınmalı ve `consecutive_failures` sayacı artırılmalıdır.
         -   [ ] Bu, LLM'in hatalı verilerle beslenmesini engelleyecektir.
+
+---
+
+### **FAZ 2.5: İyileştirme ve Sağlamlaştırma (Yeni Görevler)**
+
+**Amaç:** Kod kalitesini, yapılandırılabilirliği ve gözlemlenebilirliği artırarak servisin uzun vadeli bakımını kolaylaştırmak.
+
+-   **Görev ID: AGENT-IMPRV-01 - Yapılandırmanın İyileştirilmesi (Hardcoded Değerler)**
+    -   **Durum:** ⬜ **Yapılacak**
+    -   **Problem Tanımı:** Kod içinde `ConsecutiveFailures` (ardışık hata) limiti (`2`) ve ses klonlama için izin verilen `allowedSpeakerDomains` gibi kritik değerler sabit olarak yazılmıştır. Bu, esnekliği azaltır.
+    -   **Kabul Kriterleri:**
+        -   [ ] `AGENT_MAX_CONSECUTIVE_FAILURES` adında yeni bir ortam değişkeni oluşturulmalı ve `StateFnListening` fonksiyonunda bu değer kullanılmalıdır.
+        -   [ ] `AGENT_ALLOWED_SPEAKER_DOMAINS` adında, virgülle ayrılmış domain listesi içeren (örn: "domain1.com,domain2.com") bir ortam değişkeni oluşturulmalı ve `isAllowedSpeakerURL` fonksiyonu bu listeyi kullanacak şekilde güncellenmelidir.
+        -   [ ] `.env.docker` dosyasına bu yeni değişkenler için varsayılan değerler eklenmelidir.
+
+-   **Görev ID: AGENT-REFACTOR-01 - Gözlemlenebilirliğin Artırılması (Context-Aware Logging)**
+    -   **Durum:** ⬜ **Yapılacak**
+    -   **Problem Tanımı:** `dialog` paketi içindeki loglamalarda `call_id` ve `trace_id` gibi bağlamsal bilgiler her seferinde manuel olarak logger'a eklenmekte, bu da kod tekrarına ve potansiyel unutkanlıklara yol açmaktadır.
+    -   **Kabul Kriterleri:**
+        -   [ ] `event_handler.go` içinde, bir olay işlenmeye başlandığında, `zerolog.Logger` nesnesi `call_id` ve `trace_id` ile zenginleştirilmelidir.
+        -   [ ] Bu zenginleştirilmiş logger, `context.Context` aracılığıyla `RunDialogLoop` ve diğer alt fonksiyonlara aktarılmalıdır.
+        -   [ ] Alt fonksiyonlar, logger'ı doğrudan context'ten almalı, böylece her log mesajı otomatik olarak doğru bağlama sahip olur.
+
+-   **Görev ID: AGENT-BUG-09 - Graceful Shutdown Kapsamının Genişletilmesi**
+    -   **Durum:** ⬜ **Yapılacak**
+    -   **Problem Tanımı:** Mevcut `Graceful Shutdown` mekanizması, `call.started` olayı ile başlatılan ve uzun sürebilen diyalog Go rutinlerinin tamamlanmasını beklemeden servisi sonlandırabilir.
+    -   **Kabul Kriterleri:**
+        -   [ ] Aktif diyalog Go rutinlerini takip etmek için merkezi bir `sync.WaitGroup` veya benzeri bir mekanizma oluşturulmalıdır.
+        -   [ ] Her yeni diyalog (`go dialog.RunDialogLoop...`) başladığında bu `WaitGroup`'e eklenmeli ve bittiğinde çıkarılmalıdır.
+        -   [ ] `main.go`'daki kapatma bloğu, RabbitMQ tüketicisine ek olarak bu diyalog `WaitGroup`'inin de tamamlanmasını beklemelidir. Bu, devam eden çağrıların aniden kesilmesini önleyecektir.
 
 ---
 
