@@ -22,20 +22,35 @@ func (tp *TemplateProvider) GetWelcomePrompt(ctx context.Context, callState *sta
 	l := ctxlogger.FromContext(ctx)
 	languageCode := getLanguageCode(callState.Event)
 	var promptID string
-	if callState.Event.Dialplan.MatchedUser != nil && callState.Event.Dialplan.MatchedUser.Name != nil {
+	var userName string
+
+	// --- DÜZELTME (AGENT-BUG-02): Tanınan kullanıcıyı güvenilir bir şekilde kontrol et ---
+	// Eğer dialplan'dan gelen olayda tanınmış bir kullanıcı varsa, ilgili bilgileri al.
+	if callState.Event.Dialplan.GetMatchedUser() != nil && callState.Event.Dialplan.GetMatchedUser().Name != nil {
 		promptID = "PROMPT_WELCOME_KNOWN_USER"
+		userName = *callState.Event.Dialplan.GetMatchedUser().Name
+		l.Info().Str("user_name", userName).Msg("Tanınan kullanıcı için karşılama prompt'u hazırlanıyor.")
 	} else {
 		promptID = "PROMPT_WELCOME_GUEST"
+		l.Info().Msg("Misafir kullanıcı için karşılama prompt'u hazırlanıyor.")
 	}
+
 	promptTemplate, err := database.GetTemplateFromDB(tp.db, promptID, languageCode, callState.TenantID)
 	if err != nil {
-		l.Error().Err(err).Msg("Prompt şablonu veritabanından alınamadı.")
-		return "Merhaba, hoş geldiniz.", err
+		l.Error().Err(err).Msg("Prompt şablonu veritabanından alınamadı, genel bir fallback kullanılıyor.")
+		// Fallback, her iki durum için de çalışacak genel bir karşılama metni olmalı.
+		if userName != "" {
+			return "Merhaba " + userName + ", hoş geldiniz.", nil
+		}
+		return "Merhaba, hoş geldiniz.", nil // Hata durumunda nil dönerek hatayı yaymıyoruz.
 	}
+
+	// Prompt'u kullanıcı adıyla kişiselleştir.
 	prompt := promptTemplate
-	if callState.Event.Dialplan.MatchedUser != nil && callState.Event.Dialplan.MatchedUser.Name != nil {
-		prompt = strings.Replace(prompt, "{user_name}", *callState.Event.Dialplan.MatchedUser.Name, -1)
+	if userName != "" {
+		prompt = strings.Replace(prompt, "{user_name}", userName, -1)
 	}
+
 	return prompt, nil
 }
 

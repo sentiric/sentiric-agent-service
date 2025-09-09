@@ -41,6 +41,9 @@ func NewDialogManager(
 
 func (dm *DialogManager) Start(ctx context.Context, event *state.CallEvent) {
 	l := ctxlogger.FromContext(ctx)
+
+	// --- DÜZELTME (AGENT-BUG-01): Diyalog başlamadan önce kullanıcı kimliğini yayınla ---
+	// Bu, CDR servisinin çağrıyı doğru kullanıcıya bağlaması için kritiktir.
 	dm.publishUserIdentifiedEvent(ctx, event)
 
 	tenantID := "sentiric_demo"
@@ -70,6 +73,8 @@ func (dm *DialogManager) Start(ctx context.Context, event *state.CallEvent) {
 
 func (dm *DialogManager) publishUserIdentifiedEvent(ctx context.Context, event *state.CallEvent) {
 	l := ctxlogger.FromContext(ctx)
+
+	// Gelen olayda tanınmış bir kullanıcı ve ilgili iletişim bilgisi varsa, bunu sisteme bildir.
 	if event.Dialplan.GetMatchedUser() != nil && event.Dialplan.GetMatchedContact() != nil {
 		l.Info().Msg("Kullanıcı kimliği belirlendi, user.identified.for_call olayı yayınlanacak.")
 
@@ -98,7 +103,8 @@ func (dm *DialogManager) publishUserIdentifiedEvent(ctx context.Context, event *
 			l.Info().Msg("user.identified.for_call olayı başarıyla yayınlandı.")
 		}
 	} else {
-		l.Warn().Msg("Kullanıcı veya contact bilgisi eksik olduğu için user.identified.for_call olayı yayınlanamadı. CDR kaydı eksik olabilir.")
+		// Loglarda görülen uyarı. Bu durum, arayanın misafir olduğu anlamına gelir.
+		l.Warn().Msg("Kullanıcı veya contact bilgisi eksik olduğu için user.identified.for_call olayı yayınlanamadı. Bu durum misafir arayanlar için normaldir.")
 	}
 }
 

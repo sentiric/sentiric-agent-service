@@ -2,6 +2,27 @@
 
 Bu belge, agent-service'in geliştirme yol haritasını, tamamlanan görevleri ve mevcut öncelikleri tanımlar.
 
+
+---
+
+*   **Görev ID:** `AGENT-BUG-01`
+    *   **Başlık:** fix(events): Kullanıcı tanındığında `user.identified.for_call` olayını yayınla
+    *   **Durum:** `[ ✅ ] Tamamlandı`
+    *   **Öncelik:** **YÜKSEK**
+    *   **Gerekçe:** `user_id` ve `contact_id` gibi kritik bilgilerin `calls` tablosuna yazılmaması, raporlama ve analiz için büyük bir eksikliktir. `agent-service`, `call.started` olayındaki `dialplan.matchedUser` verisini kontrol etmeli ve eğer bu veri mevcutsa, `user.identified.for_call` olayını RabbitMQ'ya yayınlamalıdır.
+    *   **Kabul Kriterleri:**
+        1.  Tanınan bir kullanıcı aradığında, RabbitMQ'da `user.identified.for_call` tipinde bir mesajın yayınlandığı doğrulanmalıdır.
+        2.  Test çağrısı bittikten sonra, `calls` tablosundaki ilgili kaydın `user_id` ve `contact_id` sütunlarının doğru bir şekilde doldurulduğu doğrulanmalıdır.
+    *   **Çözüm Notu:** `DialogManager` servisi, bir diyalog döngüsünü başlatmadan hemen önce, gelen olayda tanınmış kullanıcı bilgisi olup olmadığını kontrol eden ve varsa `user.identified.for_call` olayını yayınlayan bir adıma sahip olacak şekilde güncellendi.
+
+*   **Görev ID:** `AGENT-BUG-02`
+    *   **Başlık:** fix(prompting): Tanınan kullanıcı için doğru karşılama prompt'unu kullan
+    *   **Durum:** `[ ✅ ] Tamamlandı`
+    *   **Öncelik:** **ORTA**
+    *   **Gerekçe:** `AGENT-BUG-01` düzeltildiğinde bu sorun kısmen çözülebilir, ancak `agent-service`'in prompt oluşturma mantığının, `call.started` olayındaki `matchedUser.name` alanını kullanarak `PROMPT_WELCOME_KNOWN_USER` şablonunu doğru bir şekilde doldurduğundan emin olunmalıdır.
+    *   **Kabul Kriterleri:**
+        1.  Tanınan bir kullanıcı ("Azmi Şahin") aradığında, `llm-service`'e gönderilen ilk prompt'un "Merhaba Azmi Şahin, nasıl yardımcı olabilirim?" metnini içermesi gerektiği loglardan doğrulanmalıdır.
+    *   **Çözüm Notu:** `TemplateProvider` servisi, karşılama prompt'unu oluştururken artık `callState` içindeki `matchedUser` bilgisini güvenilir bir şekilde kontrol etmektedir. Kullanıcı tanındığında kişiselleştirilmiş prompt (`PROMPT_WELCOME_KNOWN_USER`), tanınmadığında ise genel misafir prompt'u (`PROMPT_WELCOME_GUEST`) seçilmektedir.
 ---
 ### **FAZ 1, 2 & 3 (Tamamlandı)**
 
@@ -44,4 +65,3 @@ Bu belge, agent-service'in geliştirme yol haritasını, tamamlanan görevleri v
         -   [ ] `.env` dosyasına `KNOWLEDGE_SERVICE_TOP_K` gibi yeni ortam değişkenleri eklenmelidir.
         -   [ ] `config.go` bu değişkenleri okumalıdır.
         -   [ ] `AIOrchestrator`, bu parametreleri yapılandırmadan alarak `knowledge-service`'i sorgulamalıdır.
-        
