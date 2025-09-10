@@ -98,9 +98,29 @@ func (a *App) buildDependencies(db *sql.DB, redisClient *redis.Client, rabbitCh 
 	mediaClient, _ := client.NewMediaServiceClient(a.Cfg)
 	userClient, _ := client.NewUserServiceClient(a.Cfg)
 	ttsClient, _ := client.NewTTSServiceClient(a.Cfg)
-	knowledgeClient, _ := client.NewKnowledgeServiceClient(a.Cfg)
 	llmClient := client.NewLlmClient(a.Cfg.LlmServiceURL, a.Log)
 	sttClient := client.NewSttClient(a.Cfg.SttServiceURL, a.Log)
+
+	// Dinamik olarak Knowledge Client'ı yapılandırmaya göre oluştur
+	var knowledgeClient service.KnowledgeClientInterface
+	if a.Cfg.KnowledgeServiceURL != "" {
+		a.Log.Info().Str("url", a.Cfg.KnowledgeServiceURL).Msg("HTTP Knowledge Service istemcisi kullanılıyor.")
+		knowledgeClient = client.NewKnowledgeClient(a.Cfg.KnowledgeServiceURL, a.Log)
+	} else if a.Cfg.KnowledgeServiceGrpcURL != "" {
+		a.Log.Info().Str("url", a.Cfg.KnowledgeServiceGrpcURL).Msg("gRPC Knowledge Service istemcisi kullanılıyor.")
+		grpcClient, err := client.NewKnowledgeServiceClient(a.Cfg)
+		if err != nil {
+			a.Log.Error().Err(err).Msg("gRPC Knowledge Service istemcisi oluşturulamadı. RAG devre dışı kalacak.")
+		} else {
+			// --- DÜZELTME BURADA ---
+			// Ham gRPC istemcisini doğrudan atamak yerine, onu adaptörümüzle sarmalıyoruz.
+			// Bu adaptör, arayüzü doğru bir şekilde uygular ve derleme hatasını çözer.
+			knowledgeClient = client.NewGrpcKnowledgeClientAdapter(grpcClient)
+			// --- DÜZELTME SONU ---
+		}
+	} else {
+		a.Log.Warn().Msg("Knowledge service için ne gRPC ne de HTTP URL'si tanımlanmamış. RAG devre dışı.")
+	}
 
 	stateManager := state.NewManager(redisClient)
 	publisher := queue.NewPublisher(rabbitCh, a.Log)

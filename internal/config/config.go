@@ -22,7 +22,9 @@ type Config struct {
 	TtsServiceGrpcURL           string
 	MediaServiceGrpcURL         string
 	UserServiceGrpcURL          string
-	KnowledgeServiceGrpcURL     string // YENİ: Knowledge Service URL'si
+	KnowledgeServiceGrpcURL     string // gRPC için
+	KnowledgeServiceURL         string // YENİ: HTTP için
+	KnowledgeServiceTopK        int    // YENİ: Yapılandırılabilir RAG parametresi
 	AgentServiceCertPath        string
 	AgentServiceKeyPath         string
 	GrpcTlsCaPath               string
@@ -57,6 +59,12 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("geçersiz AGENT_MAX_CONSECUTIVE_FAILURES: %w", err)
 	}
 
+	knowledgeTopKStr := getEnvWithDefault("KNOWLEDGE_SERVICE_TOP_K", "3")
+	knowledgeTopK, err := strconv.Atoi(knowledgeTopKStr)
+	if err != nil {
+		return nil, fmt.Errorf("geçersiz KNOWLEDGE_SERVICE_TOP_K: %w", err)
+	}
+
 	cfg := &Config{
 		Env:                         getEnvWithDefault("ENV", "production"),
 		PostgresURL:                 getEnv("POSTGRES_URL"),
@@ -71,7 +79,9 @@ func Load() (*Config, error) {
 		TtsServiceGrpcURL:           getEnv("TTS_GATEWAY_URL"),
 		MediaServiceGrpcURL:         getEnv("MEDIA_SERVICE_GRPC_URL"),
 		UserServiceGrpcURL:          getEnv("USER_SERVICE_GRPC_URL"),
-		KnowledgeServiceGrpcURL:     getEnv("KNOWLEDGE_SERVICE_GRPC_URL"), // YENİ
+		KnowledgeServiceGrpcURL:     getEnv("KNOWLEDGE_SERVICE_GRPC_URL"),
+		KnowledgeServiceURL:         getEnv("KNOWLEDGE_SERVICE_URL"),
+		KnowledgeServiceTopK:        knowledgeTopK,
 		AgentServiceCertPath:        getEnv("AGENT_SERVICE_CERT_PATH"),
 		AgentServiceKeyPath:         getEnv("AGENT_SERVICE_KEY_PATH"),
 		GrpcTlsCaPath:               getEnv("GRPC_TLS_CA_PATH"),

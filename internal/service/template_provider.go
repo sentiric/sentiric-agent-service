@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"strings"
 
+	"github.com/sentiric/sentiric-agent-service/internal/constants"
 	"github.com/sentiric/sentiric-agent-service/internal/ctxlogger"
 	"github.com/sentiric/sentiric-agent-service/internal/database"
 	"github.com/sentiric/sentiric-agent-service/internal/state"
@@ -21,31 +22,27 @@ func NewTemplateProvider(db *sql.DB) *TemplateProvider {
 func (tp *TemplateProvider) GetWelcomePrompt(ctx context.Context, callState *state.CallState) (string, error) {
 	l := ctxlogger.FromContext(ctx)
 	languageCode := getLanguageCode(callState.Event)
-	var promptID string
+	var promptID constants.TemplateID
 	var userName string
 
-	// --- DÜZELTME (AGENT-BUG-02): Tanınan kullanıcıyı güvenilir bir şekilde kontrol et ---
-	// Eğer dialplan'dan gelen olayda tanınmış bir kullanıcı varsa, ilgili bilgileri al.
 	if callState.Event.Dialplan.GetMatchedUser() != nil && callState.Event.Dialplan.GetMatchedUser().Name != nil {
-		promptID = "PROMPT_WELCOME_KNOWN_USER"
+		promptID = constants.PromptWelcomeKnownUser
 		userName = *callState.Event.Dialplan.GetMatchedUser().Name
 		l.Info().Str("user_name", userName).Msg("Tanınan kullanıcı için karşılama prompt'u hazırlanıyor.")
 	} else {
-		promptID = "PROMPT_WELCOME_GUEST"
+		promptID = constants.PromptWelcomeGuest
 		l.Info().Msg("Misafir kullanıcı için karşılama prompt'u hazırlanıyor.")
 	}
 
-	promptTemplate, err := database.GetTemplateFromDB(tp.db, promptID, languageCode, callState.TenantID)
+	promptTemplate, err := database.GetTemplateFromDB(tp.db, string(promptID), languageCode, callState.TenantID)
 	if err != nil {
 		l.Error().Err(err).Msg("Prompt şablonu veritabanından alınamadı, genel bir fallback kullanılıyor.")
-		// Fallback, her iki durum için de çalışacak genel bir karşılama metni olmalı.
 		if userName != "" {
 			return "Merhaba " + userName + ", hoş geldiniz.", nil
 		}
-		return "Merhaba, hoş geldiniz.", nil // Hata durumunda nil dönerek hatayı yaymıyoruz.
+		return "Merhaba, hoş geldiniz.", nil
 	}
 
-	// Prompt'u kullanıcı adıyla kişiselleştir.
 	prompt := promptTemplate
 	if userName != "" {
 		prompt = strings.Replace(prompt, "{user_name}", userName, -1)
@@ -62,7 +59,7 @@ func (tp *TemplateProvider) BuildLlmPrompt(ctx context.Context, callState *state
 	var err error
 
 	if ragContext != "" {
-		systemPrompt, err = database.GetTemplateFromDB(tp.db, "PROMPT_SYSTEM_RAG", languageCode, callState.TenantID)
+		systemPrompt, err = database.GetTemplateFromDB(tp.db, string(constants.PromptSystemRAG), languageCode, callState.TenantID)
 		if err != nil {
 			l.Error().Err(err).Msg("RAG sistem prompt'u alınamadı, fallback kullanılıyor.")
 			systemPrompt = "Sana sağlanan İlgili Bilgiler'i kullanarak kullanıcının sorusuna cevap ver. Eğer bilgi yoksa, olmadığını belirt.\n\n{context}\n\nKullanıcının Sorusu: {query}"
@@ -80,7 +77,7 @@ func (tp *TemplateProvider) BuildLlmPrompt(ctx context.Context, callState *state
 		return systemPrompt, nil
 
 	} else {
-		systemPrompt, err = database.GetTemplateFromDB(tp.db, "PROMPT_SYSTEM_DEFAULT", languageCode, callState.TenantID)
+		systemPrompt, err = database.GetTemplateFromDB(tp.db, string(constants.PromptSystemDefault), languageCode, callState.TenantID)
 		if err != nil {
 			l.Error().Err(err).Msg("Sistem prompt'u alınamadı, fallback kullanılıyor.")
 			systemPrompt = "Aşağıdaki diyaloğa devam et. Cevapların kısa olsun."

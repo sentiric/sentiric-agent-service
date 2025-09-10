@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sentiric/sentiric-agent-service/internal/config"
+	"github.com/sentiric/sentiric-agent-service/internal/constants"
 	"github.com/sentiric/sentiric-agent-service/internal/ctxlogger"
 	"github.com/sentiric/sentiric-agent-service/internal/queue"
 	"github.com/sentiric/sentiric-agent-service/internal/state"
@@ -42,8 +43,7 @@ func NewDialogManager(
 func (dm *DialogManager) Start(ctx context.Context, event *state.CallEvent) {
 	l := ctxlogger.FromContext(ctx)
 
-	// --- DÜZELTME (AGENT-BUG-01): Diyalog başlamadan önce kullanıcı kimliğini yayınla ---
-	// Bu, CDR servisinin çağrıyı doğru kullanıcıya bağlaması için kritiktir.
+	// Diyalog başlamadan önce kullanıcı kimliğini yayınla
 	dm.publishUserIdentifiedEvent(ctx, event)
 
 	tenantID := "sentiric_demo"
@@ -57,7 +57,7 @@ func (dm *DialogManager) Start(ctx context.Context, event *state.CallEvent) {
 		CallID:              event.CallID,
 		TraceID:             event.TraceID,
 		TenantID:            tenantID,
-		CurrentState:        state.StateWelcoming,
+		CurrentState:        constants.StateWelcoming,
 		Event:               event,
 		Conversation:        []map[string]string{},
 		ConsecutiveFailures: 0,
@@ -74,7 +74,6 @@ func (dm *DialogManager) Start(ctx context.Context, event *state.CallEvent) {
 func (dm *DialogManager) publishUserIdentifiedEvent(ctx context.Context, event *state.CallEvent) {
 	l := ctxlogger.FromContext(ctx)
 
-	// Gelen olayda tanınmış bir kullanıcı ve ilgili iletişim bilgisi varsa, bunu sisteme bildir.
 	if event.Dialplan.GetMatchedUser() != nil && event.Dialplan.GetMatchedContact() != nil {
 		l.Info().Msg("Kullanıcı kimliği belirlendi, user.identified.for_call olayı yayınlanacak.")
 
@@ -87,7 +86,7 @@ func (dm *DialogManager) publishUserIdentifiedEvent(ctx context.Context, event *
 			TenantID  string    `json:"tenantId"`
 			Timestamp time.Time `json:"timestamp"`
 		}{
-			EventType: "user.identified.for_call",
+			EventType: string(constants.EventTypeUserIdentifiedForCall),
 			TraceID:   event.TraceID,
 			CallID:    event.CallID,
 			UserID:    event.Dialplan.GetMatchedUser().GetId(),
@@ -96,14 +95,13 @@ func (dm *DialogManager) publishUserIdentifiedEvent(ctx context.Context, event *
 			Timestamp: time.Now().UTC(),
 		}
 
-		err := dm.publisher.PublishJSON(ctx, "user.identified.for_call", userIdentifiedPayload)
+		err := dm.publisher.PublishJSON(ctx, string(constants.EventTypeUserIdentifiedForCall), userIdentifiedPayload)
 		if err != nil {
 			l.Error().Err(err).Msg("user.identified.for_call olayı yayınlanamadı.")
 		} else {
 			l.Info().Msg("user.identified.for_call olayı başarıyla yayınlandı.")
 		}
 	} else {
-		// Loglarda görülen uyarı. Bu durum, arayanın misafir olduğu anlamına gelir.
 		l.Warn().Msg("Kullanıcı veya contact bilgisi eksik olduğu için user.identified.for_call olayı yayınlanamadı. Bu durum misafir arayanlar için normaldir.")
 	}
 }
@@ -121,7 +119,7 @@ func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.Cal
 			return
 		}
 
-		if finalState.CurrentState == state.StateTerminated {
+		if finalState.CurrentState == constants.StateTerminated {
 			l.Info().Msg("Diyalog sonlandı, sip-signaling'e çağrıyı kapatma isteği gönderiliyor.")
 			type TerminationRequest struct {
 				EventType string    `json:"eventType"`
@@ -129,11 +127,11 @@ func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.Cal
 				Timestamp time.Time `json:"timestamp"`
 			}
 			terminationReq := TerminationRequest{
-				EventType: "call.terminate.request",
+				EventType: string(constants.EventTypeCallTerminateRequest),
 				CallID:    currentCallID,
 				Timestamp: time.Now().UTC(),
 			}
-			err := dm.publisher.PublishJSON(context.Background(), "call.terminate.request", terminationReq)
+			err := dm.publisher.PublishJSON(context.Background(), string(constants.EventTypeCallTerminateRequest), terminationReq)
 			if err != nil {
 				l.Error().Err(err).Msg("Çağrı sonlandırma isteği yayınlanamadı.")
 			}
@@ -141,21 +139,21 @@ func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.Cal
 	}()
 
 	actionName := initialSt.Event.Dialplan.Action.Action
-	var initialAnnouncementID string
+	var initialAnnouncementID constants.AnnouncementID
 	if actionName == "PROCESS_GUEST_CALL" {
-		initialAnnouncementID = "ANNOUNCE_GUEST_WELCOME"
+		initialAnnouncementID = constants.AnnounceGuestWelcome
 	} else {
-		initialAnnouncementID = "ANNOUNCE_SYSTEM_CONNECTING"
+		initialAnnouncementID = constants.AnnounceSystemConnecting
 	}
 	dm.mediaManager.PlayAnnouncement(ctx, initialSt, initialAnnouncementID)
 	dm.mediaManager.StartRecording(ctx, initialSt)
 
 	type DialogFunc func(context.Context, *state.CallState) (*state.CallState, error)
-	stateMap := map[state.DialogState]DialogFunc{
-		state.StateWelcoming: dm.stateFnWelcoming,
-		state.StateListening: dm.stateFnListening,
-		state.StateThinking:  dm.stateFnThinking,
-		state.StateSpeaking:  dm.stateFnSpeaking,
+	stateMap := map[constants.DialogState]DialogFunc{
+		constants.StateWelcoming: dm.stateFnWelcoming,
+		constants.StateListening: dm.stateFnListening,
+		constants.StateThinking:  dm.stateFnThinking,
+		constants.StateSpeaking:  dm.stateFnSpeaking,
 	}
 
 	for {
@@ -172,7 +170,7 @@ func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.Cal
 			return
 		}
 
-		if st.CurrentState == state.StateEnded || st.CurrentState == state.StateTerminated {
+		if st.CurrentState == constants.StateEnded || st.CurrentState == constants.StateTerminated {
 			l.Info().Str("final_state", string(st.CurrentState)).Msg("Diyalog döngüsü sonlandırıldı.")
 			return
 		}
@@ -180,7 +178,7 @@ func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.Cal
 		handlerFunc, ok := stateMap[st.CurrentState]
 		if !ok {
 			l.Error().Str("state", string(st.CurrentState)).Msg("Bilinmeyen durum, döngü sonlandırılıyor.")
-			st.CurrentState = state.StateTerminated
+			st.CurrentState = constants.StateTerminated
 		} else {
 			l.Info().Str("state", string(st.CurrentState)).Msg("Diyalog döngüsü adımı işleniyor.")
 			st, err = handlerFunc(ctx, st)
@@ -189,11 +187,11 @@ func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.Cal
 		if err != nil {
 			if err == context.Canceled || strings.Contains(err.Error(), "context canceled") {
 				l.Warn().Msg("İşlem context iptali nedeniyle durduruldu. Döngü sonlanıyor.")
-				st.CurrentState = state.StateEnded
+				st.CurrentState = constants.StateEnded
 			} else {
 				l.Error().Err(err).Msg("Durum işlenirken hata oluştu, sonlandırma deneniyor.")
-				dm.mediaManager.PlayAnnouncement(ctx, st, "ANNOUNCE_SYSTEM_ERROR")
-				st.CurrentState = state.StateTerminated
+				dm.mediaManager.PlayAnnouncement(ctx, st, constants.AnnounceSystemError)
+				st.CurrentState = constants.StateTerminated
 			}
 		}
 
@@ -227,7 +225,7 @@ func (dm *DialogManager) stateFnWelcoming(ctx context.Context, st *state.CallSta
 	}
 	dm.mediaManager.PlayAudio(ctx, st, audioURI)
 
-	st.CurrentState = state.StateListening
+	st.CurrentState = constants.StateListening
 	return st, nil
 }
 
@@ -235,24 +233,24 @@ func (dm *DialogManager) stateFnListening(ctx context.Context, st *state.CallSta
 	l := ctxlogger.FromContext(ctx)
 	if st.ConsecutiveFailures >= dm.cfg.AgentMaxConsecutiveFailures {
 		l.Warn().Int("failures", st.ConsecutiveFailures).Int("max_failures", dm.cfg.AgentMaxConsecutiveFailures).Msg("Art arda çok fazla anlama hatası. Çağrı sonlandırılıyor.")
-		dm.mediaManager.PlayAnnouncement(ctx, st, "ANNOUNCE_SYSTEM_MAX_FAILURES")
-		st.CurrentState = state.StateTerminated
+		dm.mediaManager.PlayAnnouncement(ctx, st, constants.AnnounceSystemMaxFailures)
+		st.CurrentState = constants.StateTerminated
 		return st, nil
 	}
 
 	l.Info().Msg("Kullanıcıdan ses bekleniyor (gerçek zamanlı akış modu)...")
 	transcriptionResult, err := dm.aiOrchestrator.StreamAndTranscribe(ctx, st)
 	if err != nil {
-		dm.mediaManager.PlayAnnouncement(ctx, st, "ANNOUNCE_SYSTEM_ERROR")
+		dm.mediaManager.PlayAnnouncement(ctx, st, constants.AnnounceSystemError)
 		st.ConsecutiveFailures++
-		st.CurrentState = state.StateListening
+		st.CurrentState = constants.StateListening
 		return st, nil
 	}
 
 	if transcriptionResult.IsNoSpeechTimeout {
 		l.Warn().Msg("STT'den ses algılanmadı (timeout). Kullanıcıya bir şans daha veriliyor.")
-		dm.mediaManager.PlayAnnouncement(ctx, st, "ANNOUNCE_SYSTEM_CANT_HEAR_YOU")
-		st.CurrentState = state.StateListening
+		dm.mediaManager.PlayAnnouncement(ctx, st, constants.AnnounceSystemCantHearYou)
+		st.CurrentState = constants.StateListening
 		return st, nil
 	}
 
@@ -261,15 +259,15 @@ func (dm *DialogManager) stateFnListening(ctx context.Context, st *state.CallSta
 
 	if isMeaningless {
 		l.Warn().Str("stt_result", cleanedText).Msg("STT anlamsız veya çok kısa metin döndürdü, 'anlayamadım' anonsu çalınacak.")
-		dm.mediaManager.PlayAnnouncement(ctx, st, "ANNOUNCE_SYSTEM_CANT_UNDERSTAND")
+		dm.mediaManager.PlayAnnouncement(ctx, st, constants.AnnounceSystemCantUnderstand)
 		st.ConsecutiveFailures++
-		st.CurrentState = state.StateListening
+		st.CurrentState = constants.StateListening
 		return st, nil
 	}
 
 	st.ConsecutiveFailures = 0
 	st.Conversation = append(st.Conversation, map[string]string{"user": cleanedText})
-	st.CurrentState = state.StateThinking
+	st.CurrentState = constants.StateThinking
 	return st, nil
 }
 
@@ -304,7 +302,7 @@ func (dm *DialogManager) stateFnThinking(ctx context.Context, st *state.CallStat
 	}
 
 	st.Conversation = append(st.Conversation, map[string]string{"ai": llmRespText})
-	st.CurrentState = state.StateSpeaking
+	st.CurrentState = constants.StateSpeaking
 	return st, nil
 }
 
@@ -320,6 +318,6 @@ func (dm *DialogManager) stateFnSpeaking(ctx context.Context, st *state.CallStat
 	dm.mediaManager.PlayAudio(ctx, st, audioURI)
 
 	time.Sleep(250 * time.Millisecond)
-	st.CurrentState = state.StateListening
+	st.CurrentState = constants.StateListening
 	return st, nil
 }

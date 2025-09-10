@@ -23,6 +23,12 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// KnowledgeClientInterface, hem gRPC hem de HTTP istemcilerinin uygulayacağı arayüzü tanımlar.
+// Bu, AIOrchestrator'ın hangi protokolün kullanıldığını bilmeden çalışmasını sağlar.
+type KnowledgeClientInterface interface {
+	Query(ctx context.Context, req *knowledgev1.QueryRequest) (*knowledgev1.QueryResponse, error)
+}
+
 type TranscriptionResult struct {
 	Text              string
 	IsNoSpeechTimeout bool
@@ -34,7 +40,7 @@ type AIOrchestrator struct {
 	sttClient       *client.SttClient
 	ttsClient       ttsv1.TextToSpeechServiceClient
 	mediaClient     mediav1.MediaServiceClient
-	knowledgeClient knowledgev1.KnowledgeServiceClient
+	knowledgeClient KnowledgeClientInterface
 }
 
 func NewAIOrchestrator(
@@ -43,7 +49,7 @@ func NewAIOrchestrator(
 	sttC *client.SttClient,
 	ttsC ttsv1.TextToSpeechServiceClient,
 	mediaC mediav1.MediaServiceClient,
-	knowC knowledgev1.KnowledgeServiceClient,
+	knowC KnowledgeClientInterface,
 ) *AIOrchestrator {
 	return &AIOrchestrator{
 		cfg:             cfg,
@@ -57,20 +63,21 @@ func NewAIOrchestrator(
 
 func (a *AIOrchestrator) QueryKnowledgeBase(ctx context.Context, query string, callState *state.CallState) (string, error) {
 	l := ctxlogger.FromContext(ctx)
-	l.Info().Str("query", query).Msg("Knowledge base sorgulanıyor...")
 
 	if a.knowledgeClient == nil {
-		l.Warn().Msg("Knowledge service istemcisi yapılandırılmamış, sorgulama atlanıyor.")
+		l.Warn().Msg("Knowledge service istemcisi yapılandırılmamış, RAG sorgulaması atlanıyor.")
 		return "", nil
 	}
+
+	l.Info().Str("query", query).Msg("Knowledge base sorgulanıyor...")
 
 	req := &knowledgev1.QueryRequest{
 		TenantId: callState.TenantID,
 		Query:    query,
-		TopK:     3,
+		TopK:     int32(a.cfg.KnowledgeServiceTopK),
 	}
 
-	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	queryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	res, err := a.knowledgeClient.Query(queryCtx, req)

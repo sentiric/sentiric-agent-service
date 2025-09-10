@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/sentiric/sentiric-agent-service/internal/constants"
 	"github.com/sentiric/sentiric-agent-service/internal/ctxlogger"
 	"github.com/sentiric/sentiric-agent-service/internal/database"
 	"github.com/sentiric/sentiric-agent-service/internal/state"
@@ -76,15 +77,15 @@ func (m *MediaManager) PlayAudio(ctx context.Context, callState *state.CallState
 }
 
 // PlayAnnouncement, veritabanından anons yolunu alıp çalar.
-func (m *MediaManager) PlayAnnouncement(ctx context.Context, callState *state.CallState, announcementID string) {
+func (m *MediaManager) PlayAnnouncement(ctx context.Context, callState *state.CallState, announcementID constants.AnnouncementID) {
 	l := ctxlogger.FromContext(ctx)
 	languageCode := getLanguageCode(callState.Event)
-	audioPath, err := database.GetAnnouncementPathFromDB(m.db, announcementID, callState.TenantID, languageCode)
+	audioPath, err := database.GetAnnouncementPathFromDB(m.db, string(announcementID), callState.TenantID, languageCode)
 	if err != nil {
-		l.Error().Err(err).Str("announcement_id", announcementID).Msg("Anons yolu alınamadı, fallback deneniyor")
-		audioPath, err = database.GetAnnouncementPathFromDB(m.db, announcementID, "system", "en")
+		l.Error().Err(err).Str("announcement_id", string(announcementID)).Msg("Anons yolu alınamadı, fallback deneniyor")
+		audioPath, err = database.GetAnnouncementPathFromDB(m.db, string(announcementID), "system", "en")
 		if err != nil {
-			l.Error().Err(err).Str("announcement_id", announcementID).Msg("KRİTİK HATA: Sistem fallback anonsu dahi yüklenemedi.")
+			l.Error().Err(err).Str("announcement_id", string(announcementID)).Msg("KRİTİK HATA: Sistem fallback anonsu dahi yüklenemedi.")
 			return
 		}
 	}
@@ -96,7 +97,8 @@ func (m *MediaManager) PlayAnnouncement(ctx context.Context, callState *state.Ca
 func (m *MediaManager) StartRecording(ctx context.Context, callState *state.CallState) {
 	l := ctxlogger.FromContext(ctx)
 	recordingTenantID := callState.TenantID
-	recordingURI := fmt.Sprintf("s3://sentiric-recordings/%s/%s.wav", recordingTenantID, callState.CallID)
+	// MEDIA_SERVICE_RECORD_BASE_PATH="/sentiric-media-record"
+	recordingURI := fmt.Sprintf("s3://sentiric-media-record/%s/%s.wav", recordingTenantID, callState.CallID)
 
 	l.Info().Str("uri", recordingURI).Msg("Çağrı kaydı başlatılıyor...")
 	startRecCtx, startRecCancel := context.WithTimeout(metadata.AppendToOutgoingContext(ctx, "x-trace-id", callState.TraceID), 10*time.Second)

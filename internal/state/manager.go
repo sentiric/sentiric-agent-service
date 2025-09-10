@@ -7,18 +7,8 @@ import (
 	"time"
 
 	"github.com/go-redis/redis/v8"
+	"github.com/sentiric/sentiric-agent-service/internal/constants"
 	dialplanv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/dialplan/v1"
-)
-
-type DialogState string
-
-const (
-	StateWelcoming  DialogState = "WELCOMING"
-	StateListening  DialogState = "LISTENING"
-	StateThinking   DialogState = "THINKING"
-	StateSpeaking   DialogState = "SPEAKING"
-	StateEnded      DialogState = "ENDED"
-	StateTerminated DialogState = "TERMINATED"
 )
 
 type CallEvent struct {
@@ -34,7 +24,7 @@ type CallState struct {
 	CallID              string
 	TraceID             string
 	TenantID            string
-	CurrentState        DialogState
+	CurrentState        constants.DialogState
 	Event               *CallEvent
 	Conversation        []map[string]string
 	ConsecutiveFailures int
@@ -48,12 +38,9 @@ func NewManager(rdb *redis.Client) *Manager {
 	return &Manager{rdb: rdb}
 }
 
-// --- YENİ: RedisClient için public getter ---
 func (m *Manager) RedisClient() *redis.Client {
 	return m.rdb
 }
-
-// --- DEĞİŞİKLİK SONU ---
 
 func (m *Manager) Get(ctx context.Context, callID string) (*CallState, error) {
 	key := "callstate:" + callID

@@ -6,6 +6,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
+	"github.com/sentiric/sentiric-agent-service/internal/constants"
 	"github.com/sentiric/sentiric-agent-service/internal/ctxlogger"
 	"github.com/sentiric/sentiric-agent-service/internal/state"
 )
@@ -57,15 +58,15 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 
 	l.Info().Msg("Olay alındı")
 
-	switch genericEvent.EventType {
-	case "call.started":
+	switch constants.EventType(genericEvent.EventType) {
+	case constants.EventTypeCallStarted:
 		var event state.CallEvent
 		if err := json.Unmarshal(body, &event); err == nil {
 			go h.callHandler.HandleCallStarted(ctx, &event)
 		} else {
 			l.Error().Err(err).Msg("call.started olayı parse edilemedi.")
 		}
-	case "call.ended":
+	case constants.EventTypeCallEnded:
 		var event state.CallEvent
 		if err := json.Unmarshal(body, &event); err == nil {
 			go h.callHandler.HandleCallEnded(ctx, &event)

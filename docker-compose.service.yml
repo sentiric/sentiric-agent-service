@@ -178,8 +178,13 @@ services:
   knowledge-service:
     build: { context: ../sentiric-knowledge-service }
     env_file: ["${ENV_FILE_PATH}"]
-    ports: ["${KNOWLEDGE_SERVICE_PORT:-50055}:50055"]
+    ports: 
+      - "${KNOWLEDGE_SERVICE_PORT:-5055}:5055"
+      - "${KNOWLEDGE_SERVICE_GRPC_PORT:-50055}:50055"
     volumes: ["./data:/app/data", "stt-model-cache:/root/.cache/torch"]
     networks: [sentiric-net]
     restart: always
-    depends_on: { postgres: { condition: service_healthy }, qdrant: { condition: service_started } }
+    depends_on: { 
+      postgres: { condition: service_healthy }, 
+      qdrant: { condition: service_started }
+    }
