@@ -1,0 +1,46 @@
+# docker-compose.dev.yml
+# Service Geliştirme ortamı
+
+networks:
+  sentiric-net:
+    name: "${NETWORK_NAME:-sentiric-net}"
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${NETWORK_SUBNET}
+          gateway: ${NETWORK_GATEWAY}
+  
+# volumes:
+  # [infra]: Temel Altyapı (Infrastructure Layer)
+  # --------------------------------------------------
+
+services:
+  # [core-service]: Çekirdek Servisler ve Kütüphaneler (Core Layer)
+  # -------------------------------------------------- 
+  agent-service:
+    build: { context: ../sentiric-agent-service }
+    env_file: ["${ENV_FILE_PATH}"]
+    volumes: 
+      - "${CONFIG_REPO_PATH}:/sentiric-config:ro"
+      - "${CERTIFICATES_REPO_PATH}:/sentiric-certificates:ro"
+      - "${ASSETS_REPO_PATH}:/sentiric-assets:ro"
+    ports: 
+      - "12030:${AGENT_SERVICE_HTTP_PORT:-12030}"
+      - "12031:${AGENT_SERVICE_GRPC_PORT:-12031}"
+      - "12032:${AGENT_SERVICE_METRICS_PORT:-12032}"          
+    networks:
+      sentiric-net:
+        ipv4_address: ${AGENT_SERVICE_IPV4_ADDRESS}
+    dns:
+      - ${PRIMARY_DNS:-8.8.8.8}
+      - ${SECONDARY_DNS:-1.1.1.1}        
+    restart: always
+    # depends_on:
+    #   postgres: { condition: service_healthy }
+    #   rabbitmq: { condition: service_healthy }
+    #   redis: { condition: service_healthy }
+    #   media-service: { condition: service_healthy }
+    #   user-service: { condition: service_healthy }
+    #   tts-gateway: { condition: service_healthy }
+    #   stt-service: { condition: service_healthy }
+    #   llm-service: { condition: service_healthy }  

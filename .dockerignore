@@ -24,9 +24,14 @@ Thumbs.db
 /pkg/
 /bin/
 
-# Dockerfile dışında kalan docker artefact dosyaları
+# Ortam dosyaları
+.env
+.env.*
+
+# Docker compose 
 docker-compose.yml
-docker-compose.override.yml
+docker-compose.*.yml
+
 
 # Test coverage ve benzeri geçici dosyalar
 *.log

@@ -25,6 +25,35 @@ Bu belge, agent-service'in geliştirme yol haritasını, tamamlanan görevleri v
     *   **Öncelik:** ORTA
     *   **Çözüm Notu:** `knowledge-service` sorgusunda kullanılan `top_k` parametresi artık kod içinde sabit değildir. `.env` dosyasından `KNOWLEDGE_SERVICE_TOP_K` ortam değişkeni ile yapılandırılabilmektedir. Bu, RAG performansını kod değişikliği yapmadan ayarlama esnekliği sağlar.
 
+### **FAZ 6.3: KRİTİK HATA DÜZELTME VE REGRESYON TESTİ (Mevcut Odak)**
+
+**Amaç:** Canlı testlerde tespit edilen ve platformun temel diyalog akışını bozan kritik veri bütünlüğü sorunlarını gidermek.
+
+-   **Görev ID: AGENT-BUG-03 - fix(events): Tanınan Kullanıcı Kimliği Olayı Regresyonunu Düzelt**
+    -   **Durum:** ⬜ **Yapılacak (Öncelik 1 - KRİTİK)**
+    -   **Bağımlılık:** `sip-signaling-service`'teki `SIG-FEAT-01` görevinin tamamlanmış olması.
+    -   **Açıklama:** `call.started` olayı artık zenginleştirilmiş `dialplan` verisiyle geliyor. `DialogManager` servisi, diyalog döngüsünü başlatmadan hemen önce bu veriyi kontrol etmeli ve eğer `matchedUser` bilgisi varsa, `user.identified.for_call` olayını RabbitMQ'ya kendisi yayınlamalıdır. Bu, `cdr-service`'in çağrıyı doğru kullanıcıyla eşleştirmesini sağlar.
+    -   **Kabul Kriterleri:**
+        -   [ ] `DialogManager`'ın `Start` metoduna `publishUserIdentifiedEvent` adında yeni bir özel fonksiyon eklenmelidir.
+        -   [ ] Bu fonksiyon, gelen `call.started` olayındaki `dialplan.matchedUser` ve `dialplan.matchedContact` alanlarının varlığını kontrol etmelidir.
+        -   [ ] Eğer bu alanlar doluysa, `user.identified.for_call` olayını doğru `userID`, `contactID` ve `tenantID` ile RabbitMQ'ya yayınlamalıdır.
+        -   [ ] Yapılan test aramasında, `cdr-service` loglarında bu olayın alındığı ve işlendiği görülmelidir.
+
+-   **Görev ID: AGENT-BUG-04 - fix(prompting): Kişiselleştirilmiş Karşılama Regresyonunu Düzelt**
+    -   **Durum:** ⬜ **Yapılacak (Öncelik 2 - YÜKSEK)**
+    -   **Bağımlılık:** `AGENT-BUG-03`'ün tamamlanmış olması.
+    -   **Açıklama:** `agent-service`'in kullanıcıyı "misafir" olarak görme sorunu çözüldükten sonra, `TemplateProvider` servisinin, karşılama prompt'unu oluştururken `callState` içindeki `event.dialplan.matchedUser` bilgisini doğru bir şekilde kullandığından emin olunmalıdır.
+    -   **Kabul Kriterleri:**
+        -   [ ] Tanınan bir kullanıcı aradığında, `agent-service` loglarında "Tanınan kullanıcı için karşılama prompt'u hazırlanıyor." mesajı ve kullanıcının adının geçtiği görülmelidir.
+        -   [ ] `llm-service`'e gönderilen prompt'un `PROMPT_WELCOME_KNOWN_USER` şablonundan türetildiği doğrulanmalıdır.
+
+-   **Görev ID: AGENT-CLEANUP-01 - refactor(events): Kullanılmayan `call.answered` Olay İşleyicisini Kaldır**
+    -   **Durum:** ⬜ **Yapılacak (Öncelik 3)**
+    -   **Bağımlılık:** `sip-signaling-service`'teki `SIG-CLEANUP-01` görevinin tamamlanmış olması.
+    -   **Açıklama:** `sip-signaling-service` artık `call.answered` olayını yayınlamadığı için, `agent-service`'in `event_handler.go` dosyasındaki bu olayı dinleyen `case` bloğu gereksiz hale gelmiştir. Kod temizliği ve mimari tutarlılık için bu kod kaldırılmalıdır.
+    -   **Kabul Kriterleri:**
+        -   [ ] `internal/handler/event_handler.go` dosyasındaki `HandleRabbitMQMessage` fonksiyonundan `case constants.EventTypeCallAnswered:` bloğu tamamen kaldırılmalıdır.
+        
 ---
 ### **GELECEK FAZLAR: Gelişmiş Diyalog Yönetimi**
 
