@@ -32,10 +32,11 @@ FROM debian:bookworm-slim
 
 # --- Çalışma zamanı sistem bağımlılıkları ---
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    procps \
     netcat-openbsd \
     curl \
     ca-certificates \
-    && rm -rf /var/lib/apt/lists/* 
+    && rm -rf /var/lib/apt/lists/*
 
 # GÜVENLİK: Root olmayan bir kullanıcı oluştur
 # DÜZELTME: Debian tabanlı sistemler için doğru komutlar kullanıldı.
