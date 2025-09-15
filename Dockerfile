@@ -30,8 +30,12 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # DEĞİŞİKLİK: Alpine yerine Debian Slim kullanarak daha geniş sertifika ve kütüphane desteği sağlıyoruz.
 FROM debian:bookworm-slim
 
-# TLS doğrulaması için ca-certificates gerekli
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+# --- Çalışma zamanı sistem bağımlılıkları ---
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    netcat-openbsd \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* 
 
 # GÜVENLİK: Root olmayan bir kullanıcı oluştur
 # DÜZELTME: Debian tabanlı sistemler için doğru komutlar kullanıldı.
