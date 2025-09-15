@@ -22,15 +22,20 @@ type SttTranscribeResponse struct {
 
 type SttClient struct {
 	httpClient *http.Client
-	baseURL    string
+	baseURL    string // Bu artık "http://stt-service:15010" gibi tam bir URL olacak
 	log        zerolog.Logger
 }
 
-func NewSttClient(baseURL string, log zerolog.Logger) *SttClient {
+func NewSttClient(rawBaseURL string, log zerolog.Logger) *SttClient {
+	finalBaseURL := rawBaseURL
+	// Eğer URL'de şema yoksa, varsayılan olarak http ekle.
+	if !strings.HasPrefix(rawBaseURL, "http://") && !strings.HasPrefix(rawBaseURL, "https://") {
+		finalBaseURL = "http://" + rawBaseURL
+	}
+
 	return &SttClient{
-		// Genel timeout'u kaldırıyoruz
 		httpClient: &http.Client{},
-		baseURL:    baseURL,
+		baseURL:    finalBaseURL, // Düzeltilmiş URL'i kullan
 		log:        log.With().Str("client", "stt").Logger(),
 	}
 }

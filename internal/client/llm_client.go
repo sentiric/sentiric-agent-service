@@ -25,24 +25,30 @@ type LlmGenerateResponse struct {
 
 type LlmClient struct {
 	httpClient *http.Client
-	baseURL    string
+	baseURL    string // Bu artık "http://llm-service:16010" gibi tam bir URL olacak
 	log        zerolog.Logger
 }
 
-func NewLlmClient(baseURL string, log zerolog.Logger) *LlmClient {
+func NewLlmClient(rawBaseURL string, log zerolog.Logger) *LlmClient {
+	finalBaseURL := rawBaseURL
+	// Eğer URL'de şema yoksa, varsayılan olarak http ekle.
+	if !strings.HasPrefix(rawBaseURL, "http://") && !strings.HasPrefix(rawBaseURL, "https://") {
+		finalBaseURL = "http://" + rawBaseURL
+	}
+
 	return &LlmClient{
-		// DİKKAT: Artık client seviyesinde genel bir timeout belirlemiyoruz.
-		// Her istek kendi context'i ile zaman aşımını yönetecek.
 		httpClient: &http.Client{},
-		baseURL:    baseURL,
+		baseURL:    finalBaseURL, // Düzeltilmiş URL'i kullan
 		log:        log.With().Str("client", "llm").Logger(),
 	}
 }
 
 func (c *LlmClient) Generate(ctx context.Context, prompt, traceID string) (string, error) {
+	// URL oluşturma mantığını basitleştiriyoruz, çünkü baseURL artık tam.
+	url := fmt.Sprintf("%s/generate", c.baseURL)
+
 	payload := LlmGenerateRequest{Prompt: prompt}
 	payloadBytes, _ := json.Marshal(payload)
-	url := fmt.Sprintf("%s/generate", c.baseURL)
 
 	c.log.Info().Str("url", url).Int("prompt_size", len(prompt)).Msg("LLM'e istek gönderiliyor...")
 	c.log.Debug().Str("prompt", prompt).Msg("Gönderilen tam LLM prompt'u")
