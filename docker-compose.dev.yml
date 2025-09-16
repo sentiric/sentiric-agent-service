@@ -36,23 +36,17 @@ services:
       - ${SECONDARY_DNS:-1.1.1.1}        
     restart: always
     healthcheck:
-      # Port kontrolü yerine, ana prosesin çalışıp çalışmadığını kontrol ediyoruz.
-      # `pgrep`'in uzun isimleri bulabilmesi için -f bayrağını ekliyoruz.
       test: ["CMD-SHELL", "pgrep -f sentiric-agent-service || exit 1"]
       interval: 15s
       timeout: 10s
       retries: 5
-      # Bu servis çok fazla şeye bağlı, başlaması için daha uzun süre tanımak mantıklı.
       start_period: 45s   
     # depends_on:
     #   postgres: { condition: service_healthy }
     #   rabbitmq: { condition: service_healthy }
     #   redis: { condition: service_healthy }
-    #   # media-service, tts-gateway gibi bağımlılıklar agent-service'in core.yml'de olmamalı
-    #   # ama eğer öyleyse, bunların da healthy olması beklenmeli.
-    #   # Şimdilik bu kısmı olduğu gibi bırakıyorum, ama mimari olarak gözden geçirilebilir.
     #   media-service: { condition: service_healthy }
     #   user-service: { condition: service_healthy }
     #   tts-gateway: { condition: service_healthy }
     #   stt-service: { condition: service_healthy }
-    #   llm-service: { condition: service_healthy }  
+    #   llm-service: { condition: service_healthy }
