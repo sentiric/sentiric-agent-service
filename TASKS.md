@@ -1,37 +1,30 @@
-# 🧠 Sentiric Agent Service - Görev Listesi (v6.4 - Veri Bütünlüğü ve Dayanıklılık)
+# 🧠 Sentiric Agent Service - Görev Listesi (v6.5 - Veri Bütünlüğü ve Dayanıklılık)
 
 Bu belge, agent-service'in geliştirme yol haritasını, tamamlanan görevleri ve mevcut öncelikleri tanımlar.
 
 ---
-### **FAZ 6.3: KRİTİK HATA DÜZELTME VE REGRESYON TESTİ (Mevcut Odak)**
 
-**Amaç:** Canlı test loglarında tespit edilen ve platformun temel diyalog akışını bozan kritik veri bütünlüğü sorunlarını gidermek.
+### **FAZ 1: Veri Bütünlüğü ve Regresyon Düzeltmesi (Mevcut Odak)**
 
--   **Görev ID: AGENT-BUG-03 - fix(events): Tanınan Kullanıcı Kimliği Olayı Regresyonunu Düzelt**
-    -   **Durum:** ⬜ **Yapılacak (Öncelik 1 - KRİTİK)**
-    -   **Bağımlılık:** `sentiric-sip-signaling-service`'teki `SIG-FEAT-01` görevinin tamamlanmış olması.
-    -   **Açıklama:** Loglar, `call.started` olayının zenginleştirilmiş `dialplan` verisiyle gelmediğini ve bu nedenle servisin `WRN Kullanıcı veya contact bilgisi eksik olduğu için user.identified.for_call olayı yayınlanamadı.` hatasını verdiğini doğrulamaktadır. Bu, `cdr-service`'in çağrıyı doğru kullanıcıyla eşleştirmesini engellemektedir. Bu görev, zenginleştirilmiş `call.started` olayını doğru işlemeyi hedefler.
-    -   **Kabul Kriterleri:**
-        -   [ ] `DialogManager`'ın `Start` metoduna `publishUserIdentifiedEvent` adında yeni bir özel fonksiyon eklenmelidir.
-        -   [ ] Bu fonksiyon, gelen `call.started` olayındaki `dialplan.matchedUser` ve `dialplan.matchedContact` alanlarının varlığını kontrol etmelidir.
-        -   [ ] Eğer bu alanlar doluysa, `user.identified.for_call` olayını doğru `userID`, `contactID` ve `tenantID` ile RabbitMQ'ya yayınlamalıdır.
-        -   [ ] Düzeltme sonrası yapılan test aramasında, loglarda artık bu uyarı mesajının **görülmediği** ve `user.identified.for_call` olayının yayınlandığı görülmelidir.
+**Amaç:** Platformun temel diyalog akışını bozan kritik veri bütünlüğü sorunlarını gidermek.
 
--   **Görev ID: AGENT-BUG-04 - fix(prompting): Kişiselleştirilmiş Karşılama Regresyonunu Düzelt**
-    -   **Durum:** ⬜ **Yapılacak (Öncelik 2 - YÜKSEK)**
-    -   **Bağımlılık:** `AGENT-BUG-03`'ün tamamlanmış olması.
-    -   **Açıklama:** `agent-service`'in kullanıcıyı tanıyamama sorunu çözüldükten sonra, loglarda `Misafir kullanıcı için karşılama prompt'u hazırlanıyor.` mesajı yerine tanınan kullanıcı için doğru prompt'un hazırlandığı görülmelidir.
-    -   **Kabul Kriterleri:**
-        -   [ ] Tanınan bir kullanıcı aradığında, `agent-service` loglarında "Tanınan kullanıcı için karşılama prompt'u hazırlanıyor." mesajı ve kullanıcının adının geçtiği görülmelidir.
-        -   [ ] `llm-service`'e gönderilen prompt'un `PROMPT_WELCOME_KNOWN_USER` şablonundan türetildiği doğrulanmalıdır.
+-   **Görev ID: AGENT-FIX-01 - Zenginleştirilmiş `call.started` Olayını İşleme**
+    -   **Durum:** x **Yapılacak (Öncelik 1 - KRİTİK)**
+    -   **Bağımlılık:** `sentiric-sip-signaling-service`'teki `SIG-FIX-01` görevinin tamamlanmış olması.
+    -   **Problem:** Loglar, servisin `call.started` olayından kullanıcı bilgisini alamadığını ve bu nedenle `user.identified.for_call` olayını yayınlayamadığını doğrulamaktadır. Bu, `cdr-service`'in çağrıyı doğru kullanıcıyla eşleştirmesini engeller.
+    -   **Çözüm:**
+        -   [x] `internal/service/dialog_manager.go` dosyasındaki `Start` metodunda veya ilgili bir başlangıç fonksiyonunda, `user.identified.for_call` olayını yayınlayan yeni bir mantık eklenmelidir.
+        -   [x] Bu mantık, gelen `call.started` olayındaki `dialplan_resolution` alanının ve içindeki `matchedUser` ile `matchedContact` alanlarının varlığını kontrol etmelidir.
+        -   [x] Eğer bu alanlar doluysa, `user.identified.for_call` olayını doğru `userID`, `contactID` ve `tenantID` ile RabbitMQ'ya yayınlamalıdır.
+        -   [x] Düzeltme sonrası yapılan test aramasında, `WRN Kullanıcı veya contact bilgisi eksik...` uyarısının **görülmediği** ve `user.identified.for_call` olayının yayınlandığı loglardan doğrulanmalıdır.
 
--   **Görev ID: AGENT-CLEANUP-01 - refactor(events): Kullanılmayan `call.answered` Olay İşleyicisini Kaldır**
-    -   **Durum:** ⬜ **Yapılacak (Öncelik 3)**
+-   **Görev ID: AGENT-CLEANUP-01 - Kullanılmayan `call.answered` Olay İşleyicisini Kaldır**
+    -   **Durum:** x **Yapılacak (Öncelik 2 - DÜŞÜK)**
     -   **Bağımlılık:** `sentiric-sip-signaling-service`'teki `SIG-CLEANUP-01` görevinin tamamlanmış olması.
-    -   **Açıklama:** Loglarda, servisin `call.answered` olayını `Bilinmeyen olay türü, görmezden geliniyor.` mesajıyla işlediği görülmektedir. Bu kod bloğu gereksizdir ve kaldırılmalıdır.
-    -   **Kabul Kriterleri:**
-        -   [ ] `internal/handler/event_handler.go` dosyasındaki `HandleRabbitMQMessage` fonksiyonundan `case constants.EventTypeCallAnswered:` bloğu tamamen kaldırılmalıdır.
----
+    -   **Problem:** Loglarda, servisin `call.answered` olayını "Bilinmeyen olay türü" mesajıyla işlediği görülmektedir. Bu kod bloğu gereksizdir.
+    -   **Çözüm:**
+        -   [x] `internal/handler/event_handler.go` dosyasındaki `HandleRabbitMQMessage` fonksiyonundan `case constants.EventTypeCallAnswered:` bloğu tamamen kaldırılmalıdır.
+
 ### **GELECEK FAZLAR: Gelişmiş Diyalog Yönetimi**
 
 **Amaç:** Agent'ın diyalog yeteneklerini insan benzeri bir seviyeye taşımak, gereksiz kaynak kullanımını önlemek ve sistemi daha yapılandırılabilir hale getirmek.
@@ -48,4 +41,4 @@ Bu belge, agent-service'in geliştirme yol haritasını, tamamlanan görevleri v
     -   **Açıklama:** Kullanıcı "görüşmeyi bitir", "kapat", "teşekkürler, yeterli" gibi ifadeler kullandığında agent'ın bunu anlayıp diyaloğu sonlandırması gerekir.
     -   **Kabul Kriterleri:**
         -   [ ] `DetectIntent` metodu, `kapanis` niyetini de tanıyabilmelidir.
-        -   [ ] `DialogManager`, `kapanis` niyeti algılandığında, uygun bir veda anonsu (`ANNOUNCE_SYSTEM_GOODBYE`) çaldıktan sonra çağrı durumunu `StateTerminated` olarak ayarlamalıdır.
+        -   [ ] `DialogManager`, `kapanis` niyeti algılandığında, uygun bir veda anonsu (`ANNOUNCE_SYSTEM_GOODBYE`) çaldıktan sonra çağrı durumunu `StateTerminated` olarak ayarlamalıdır.        
