@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings" // Bu import'u eklemeyi unutma
 	"time"
 
 	"github.com/rs/zerolog"
@@ -21,10 +22,16 @@ type KnowledgeClient struct {
 }
 
 // NewKnowledgeClient, yeni bir HTTP KnowledgeClient örneği oluşturur.
-func NewKnowledgeClient(baseURL string, log zerolog.Logger) *KnowledgeClient {
+func NewKnowledgeClient(rawBaseURL string, log zerolog.Logger) *KnowledgeClient {
+	finalBaseURL := rawBaseURL
+	// Eğer URL'de şema (http:// veya https://) yoksa, varsayılan olarak http ekle.
+	if !strings.HasPrefix(rawBaseURL, "http://") && !strings.HasPrefix(rawBaseURL, "https://") {
+		finalBaseURL = "http://" + rawBaseURL
+	}
+
 	return &KnowledgeClient{
 		httpClient: &http.Client{},
-		baseURL:    baseURL,
+		baseURL:    finalBaseURL, // Düzeltilmiş ve şema içeren URL'i kullan
 		log:        log.With().Str("client", "knowledge-http").Logger(),
 	}
 }
@@ -36,6 +43,7 @@ func (c *KnowledgeClient) Query(ctx context.Context, req *knowledgev1.QueryReque
 		return nil, fmt.Errorf("knowledge service isteği JSON'a çevrilemedi: %w", err)
 	}
 
+	// URL oluşturma mantığı basitleşti, çünkü baseURL artık tam bir URL.
 	url := fmt.Sprintf("%s/api/v1/query", c.baseURL)
 	c.log.Info().Str("url", url).Str("query", req.Query).Msg("Knowledge Service'e (HTTP) sorgu gönderiliyor...")
 
