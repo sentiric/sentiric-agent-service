@@ -21,7 +21,6 @@ type KnowledgeClient struct {
 	log        zerolog.Logger
 }
 
-// NewKnowledgeClient, yeni bir HTTP KnowledgeClient örneği oluşturur.
 func NewKnowledgeClient(rawBaseURL string, log zerolog.Logger) *KnowledgeClient {
 	finalBaseURL := rawBaseURL
 	// Eğer URL'de şema (http:// veya https://) yoksa, varsayılan olarak http ekle.

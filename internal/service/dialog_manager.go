@@ -43,9 +43,8 @@ func NewDialogManager(
 func (dm *DialogManager) Start(ctx context.Context, event *state.CallEvent) {
 	l := ctxlogger.FromContext(ctx)
 
-	// --- YENİ ADIM: Kullanıcı kimliği olayını burada yayınla ---
+	// Diyalog döngüsünü başlatmadan hemen önce olayı yayınla
 	dm.publishUserIdentifiedEvent(ctx, event)
-	// --- YENİ ADIM SONU ---
 
 	tenantID := "sentiric_demo"
 	if event.Dialplan.GetMatchedUser() != nil && event.Dialplan.GetMatchedUser().TenantId != "" {
@@ -72,15 +71,12 @@ func (dm *DialogManager) Start(ctx context.Context, event *state.CallEvent) {
 	dm.runDialogLoop(ctx, initialState)
 }
 
-// --- YENİ YARDIMCI FONKSİYON ---
 func (dm *DialogManager) publishUserIdentifiedEvent(ctx context.Context, event *state.CallEvent) {
 	l := ctxlogger.FromContext(ctx)
 
-	// Gelen 'call.started' olayının içinde dialplan bilgisi ve tanınan kullanıcı var mı diye kontrol et.
 	if event.Dialplan.GetMatchedUser() != nil && event.Dialplan.GetMatchedContact() != nil {
 		l.Info().Msg("Kullanıcı kimliği belirlendi, user.identified.for_call olayı yayınlanacak.")
 
-		// RabbitMQ'ya gönderilecek olan olayın yapısını tanımla
 		userIdentifiedPayload := struct {
 			EventType string    `json:"eventType"`
 			TraceID   string    `json:"traceId"`
@@ -99,7 +95,6 @@ func (dm *DialogManager) publishUserIdentifiedEvent(ctx context.Context, event *
 			Timestamp: time.Now().UTC(),
 		}
 
-		// Olayı yayınla
 		err := dm.publisher.PublishJSON(ctx, string(constants.EventTypeUserIdentifiedForCall), userIdentifiedPayload)
 		if err != nil {
 			l.Error().Err(err).Msg("user.identified.for_call olayı yayınlanamadı.")
@@ -107,8 +102,7 @@ func (dm *DialogManager) publishUserIdentifiedEvent(ctx context.Context, event *
 			l.Info().Msg("user.identified.for_call olayı başarıyla yayınlandı.")
 		}
 	} else {
-		// Bu log artık bir hata değil, beklenen bir durum (misafir araması)
-		l.Info().Msg("Kullanıcı veya contact bilgisi eksik. Bu bir misafir araması olabilir, bu yüzden user.identified.for_call olayı yayınlanmıyor.")
+		l.Info().Msg("Kullanıcı veya contact bilgisi eksik. Bu bir misafir araması olabilir, user.identified.for_call olayı yayınlanmıyor.")
 	}
 }
 

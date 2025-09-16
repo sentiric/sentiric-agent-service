@@ -126,7 +126,9 @@ func (a *App) buildDependencies(db *sql.DB, redisClient *redis.Client, rabbitCh 
 	publisher := queue.NewPublisher(rabbitCh, a.Log)
 
 	templateProvider := service.NewTemplateProvider(db)
-	mediaManager := service.NewMediaManager(db, mediaClient, metrics.EventsFailed)
+	// --- DEĞİŞİKLİK BURADA ---
+	mediaManager := service.NewMediaManager(db, mediaClient, metrics.EventsFailed, a.Cfg.BucketName)
+	// --- DEĞİŞİKLİK SONU ---
 	aiOrchestrator := service.NewAIOrchestrator(a.Cfg, llmClient, sttClient, ttsClient, mediaClient, knowledgeClient)
 	dialogManager := service.NewDialogManager(a.Cfg, stateManager, aiOrchestrator, mediaManager, templateProvider, publisher)
 	userManager := service.NewUserManager(userClient)

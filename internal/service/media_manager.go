@@ -22,14 +22,16 @@ type MediaManager struct {
 	db           *sql.DB
 	mediaClient  mediav1.MediaServiceClient
 	eventsFailed *prometheus.CounterVec
+	bucketName   string // YENİ ALAN
 }
 
 // NewMediaManager, yeni bir MediaManager örneği oluşturur.
-func NewMediaManager(db *sql.DB, mc mediav1.MediaServiceClient, failed *prometheus.CounterVec) *MediaManager {
+func NewMediaManager(db *sql.DB, mc mediav1.MediaServiceClient, failed *prometheus.CounterVec, bucketName string) *MediaManager {
 	return &MediaManager{
 		db:           db,
 		mediaClient:  mc,
 		eventsFailed: failed,
+		bucketName:   bucketName, // YENİ ALAN
 	}
 }
 
@@ -97,10 +99,14 @@ func (m *MediaManager) PlayAnnouncement(ctx context.Context, callState *state.Ca
 func (m *MediaManager) StartRecording(ctx context.Context, callState *state.CallState) {
 	l := ctxlogger.FromContext(ctx)
 	recordingTenantID := callState.TenantID
-	// MEDIA_SERVICE_RECORD_BASE_PATH="/sentiric-media-record"
-	recordingURI := fmt.Sprintf("s3://sentiric-media-record/%s/%s.wav", recordingTenantID, callState.CallID)
+
+	// --- DEĞİŞİKLİK BURADA ---
+	// Artık bucket adını konfigürasyondan alıyoruz
+	recordingURI := fmt.Sprintf("s3://%s/%s/%s.wav", m.bucketName, recordingTenantID, callState.CallID)
+	// --- DEĞİŞİKLİK SONU ---
 
 	l.Info().Str("uri", recordingURI).Msg("Çağrı kaydı başlatılıyor...")
+
 	startRecCtx, startRecCancel := context.WithTimeout(metadata.AppendToOutgoingContext(ctx, "x-trace-id", callState.TraceID), 10*time.Second)
 	defer startRecCancel()
 

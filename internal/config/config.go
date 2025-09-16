@@ -30,6 +30,7 @@ type Config struct {
 	GrpcTlsCaPath               string
 	AgentMaxConsecutiveFailures int
 	AgentAllowedSpeakerDomains  string
+	BucketName                  string // YENİ ALAN
 }
 
 func Load() (*Config, error) {
@@ -80,14 +81,16 @@ func Load() (*Config, error) {
 		MediaServiceGrpcURL:         getEnv("MEDIA_SERVICE_GRPC_URL"),
 		UserServiceGrpcURL:          getEnv("USER_SERVICE_GRPC_URL"),
 		KnowledgeServiceGrpcURL:     getEnv("KNOWLEDGE_SERVICE_GRPC_URL"),
-		KnowledgeServiceURL:         getEnv("KNOWLEDGE_SERVICE_HTTP_PORT"),
+		KnowledgeServiceURL:         getEnv("KNOWLEDGE_SERVICE_HTTP_URL"),
 		KnowledgeServiceTopK:        knowledgeTopK,
 		AgentServiceCertPath:        getEnv("AGENT_SERVICE_CERT_PATH"),
 		AgentServiceKeyPath:         getEnv("AGENT_SERVICE_KEY_PATH"),
 		GrpcTlsCaPath:               getEnv("GRPC_TLS_CA_PATH"),
 		AgentMaxConsecutiveFailures: maxFailures,
 		AgentAllowedSpeakerDomains:  getEnvWithDefault("AGENT_ALLOWED_SPEAKER_DOMAINS", "sentiric.github.io"),
+		BucketName:                  getEnv("BUCKET_NAME"), // YENİ ALAN
 	}
+
 	return cfg, nil
 }
 

@@ -35,13 +35,15 @@ func NewEventHandler(
 	}
 }
 
-// HandleRabbitMQMessage, gelen bir byte dizisini işler.
 func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 	var genericEvent struct {
 		EventType string `json:"eventType"`
 		CallID    string `json:"callId"`
 		TraceID   string `json:"traceId"`
 	}
+
+	// Gelen ham mesajı loglayalım
+	h.log.Debug().Bytes("raw_message", body).Msg("RabbitMQ'dan ham mesaj alındı")
 
 	if err := json.Unmarshal(body, &genericEvent); err != nil {
 		h.log.Error().Err(err).Bytes("raw_message", body).Msg("Hata: Mesaj JSON formatında değil")
@@ -63,11 +65,16 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 	switch constants.EventType(genericEvent.EventType) {
 	case constants.EventTypeCallStarted:
 		var event state.CallEvent
-		if err := json.Unmarshal(body, &event); err == nil {
-			go h.callHandler.HandleCallStarted(ctx, &event)
-		} else {
-			l.Error().Err(err).Msg("call.started olayı parse edilemedi.")
+
+		// Unmarshal hatasını daha detaylı loglayalım
+		if err := json.Unmarshal(body, &event); err != nil {
+			l.Error().Err(err).Msg("call.started olayı parse edilemedi. Gelen veri ile Go struct'ı arasında uyumsuzluk var.")
+			// Hatalı durumda bile devam etmeyelim
+			return
 		}
+		// Sadece başarılı olursa devam et
+		go h.callHandler.HandleCallStarted(ctx, &event)
+
 	case constants.EventTypeCallEnded:
 		var event state.CallEvent
 		if err := json.Unmarshal(body, &event); err == nil {
