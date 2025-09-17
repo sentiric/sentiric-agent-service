@@ -42,9 +42,7 @@ func NewDialogManager(
 
 func (dm *DialogManager) Start(ctx context.Context, event *state.CallEvent) {
 	l := ctxlogger.FromContext(ctx)
-
 	dm.publishUserIdentifiedEvent(ctx, event)
-
 	tenantID := "sentiric_demo"
 	if event.Dialplan != nil {
 		if event.Dialplan.MatchedUser != nil && event.Dialplan.MatchedUser.TenantID != "" {
@@ -53,7 +51,6 @@ func (dm *DialogManager) Start(ctx context.Context, event *state.CallEvent) {
 			tenantID = event.Dialplan.TenantID
 		}
 	}
-
 	initialState := &state.CallState{
 		CallID:              event.CallID,
 		TraceID:             event.TraceID,
@@ -63,18 +60,15 @@ func (dm *DialogManager) Start(ctx context.Context, event *state.CallEvent) {
 		Conversation:        []map[string]string{},
 		ConsecutiveFailures: 0,
 	}
-
 	if err := dm.stateManager.Set(ctx, initialState); err != nil {
 		l.Error().Err(err).Msg("Redis'e başlangıç durumu yazılamadı.")
 		return
 	}
-
-	dm.runDialogLoop(ctx, initialState)
+	go dm.runDialogLoop(ctx, initialState)
 }
 
 func (dm *DialogManager) publishUserIdentifiedEvent(ctx context.Context, event *state.CallEvent) {
 	l := ctxlogger.FromContext(ctx)
-
 	if event.Dialplan != nil && event.Dialplan.MatchedUser != nil && event.Dialplan.MatchedContact != nil {
 		l.Info().Msg("Kullanıcı kimliği belirlendi, user.identified.for_call olayı yayınlanacak.")
 		user := event.Dialplan.MatchedUser
@@ -110,7 +104,6 @@ func (dm *DialogManager) publishUserIdentifiedEvent(ctx context.Context, event *
 func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.CallState) {
 	l := ctxlogger.FromContext(ctx)
 	currentCallID := initialSt.CallID
-
 	defer func() {
 		dm.mediaManager.StopRecording(ctx, initialSt)
 		finalState, err := dm.stateManager.Get(context.Background(), currentCallID)
@@ -136,7 +129,6 @@ func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.Cal
 			}
 		}
 	}()
-
 	var actionName string
 	if initialSt.Event.Dialplan != nil && initialSt.Event.Dialplan.Action != nil {
 		actionName = initialSt.Event.Dialplan.Action.Action
@@ -149,7 +141,6 @@ func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.Cal
 	}
 	dm.mediaManager.PlayAnnouncement(ctx, initialSt, initialAnnouncementID)
 	dm.mediaManager.StartRecording(ctx, initialSt)
-
 	type DialogFunc func(context.Context, *state.CallState) (*state.CallState, error)
 	stateMap := map[constants.DialogState]DialogFunc{
 		constants.StateWelcoming: dm.stateFnWelcoming,
@@ -157,7 +148,6 @@ func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.Cal
 		constants.StateThinking:  dm.stateFnThinking,
 		constants.StateSpeaking:  dm.stateFnSpeaking,
 	}
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -203,25 +193,20 @@ func (dm *DialogManager) stateFnWelcoming(ctx context.Context, st *state.CallSta
 	l := ctxlogger.FromContext(ctx)
 	l.Info().Msg("İlk AI yanıtı öncesi 1.5 saniye bekleniyor...")
 	time.Sleep(1500 * time.Millisecond)
-
 	prompt, err := dm.templateProvider.GetWelcomePrompt(ctx, st)
 	if err != nil {
 		return st, err
 	}
-
 	welcomeText, err := dm.aiOrchestrator.GenerateResponse(ctx, prompt, st)
 	if err != nil {
 		return st, err
 	}
-
 	st.Conversation = append(st.Conversation, map[string]string{"ai": welcomeText})
-
 	audioURI, err := dm.aiOrchestrator.SynthesizeAndGetAudio(ctx, st, welcomeText)
 	if err != nil {
 		return st, err
 	}
 	dm.mediaManager.PlayAudio(ctx, st, audioURI)
-
 	st.CurrentState = constants.StateListening
 	return st, nil
 }
@@ -234,7 +219,6 @@ func (dm *DialogManager) stateFnListening(ctx context.Context, st *state.CallSta
 		st.CurrentState = constants.StateTerminated
 		return st, nil
 	}
-
 	l.Info().Msg("Kullanıcıdan ses bekleniyor (gerçek zamanlı akış modu)...")
 	transcriptionResult, err := dm.aiOrchestrator.StreamAndTranscribe(ctx, st)
 	if err != nil {
@@ -243,17 +227,14 @@ func (dm *DialogManager) stateFnListening(ctx context.Context, st *state.CallSta
 		st.CurrentState = constants.StateListening
 		return st, nil
 	}
-
 	if transcriptionResult.IsNoSpeechTimeout {
 		l.Warn().Msg("STT'den ses algılanmadı (timeout). Kullanıcıya bir şans daha veriliyor.")
 		dm.mediaManager.PlayAnnouncement(ctx, st, constants.AnnounceSystemCantHearYou)
 		st.CurrentState = constants.StateListening
 		return st, nil
 	}
-
 	cleanedText := strings.TrimSpace(transcriptionResult.Text)
 	isMeaningless := len(cleanedText) < 3 || strings.Contains(cleanedText, "Bu dizinin betimlemesi")
-
 	if isMeaningless {
 		l.Warn().Str("stt_result", cleanedText).Msg("STT anlamsız veya çok kısa metin döndürdü, 'anlayamadım' anonsu çalınacak.")
 		dm.mediaManager.PlayAnnouncement(ctx, st, constants.AnnounceSystemCantUnderstand)
@@ -261,7 +242,6 @@ func (dm *DialogManager) stateFnListening(ctx context.Context, st *state.CallSta
 		st.CurrentState = constants.StateListening
 		return st, nil
 	}
-
 	st.ConsecutiveFailures = 0
 	st.Conversation = append(st.Conversation, map[string]string{"user": cleanedText})
 	st.CurrentState = constants.StateThinking
@@ -283,10 +263,18 @@ func (dm *DialogManager) stateFnThinking(ctx context.Context, st *state.CallStat
 		return st, fmt.Errorf("düşünme durumu için son kullanıcı mesajı bulunamadı")
 	}
 
-	ragContext, err := dm.aiOrchestrator.QueryKnowledgeBase(ctx, lastUserMessage, st)
-	if err != nil {
-		return st, fmt.Errorf("knowledge base sorgulanamadı: %w", err)
+	// --- YENİ MANTIK BAŞLANGICI: Akıllı RAG Tetikleme ---
+	var ragContext string
+	var err error
+	if shouldTriggerRAG(lastUserMessage) {
+		ragContext, err = dm.aiOrchestrator.QueryKnowledgeBase(ctx, lastUserMessage, st)
+		if err != nil {
+			return st, fmt.Errorf("knowledge base sorgulanamadı: %w", err)
+		}
+	} else {
+		l.Info().Str("user_message", lastUserMessage).Msg("Basit niyet algılandı, RAG sorgusu atlanıyor.")
 	}
+	// --- YENİ MANTIK SONU ---
 
 	prompt, err := dm.templateProvider.BuildLlmPrompt(ctx, st, ragContext)
 	if err != nil {
@@ -303,17 +291,30 @@ func (dm *DialogManager) stateFnThinking(ctx context.Context, st *state.CallStat
 	return st, nil
 }
 
+// shouldTriggerRAG, RAG akışının tetiklenip tetiklenmeyeceğine karar veren basit bir yardımcı fonksiyondur.
+func shouldTriggerRAG(text string) bool {
+	lowerText := strings.ToLower(text)
+	greetings := []string{"merhaba", "selam", "alo", "iyi günler", "teşekkür ederim", "eyvallah", "sağ ol"}
+
+	if len(strings.Fields(lowerText)) < 3 {
+		for _, greet := range greetings {
+			if strings.Contains(lowerText, greet) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func (dm *DialogManager) stateFnSpeaking(ctx context.Context, st *state.CallState) (*state.CallState, error) {
 	l := ctxlogger.FromContext(ctx)
 	lastAiMessage := st.Conversation[len(st.Conversation)-1]["ai"]
 	l.Info().Str("text", lastAiMessage).Msg("AI yanıtı seslendiriliyor...")
-
 	audioURI, err := dm.aiOrchestrator.SynthesizeAndGetAudio(ctx, st, lastAiMessage)
 	if err != nil {
 		return st, err
 	}
 	dm.mediaManager.PlayAudio(ctx, st, audioURI)
-
 	time.Sleep(250 * time.Millisecond)
 	st.CurrentState = constants.StateListening
 	return st, nil
