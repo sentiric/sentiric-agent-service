@@ -1,3 +1,4 @@
+// ========== DOSYA: sentiric-agent-service/internal/client/grpc_client.go (TAM VE GÜNCEL İÇERİK) ==========
 package client
 
 import (
@@ -68,16 +69,23 @@ func createSecureGrpcClient(cfg *config.Config, addr string) (*grpc.ClientConn, 
 		return nil, fmt.Errorf("CA sertifikası havuza eklenemedi")
 	}
 
+	// DEĞİŞİKLİK BURADA: ServerName'i adresin host kısmıyla eşleştiriyoruz.
+	// Bu, Docker'ın servis adını sertifika CN'i olarak kullanmasını sağlar.
+	serverName := strings.Split(addr, ":")[0]
+
 	creds := credentials.NewTLS(&tls.Config{
 		Certificates: []tls.Certificate{clientCert},
 		RootCAs:      caCertPool,
-		ServerName:   strings.Split(addr, ":")[0],
+		ServerName:   serverName, // Örn: "knowledge-service"
 		MinVersion:   tls.VersionTLS12,
 	})
+	// DEĞİŞİKLİK SONU
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// "passthrough" şeması, gRPC'nin kendi yük dengeleyicisini kullanmasını engeller
+	// ve doğrudan verdiğimiz adrese bağlanmasını sağlar. Bu, Docker ortamları için önemlidir.
 	target := fmt.Sprintf("passthrough:///%s", addr)
 
 	conn, err := grpc.DialContext(ctx, target, grpc.WithTransportCredentials(creds), grpc.WithBlock())
