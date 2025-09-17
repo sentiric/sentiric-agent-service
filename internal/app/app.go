@@ -1,3 +1,4 @@
+// ========== DOSYA: sentiric-agent-service/internal/app/app.go (TAM VE GÜNCEL İÇERİK) ==========
 package app
 
 import (
@@ -102,10 +103,8 @@ func (a *App) buildDependencies(db *sql.DB, redisClient *redis.Client, rabbitCh 
 	sttClient := client.NewSttClient(a.Cfg.SttServiceURL, a.Log)
 
 	var knowledgeClient service.KnowledgeClientInterface
-	if a.Cfg.KnowledgeServiceURL != "" {
-		a.Log.Info().Str("url", a.Cfg.KnowledgeServiceURL).Msg("HTTP Knowledge Service istemcisi kullanılıyor.")
-		knowledgeClient = client.NewKnowledgeClient(a.Cfg.KnowledgeServiceURL, a.Log)
-	} else if a.Cfg.KnowledgeServiceGrpcURL != "" {
+	// DEĞİŞİKLİK: gRPC'yi önceliklendir
+	if a.Cfg.KnowledgeServiceGrpcURL != "" {
 		a.Log.Info().Str("url", a.Cfg.KnowledgeServiceGrpcURL).Msg("gRPC Knowledge Service istemcisi kullanılıyor.")
 		grpcClient, err := client.NewKnowledgeServiceClient(a.Cfg)
 		if err != nil {
@@ -113,6 +112,9 @@ func (a *App) buildDependencies(db *sql.DB, redisClient *redis.Client, rabbitCh 
 		} else {
 			knowledgeClient = client.NewGrpcKnowledgeClientAdapter(grpcClient)
 		}
+	} else if a.Cfg.KnowledgeServiceURL != "" {
+		a.Log.Info().Str("url", a.Cfg.KnowledgeServiceURL).Msg("HTTP Knowledge Service istemcisi (fallback) kullanılıyor.")
+		knowledgeClient = client.NewKnowledgeClient(a.Cfg.KnowledgeServiceURL, a.Log)
 	} else {
 		a.Log.Warn().Msg("Knowledge service için ne gRPC ne de HTTP URL'si tanımlanmamış. RAG devre dışı.")
 	}
@@ -133,6 +135,7 @@ func (a *App) buildDependencies(db *sql.DB, redisClient *redis.Client, rabbitCh 
 	}
 }
 
+// ... setupInfrastructure fonksiyonu aynı ...
 func (a *App) setupInfrastructure(ctx context.Context) (
 	db *sql.DB,
 	redisClient *redis.Client,
