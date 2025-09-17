@@ -8,18 +8,61 @@ import (
 
 	"github.com/go-redis/redis/v8"
 	"github.com/sentiric/sentiric-agent-service/internal/constants"
-	dialplanv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/dialplan/v1"
+	// DEĞİŞİKLİK: Artık doğrudan kontratlara bağımlı değiliz, bu daha esnek bir yapı.
+	// dialplanv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/dialplan/v1"
 )
 
-type CallEvent struct {
-	EventType string                              `json:"eventType"`
-	TraceID   string                              `json:"traceId"`
-	CallID    string                              `json:"callId"`
-	Media     map[string]interface{}              `json:"media"`
-	Dialplan  *dialplanv1.ResolveDialplanResponse `json:"dialplan"`
-	From      string                              `json:"from"`
+// --- YENİ STRUCT'LAR: Gelen JSON'u hatasız parse etmek için ---
+
+// MatchedContactPayload, dialplan çözümlemesinden dönen contact verisini temsil eder.
+type MatchedContactPayload struct {
+	ID           int32  `json:"id"`
+	UserID       string `json:"userId"`
+	ContactType  string `json:"contactType"`
+	ContactValue string `json:"contactValue"`
+	IsPrimary    bool   `json:"isPrimary"`
 }
 
+// MatchedUserPayload, dialplan çözümlemesinden dönen user verisini temsil eder.
+type MatchedUserPayload struct {
+	ID                    string                   `json:"id"`
+	Name                  *string                  `json:"name"`
+	TenantID              string                   `json:"tenantId"`
+	UserType              string                   `json:"userType"`
+	Contacts              []*MatchedContactPayload `json:"contacts"`
+	PreferredLanguageCode *string                  `json:"preferredLanguageCode"`
+}
+
+// DialplanActionPayload, dialplan'deki eylem verisini temsil eder.
+type DialplanActionPayload struct {
+	Action     string            `json:"action"`
+	ActionData map[string]string `json:"actionData"`
+}
+
+// DialplanPayload, call.started olayının içindeki zenginleştirilmiş dialplan verisini temsil eder.
+type DialplanPayload struct {
+	DialplanID     string                 `json:"dialplanId"`
+	TenantID       string                 `json:"tenantId"`
+	Action         *DialplanActionPayload `json:"action"`
+	MatchedUser    *MatchedUserPayload    `json:"matchedUser"`    // EN KRİTİK ALAN
+	MatchedContact *MatchedContactPayload `json:"matchedContact"` // EN KRİTİK ALAN
+}
+
+// --- GÜNCELLENMİŞ CallEvent STRUCT'I ---
+
+// CallEvent, RabbitMQ'dan gelen call.started olayının yapısını temsil eder.
+type CallEvent struct {
+	EventType string                 `json:"eventType"`
+	TraceID   string                 `json:"traceId"`
+	CallID    string                 `json:"callId"`
+	Media     map[string]interface{} `json:"media"`
+	Dialplan  *DialplanPayload       `json:"dialplan"` // Artık yeni, detaylı struct'ımızı kullanıyor
+	From      string                 `json:"from"`
+}
+
+// --- MEVCUT CallState STRUCT'I (DEĞİŞİKLİK YOK) ---
+
+// CallState, bir çağrının yaşam döngüsü boyunca Redis'te saklanan durumunu temsil eder.
 type CallState struct {
 	CallID              string
 	TraceID             string
@@ -29,6 +72,8 @@ type CallState struct {
 	Conversation        []map[string]string
 	ConsecutiveFailures int
 }
+
+// --- MEVCUT Manager STRUCT'I VE FONKSİYONLARI (DEĞİŞİKLİK YOK) ---
 
 type Manager struct {
 	rdb *redis.Client
