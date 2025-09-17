@@ -263,7 +263,7 @@ func (dm *DialogManager) stateFnThinking(ctx context.Context, st *state.CallStat
 		return st, fmt.Errorf("düşünme durumu için son kullanıcı mesajı bulunamadı")
 	}
 
-	// --- YENİ MANTIK BAŞLANGICI: Akıllı RAG Tetikleme ---
+	// Akıllı RAG Tetikleme Mantığı
 	var ragContext string
 	var err error
 	if shouldTriggerRAG(lastUserMessage) {
@@ -274,7 +274,6 @@ func (dm *DialogManager) stateFnThinking(ctx context.Context, st *state.CallStat
 	} else {
 		l.Info().Str("user_message", lastUserMessage).Msg("Basit niyet algılandı, RAG sorgusu atlanıyor.")
 	}
-	// --- YENİ MANTIK SONU ---
 
 	prompt, err := dm.templateProvider.BuildLlmPrompt(ctx, st, ragContext)
 	if err != nil {
@@ -291,9 +290,10 @@ func (dm *DialogManager) stateFnThinking(ctx context.Context, st *state.CallStat
 	return st, nil
 }
 
-// shouldTriggerRAG, RAG akışının tetiklenip tetiklenmeyeceğine karar veren basit bir yardımcı fonksiyondur.
+// Basit Niyet Tespiti
 func shouldTriggerRAG(text string) bool {
 	lowerText := strings.ToLower(text)
+	// Selamlaşma veya çok kısa, anlamsız ifadeler için RAG tetikleme
 	greetings := []string{"merhaba", "selam", "alo", "iyi günler", "teşekkür ederim", "eyvallah", "sağ ol"}
 
 	if len(strings.Fields(lowerText)) < 3 {
@@ -303,6 +303,8 @@ func shouldTriggerRAG(text string) bool {
 			}
 		}
 	}
+
+	// Varsayılan olarak RAG tetikle
 	return true
 }
 
