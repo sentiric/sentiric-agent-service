@@ -106,11 +106,13 @@ func (a *AIOrchestrator) SynthesizeAndGetAudio(ctx context.Context, callState *s
 	l.Info().Str("text", textToPlay).Msg("Metin sese dönüştürülüyor...")
 	var speakerURL, voiceSelector string
 	var useCloning bool
-	if callState.Event.Dialplan != nil && callState.Event.Dialplan.Action != nil && callState.Event.Dialplan.Action.ActionData != nil {
-		actionData := callState.Event.Dialplan.Action.ActionData
+
+	if callState.Event.Dialplan != nil && callState.Event.Dialplan.Action != nil && callState.Event.Dialplan.Action.ActionData != nil && callState.Event.Dialplan.Action.ActionData.Data != nil {
+		actionData := callState.Event.Dialplan.Action.ActionData.Data
 		speakerURL, useCloning = actionData["speaker_wav_url"]
 		voiceSelector = actionData["voice_selector"]
 	}
+
 	mdCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", callState.TraceID)
 	languageCode := GetLanguageCode(callState.Event)
 	ttsReq := &ttsv1.SynthesizeRequest{Text: textToPlay, LanguageCode: languageCode}
@@ -177,8 +179,8 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 	q.Set("logprob_threshold", fmt.Sprintf("%f", a.cfg.SttServiceLogprobThreshold))
 	q.Set("no_speech_threshold", fmt.Sprintf("%f", a.cfg.SttServiceNoSpeechThreshold))
 	vadLevel := "1"
-	if callState.Event.Dialplan != nil && callState.Event.Dialplan.Action != nil && callState.Event.Dialplan.Action.ActionData != nil {
-		if val, ok := callState.Event.Dialplan.Action.ActionData["stt_vad_level"]; ok {
+	if callState.Event.Dialplan != nil && callState.Event.Dialplan.Action != nil && callState.Event.Dialplan.Action.ActionData != nil && callState.Event.Dialplan.Action.ActionData.Data != nil {
+		if val, ok := callState.Event.Dialplan.Action.ActionData.Data["stt_vad_level"]; ok {
 			vadLevel = val
 		}
 	}
