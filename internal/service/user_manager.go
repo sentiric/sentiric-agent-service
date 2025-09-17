@@ -69,12 +69,14 @@ func (um *UserManager) FindOrCreateGuest(ctx context.Context, event *state.CallE
 
 func (um *UserManager) createGuest(ctx context.Context, event *state.CallEvent, callerNumber string) (*userv1.User, *userv1.Contact, error) {
 	l := ctxlogger.FromContext(ctx)
-	tenantID := "sentiric_demo"
-	if event.Dialplan.GetInboundRoute() != nil && event.Dialplan.GetInboundRoute().TenantId != "" {
-		tenantID = event.Dialplan.GetInboundRoute().TenantId
+	// --- DÜZELTME BAŞLANGICI ---
+	tenantID := "sentiric_demo" // Varsayılan değer
+	if event.Dialplan != nil && event.Dialplan.TenantID != "" {
+		tenantID = event.Dialplan.TenantID
 	} else {
-		l.Warn().Msg("InboundRoute veya TenantId bulunamadı, fallback 'sentiric_demo' tenant'ı kullanılıyor.")
+		l.Warn().Msg("Dialplan içinde TenantId bulunamadı, fallback 'sentiric_demo' tenant'ı kullanılıyor.")
 	}
+	// --- DÜZELTME SONU ---
 
 	createCtx, createCancel := context.WithTimeout(metadata.AppendToOutgoingContext(ctx, "x-trace-id", event.TraceID), 10*time.Second)
 	defer createCancel()

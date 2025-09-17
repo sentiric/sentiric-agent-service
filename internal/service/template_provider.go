@@ -21,19 +21,17 @@ func NewTemplateProvider(db *sql.DB) *TemplateProvider {
 
 func (tp *TemplateProvider) GetWelcomePrompt(ctx context.Context, callState *state.CallState) (string, error) {
 	l := ctxlogger.FromContext(ctx)
-	languageCode := getLanguageCode(callState.Event)
+	languageCode := GetLanguageCode(callState.Event)
 	var promptID constants.TemplateID
 	var userName string
-
-	if callState.Event.Dialplan.GetMatchedUser() != nil && callState.Event.Dialplan.GetMatchedUser().Name != nil {
+	if callState.Event.Dialplan != nil && callState.Event.Dialplan.MatchedUser != nil && callState.Event.Dialplan.MatchedUser.Name != nil {
 		promptID = constants.PromptWelcomeKnownUser
-		userName = *callState.Event.Dialplan.GetMatchedUser().Name
+		userName = *callState.Event.Dialplan.MatchedUser.Name
 		l.Info().Str("user_name", userName).Msg("Tanınan kullanıcı için karşılama prompt'u hazırlanıyor.")
 	} else {
 		promptID = constants.PromptWelcomeGuest
 		l.Info().Msg("Misafir kullanıcı için karşılama prompt'u hazırlanıyor.")
 	}
-
 	promptTemplate, err := database.GetTemplateFromDB(tp.db, string(promptID), languageCode, callState.TenantID)
 	if err != nil {
 		l.Error().Err(err).Msg("Prompt şablonu veritabanından alınamadı, genel bir fallback kullanılıyor.")
@@ -42,22 +40,18 @@ func (tp *TemplateProvider) GetWelcomePrompt(ctx context.Context, callState *sta
 		}
 		return "Merhaba, hoş geldiniz.", nil
 	}
-
 	prompt := promptTemplate
 	if userName != "" {
 		prompt = strings.Replace(prompt, "{user_name}", userName, -1)
 	}
-
 	return prompt, nil
 }
 
 func (tp *TemplateProvider) BuildLlmPrompt(ctx context.Context, callState *state.CallState, ragContext string) (string, error) {
 	l := ctxlogger.FromContext(ctx)
-	languageCode := getLanguageCode(callState.Event)
-
+	languageCode := GetLanguageCode(callState.Event)
 	var systemPrompt string
 	var err error
-
 	if ragContext != "" {
 		systemPrompt, err = database.GetTemplateFromDB(tp.db, string(constants.PromptSystemRAG), languageCode, callState.TenantID)
 		if err != nil {
@@ -65,7 +59,6 @@ func (tp *TemplateProvider) BuildLlmPrompt(ctx context.Context, callState *state
 			systemPrompt = "Sana sağlanan İlgili Bilgiler'i kullanarak kullanıcının sorusuna cevap ver. Eğer bilgi yoksa, olmadığını belirt.\n\n{context}\n\nKullanıcının Sorusu: {query}"
 		}
 		systemPrompt = strings.Replace(systemPrompt, "{context}", ragContext, -1)
-
 		lastUserMessage := ""
 		for i := len(callState.Conversation) - 1; i >= 0; i-- {
 			if msg, ok := callState.Conversation[i]["user"]; ok {
@@ -75,14 +68,12 @@ func (tp *TemplateProvider) BuildLlmPrompt(ctx context.Context, callState *state
 		}
 		systemPrompt = strings.Replace(systemPrompt, "{query}", lastUserMessage, -1)
 		return systemPrompt, nil
-
 	} else {
 		systemPrompt, err = database.GetTemplateFromDB(tp.db, string(constants.PromptSystemDefault), languageCode, callState.TenantID)
 		if err != nil {
 			l.Error().Err(err).Msg("Sistem prompt'u alınamadı, fallback kullanılıyor.")
 			systemPrompt = "Aşağıdaki diyaloğa devam et. Cevapların kısa olsun."
 		}
-
 		var promptBuilder strings.Builder
 		promptBuilder.WriteString(systemPrompt)
 		promptBuilder.WriteString("\n\n--- KONUŞMA GEÇMİŞİ ---\n")

@@ -10,7 +10,6 @@ import (
 	"github.com/sentiric/sentiric-agent-service/internal/state"
 )
 
-// CallHandler, çağrı ile ilgili olayları işler ve ilgili servis yöneticilerini çağırır.
 type CallHandler struct {
 	UserManager   *service.UserManager
 	DialogManager *service.DialogManager
@@ -18,7 +17,6 @@ type CallHandler struct {
 	dialogWg      sync.WaitGroup
 }
 
-// NewCallHandler, yeni bir CallHandler örneği oluşturur.
 func NewCallHandler(um *service.UserManager, dm *service.DialogManager, sm *state.Manager) *CallHandler {
 	return &CallHandler{
 		UserManager:   um,
@@ -27,12 +25,10 @@ func NewCallHandler(um *service.UserManager, dm *service.DialogManager, sm *stat
 	}
 }
 
-// WaitOnDialogs, graceful shutdown sırasında tüm aktif diyalogların bitmesini bekler.
 func (h *CallHandler) WaitOnDialogs() {
 	h.dialogWg.Wait()
 }
 
-// HandleCallStarted, 'call.started' olayını işler.
 func (h *CallHandler) HandleCallStarted(ctx context.Context, event *state.CallEvent) {
 	h.dialogWg.Add(1)
 	defer h.dialogWg.Done()
@@ -71,7 +67,6 @@ func (h *CallHandler) HandleCallStarted(ctx context.Context, event *state.CallEv
 	}
 }
 
-// HandleCallEnded, 'call.ended' olayını işler.
 func (h *CallHandler) HandleCallEnded(ctx context.Context, event *state.CallEvent) {
 	l := ctxlogger.FromContext(ctx)
 	l.Info().Msg("Çağrı sonlandırma olayı işleniyor.")
@@ -98,12 +93,11 @@ func (h *CallHandler) handleProcessGuestCall(ctx context.Context, event *state.C
 	user, contact, err := h.UserManager.FindOrCreateGuest(ctx, event)
 	if err != nil {
 		l.Error().Err(err).Msg("Misafir kullanıcı bulunamadı veya oluşturulamadı.")
-		// Burada hata durumunda anons çalınabilir, şimdilik sadece logluyoruz.
 		return
 	}
 
-	event.Dialplan.MatchedUser = user
-	event.Dialplan.MatchedContact = contact
+	event.Dialplan.MatchedUser = service.ConvertUserToPayload(user)
+	event.Dialplan.MatchedContact = service.ConvertContactToPayload(contact)
 
 	h.handleStartAIConversation(ctx, event)
 }

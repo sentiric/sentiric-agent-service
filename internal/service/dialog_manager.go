@@ -43,14 +43,15 @@ func NewDialogManager(
 func (dm *DialogManager) Start(ctx context.Context, event *state.CallEvent) {
 	l := ctxlogger.FromContext(ctx)
 
-	// Diyalog döngüsünü başlatmadan hemen önce olayı yayınla
 	dm.publishUserIdentifiedEvent(ctx, event)
 
 	tenantID := "sentiric_demo"
-	if event.Dialplan.GetMatchedUser() != nil && event.Dialplan.GetMatchedUser().TenantId != "" {
-		tenantID = event.Dialplan.GetMatchedUser().TenantId
-	} else if event.Dialplan.GetInboundRoute() != nil && event.Dialplan.GetInboundRoute().TenantId != "" {
-		tenantID = event.Dialplan.GetInboundRoute().TenantId
+	if event.Dialplan != nil {
+		if event.Dialplan.MatchedUser != nil && event.Dialplan.MatchedUser.TenantID != "" {
+			tenantID = event.Dialplan.MatchedUser.TenantID
+		} else if event.Dialplan.TenantID != "" {
+			tenantID = event.Dialplan.TenantID
+		}
 	}
 
 	initialState := &state.CallState{
@@ -74,9 +75,10 @@ func (dm *DialogManager) Start(ctx context.Context, event *state.CallEvent) {
 func (dm *DialogManager) publishUserIdentifiedEvent(ctx context.Context, event *state.CallEvent) {
 	l := ctxlogger.FromContext(ctx)
 
-	if event.Dialplan.GetMatchedUser() != nil && event.Dialplan.GetMatchedContact() != nil {
+	if event.Dialplan != nil && event.Dialplan.MatchedUser != nil && event.Dialplan.MatchedContact != nil {
 		l.Info().Msg("Kullanıcı kimliği belirlendi, user.identified.for_call olayı yayınlanacak.")
-
+		user := event.Dialplan.MatchedUser
+		contact := event.Dialplan.MatchedContact
 		userIdentifiedPayload := struct {
 			EventType string    `json:"eventType"`
 			TraceID   string    `json:"traceId"`
@@ -89,12 +91,11 @@ func (dm *DialogManager) publishUserIdentifiedEvent(ctx context.Context, event *
 			EventType: string(constants.EventTypeUserIdentifiedForCall),
 			TraceID:   event.TraceID,
 			CallID:    event.CallID,
-			UserID:    event.Dialplan.GetMatchedUser().GetId(),
-			ContactID: event.Dialplan.GetMatchedContact().GetId(),
-			TenantID:  event.Dialplan.GetMatchedUser().GetTenantId(),
+			UserID:    user.ID,
+			ContactID: contact.ID,
+			TenantID:  user.TenantID,
 			Timestamp: time.Now().UTC(),
 		}
-
 		err := dm.publisher.PublishJSON(ctx, string(constants.EventTypeUserIdentifiedForCall), userIdentifiedPayload)
 		if err != nil {
 			l.Error().Err(err).Msg("user.identified.for_call olayı yayınlanamadı.")
@@ -106,21 +107,17 @@ func (dm *DialogManager) publishUserIdentifiedEvent(ctx context.Context, event *
 	}
 }
 
-// --- YENİ YARDIMCI FONKSİYON SONU ---
-
 func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.CallState) {
 	l := ctxlogger.FromContext(ctx)
 	currentCallID := initialSt.CallID
 
 	defer func() {
 		dm.mediaManager.StopRecording(ctx, initialSt)
-
 		finalState, err := dm.stateManager.Get(context.Background(), currentCallID)
 		if err != nil || finalState == nil {
 			l.Error().Err(err).Msg("Döngü sonu durumu alınamadı, sonlandırma isteği gönderilemiyor.")
 			return
 		}
-
 		if finalState.CurrentState == constants.StateTerminated {
 			l.Info().Msg("Diyalog sonlandı, sip-signaling'e çağrıyı kapatma isteği gönderiliyor.")
 			type TerminationRequest struct {
@@ -140,7 +137,10 @@ func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.Cal
 		}
 	}()
 
-	actionName := initialSt.Event.Dialplan.Action.Action
+	var actionName string
+	if initialSt.Event.Dialplan != nil && initialSt.Event.Dialplan.Action != nil {
+		actionName = initialSt.Event.Dialplan.Action.Action
+	}
 	var initialAnnouncementID constants.AnnouncementID
 	if actionName == "PROCESS_GUEST_CALL" {
 		initialAnnouncementID = constants.AnnounceGuestWelcome
@@ -165,18 +165,15 @@ func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.Cal
 			return
 		default:
 		}
-
 		st, err := dm.stateManager.Get(ctx, currentCallID)
 		if err != nil || st == nil {
 			l.Error().Err(err).Msg("Döngü için durum Redis'ten alınamadı veya nil, döngü sonlandırılıyor.")
 			return
 		}
-
 		if st.CurrentState == constants.StateEnded || st.CurrentState == constants.StateTerminated {
 			l.Info().Str("final_state", string(st.CurrentState)).Msg("Diyalog döngüsü sonlandırıldı.")
 			return
 		}
-
 		handlerFunc, ok := stateMap[st.CurrentState]
 		if !ok {
 			l.Error().Str("state", string(st.CurrentState)).Msg("Bilinmeyen durum, döngü sonlandırılıyor.")
@@ -185,7 +182,6 @@ func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.Cal
 			l.Info().Str("state", string(st.CurrentState)).Msg("Diyalog döngüsü adımı işleniyor.")
 			st, err = handlerFunc(ctx, st)
 		}
-
 		if err != nil {
 			if err == context.Canceled || strings.Contains(err.Error(), "context canceled") {
 				l.Warn().Msg("İşlem context iptali nedeniyle durduruldu. Döngü sonlanıyor.")
@@ -196,7 +192,6 @@ func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.Cal
 				st.CurrentState = constants.StateTerminated
 			}
 		}
-
 		if err := dm.stateManager.Set(ctx, st); err != nil {
 			l.Error().Err(err).Msg("Döngü içinde durum güncellenemedi, sonlandırılıyor.")
 			return

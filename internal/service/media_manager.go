@@ -17,53 +17,44 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// MediaManager, media-service ile olan tüm etkileşimleri yönetir.
 type MediaManager struct {
 	db           *sql.DB
 	mediaClient  mediav1.MediaServiceClient
 	eventsFailed *prometheus.CounterVec
-	bucketName   string // YENİ ALAN
+	bucketName   string
 }
 
-// NewMediaManager, yeni bir MediaManager örneği oluşturur.
 func NewMediaManager(db *sql.DB, mc mediav1.MediaServiceClient, failed *prometheus.CounterVec, bucketName string) *MediaManager {
 	return &MediaManager{
 		db:           db,
 		mediaClient:  mc,
 		eventsFailed: failed,
-		bucketName:   bucketName, // YENİ ALAN
+		bucketName:   bucketName,
 	}
 }
 
-// PlayAudio, verilen bir audio URI'sini kullanıcıya çalar.
 func (m *MediaManager) PlayAudio(ctx context.Context, callState *state.CallState, audioURI string) {
 	l := ctxlogger.FromContext(ctx)
-
 	if callState.Event == nil || callState.Event.Media == nil {
 		l.Error().Msg("PlayAudio için kritik medya bilgisi eksik (st.Event.Media is nil).")
 		return
 	}
-
 	rtpTargetVal, ok1 := callState.Event.Media["caller_rtp_addr"]
 	serverPortVal, ok2 := callState.Event.Media["server_rtp_port"]
 	if !ok1 || !ok2 {
 		l.Error().Msg("PlayAudio için medya bilgileri eksik (caller_rtp_addr veya server_rtp_port anahtarı yok).")
 		return
 	}
-
 	rtpTarget, ok1 := rtpTargetVal.(string)
 	serverPortFloat, ok2 := serverPortVal.(float64)
 	if !ok1 || !ok2 {
 		l.Error().Interface("rtp_target", rtpTargetVal).Interface("server_port", serverPortVal).Msg("PlayAudio için medya bilgileri geçersiz formatta.")
 		return
 	}
-
 	serverPort := uint32(serverPortFloat)
 	playReq := &mediav1.PlayAudioRequest{RtpTargetAddr: rtpTarget, ServerRtpPort: serverPort, AudioUri: audioURI}
-
 	playCtx, playCancel := context.WithTimeout(metadata.AppendToOutgoingContext(ctx, "x-trace-id", callState.TraceID), 5*time.Minute)
 	defer playCancel()
-
 	_, err := m.mediaClient.PlayAudio(playCtx, playReq)
 	if err != nil {
 		stErr, ok := status.FromError(err)
@@ -78,10 +69,9 @@ func (m *MediaManager) PlayAudio(ctx context.Context, callState *state.CallState
 	}
 }
 
-// PlayAnnouncement, veritabanından anons yolunu alıp çalar.
 func (m *MediaManager) PlayAnnouncement(ctx context.Context, callState *state.CallState, announcementID constants.AnnouncementID) {
 	l := ctxlogger.FromContext(ctx)
-	languageCode := getLanguageCode(callState.Event)
+	languageCode := GetLanguageCode(callState.Event)
 	audioPath, err := database.GetAnnouncementPathFromDB(m.db, string(announcementID), callState.TenantID, languageCode)
 	if err != nil {
 		l.Error().Err(err).Str("announcement_id", string(announcementID)).Msg("Anons yolu alınamadı, fallback deneniyor")
@@ -95,21 +85,13 @@ func (m *MediaManager) PlayAnnouncement(ctx context.Context, callState *state.Ca
 	m.PlayAudio(ctx, callState, audioURI)
 }
 
-// StartRecording, çağrı kaydını başlatır.
 func (m *MediaManager) StartRecording(ctx context.Context, callState *state.CallState) {
 	l := ctxlogger.FromContext(ctx)
 	recordingTenantID := callState.TenantID
-
-	// --- DEĞİŞİKLİK BURADA ---
-	// Artık bucket adını konfigürasyondan alıyoruz
 	recordingURI := fmt.Sprintf("s3://%s/%s/%s.wav", m.bucketName, recordingTenantID, callState.CallID)
-	// --- DEĞİŞİKLİK SONU ---
-
 	l.Info().Str("uri", recordingURI).Msg("Çağrı kaydı başlatılıyor...")
-
 	startRecCtx, startRecCancel := context.WithTimeout(metadata.AppendToOutgoingContext(ctx, "x-trace-id", callState.TraceID), 10*time.Second)
 	defer startRecCancel()
-
 	_, err := m.mediaClient.StartRecording(startRecCtx, &mediav1.StartRecordingRequest{
 		ServerRtpPort: uint32(callState.Event.Media["server_rtp_port"].(float64)),
 		OutputUri:     recordingURI,
@@ -121,13 +103,11 @@ func (m *MediaManager) StartRecording(ctx context.Context, callState *state.Call
 	}
 }
 
-// StopRecording, çağrı kaydını durdurur.
 func (m *MediaManager) StopRecording(ctx context.Context, callState *state.CallState) {
 	l := ctxlogger.FromContext(ctx)
 	l.Info().Msg("Çağrı kaydı durduruluyor...")
 	stopRecCtx, stopRecCancel := context.WithTimeout(metadata.AppendToOutgoingContext(context.Background(), "x-trace-id", callState.TraceID), 10*time.Second)
 	defer stopRecCancel()
-
 	_, err := m.mediaClient.StopRecording(stopRecCtx, &mediav1.StopRecordingRequest{
 		ServerRtpPort: uint32(callState.Event.Media["server_rtp_port"].(float64)),
 	})

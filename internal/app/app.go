@@ -7,7 +7,6 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
-	"time"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/rabbitmq/amqp091-go"
@@ -44,6 +43,8 @@ func NewApp(cfg *config.Config, log zerolog.Logger) *App {
 func (a *App) Run() {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
+
+	go metrics.StartServer(a.Cfg.MetricsPort, a.Log)
 
 	a.wg.Add(1)
 	go func() {
@@ -94,14 +95,12 @@ func (a *App) Run() {
 }
 
 func (a *App) buildDependencies(db *sql.DB, redisClient *redis.Client, rabbitCh *amqp091.Channel) *Dependencies {
-	// Clients
 	mediaClient, _ := client.NewMediaServiceClient(a.Cfg)
 	userClient, _ := client.NewUserServiceClient(a.Cfg)
 	ttsClient, _ := client.NewTTSServiceClient(a.Cfg)
 	llmClient := client.NewLlmClient(a.Cfg.LlmServiceURL, a.Log)
 	sttClient := client.NewSttClient(a.Cfg.SttServiceURL, a.Log)
 
-	// Dinamik olarak Knowledge Client'ı yapılandırmaya göre oluştur
 	var knowledgeClient service.KnowledgeClientInterface
 	if a.Cfg.KnowledgeServiceURL != "" {
 		a.Log.Info().Str("url", a.Cfg.KnowledgeServiceURL).Msg("HTTP Knowledge Service istemcisi kullanılıyor.")
@@ -112,11 +111,7 @@ func (a *App) buildDependencies(db *sql.DB, redisClient *redis.Client, rabbitCh 
 		if err != nil {
 			a.Log.Error().Err(err).Msg("gRPC Knowledge Service istemcisi oluşturulamadı. RAG devre dışı kalacak.")
 		} else {
-			// --- DÜZELTME BURADA ---
-			// Ham gRPC istemcisini doğrudan atamak yerine, onu adaptörümüzle sarmalıyoruz.
-			// Bu adaptör, arayüzü doğru bir şekilde uygular ve derleme hatasını çözer.
 			knowledgeClient = client.NewGrpcKnowledgeClientAdapter(grpcClient)
-			// --- DÜZELTME SONU ---
 		}
 	} else {
 		a.Log.Warn().Msg("Knowledge service için ne gRPC ne de HTTP URL'si tanımlanmamış. RAG devre dışı.")
@@ -124,15 +119,11 @@ func (a *App) buildDependencies(db *sql.DB, redisClient *redis.Client, rabbitCh 
 
 	stateManager := state.NewManager(redisClient)
 	publisher := queue.NewPublisher(rabbitCh, a.Log)
-
 	templateProvider := service.NewTemplateProvider(db)
-	// --- DEĞİŞİKLİK BURADA ---
 	mediaManager := service.NewMediaManager(db, mediaClient, metrics.EventsFailed, a.Cfg.BucketName)
-	// --- DEĞİŞİKLİK SONU ---
 	aiOrchestrator := service.NewAIOrchestrator(a.Cfg, llmClient, sttClient, ttsClient, mediaClient, knowledgeClient)
 	dialogManager := service.NewDialogManager(a.Cfg, stateManager, aiOrchestrator, mediaManager, templateProvider, publisher)
 	userManager := service.NewUserManager(userClient)
-
 	callHandler := handler.NewCallHandler(userManager, dialogManager, stateManager)
 	eventHandler := handler.NewEventHandler(a.Log, metrics.EventsProcessed, metrics.EventsFailed, callHandler)
 
@@ -154,88 +145,27 @@ func (a *App) setupInfrastructure(ctx context.Context) (
 	go func() {
 		defer infraWg.Done()
 		var err error
-		for {
-			select {
-			case <-ctx.Done():
-				a.Log.Info().Msg("PostgreSQL bağlantı denemesi context iptaliyle durduruldu.")
-				return
-			default:
-				db, err = database.Connect(ctx, a.Cfg.PostgresURL, a.Log)
-				if err == nil {
-					return
-				}
-				if ctx.Err() == nil {
-					a.Log.Warn().Err(err).Msg("PostgreSQL'e bağlanılamadı, 5 saniye sonra tekrar denenecek...")
-				}
-				select {
-				case <-time.After(5 * time.Second):
-				case <-ctx.Done():
-					a.Log.Info().Msg("PostgreSQL bağlantı beklemesi context iptaliyle durduruldu.")
-					return
-				}
-			}
+		db, err = database.Connect(ctx, a.Cfg.PostgresURL, a.Log)
+		if err != nil && ctx.Err() == nil {
+			a.Log.Error().Err(err).Msg("Veritabanı bağlantı denemeleri başarısız oldu, servis sonlandırılıyor.")
 		}
 	}()
 
 	go func() {
 		defer infraWg.Done()
-		for {
-			select {
-			case <-ctx.Done():
-				a.Log.Info().Msg("Redis bağlantı denemesi context iptaliyle durduruldu.")
-				return
-			default:
-				opt, err := redis.ParseURL(a.Cfg.RedisURL)
-				if err != nil {
-					if ctx.Err() == nil {
-						a.Log.Error().Err(err).Msg("redis URL'si parse edilemedi, 5 saniye sonra tekrar denenecek...")
-					}
-				} else {
-					redisClient = redis.NewClient(opt)
-					pingCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-					err := redisClient.Ping(pingCtx).Err()
-					cancel()
-					if err == nil {
-						a.Log.Info().Msg("Redis bağlantısı başarılı.")
-						return
-					}
-					if ctx.Err() == nil {
-						a.Log.Warn().Err(err).Msg("Redis'e bağlanılamadı, 5 saniye sonra tekrar denenecek...")
-					}
-				}
-				select {
-				case <-time.After(5 * time.Second):
-				case <-ctx.Done():
-					a.Log.Info().Msg("Redis bağlantı beklemesi context iptaliyle durduruldu.")
-					return
-				}
-			}
+		var err error
+		redisClient, err = database.ConnectRedis(ctx, a.Cfg.RedisURL, a.Log)
+		if err != nil && ctx.Err() == nil {
+			a.Log.Error().Err(err).Msg("Redis bağlantı denemeleri başarısız oldu, servis sonlandırılıyor.")
 		}
 	}()
 
 	go func() {
 		defer infraWg.Done()
-		for {
-			select {
-			case <-ctx.Done():
-				a.Log.Info().Msg("RabbitMQ bağlantı denemesi context iptaliyle durduruldu.")
-				return
-			default:
-				var err error
-				rabbitCh, closeChan, err = queue.Connect(ctx, a.Cfg.RabbitMQURL, a.Log)
-				if err == nil {
-					return
-				}
-				if ctx.Err() == nil {
-					a.Log.Warn().Err(err).Msg("RabbitMQ'ya bağlanılamadı, 5 saniye sonra tekrar denenecek...")
-				}
-				select {
-				case <-time.After(5 * time.Second):
-				case <-ctx.Done():
-					a.Log.Info().Msg("RabbitMQ bağlantı beklemesi context iptaliyle durduruldu.")
-					return
-				}
-			}
+		var err error
+		rabbitCh, closeChan, err = queue.Connect(ctx, a.Cfg.RabbitMQURL, a.Log)
+		if err != nil && ctx.Err() == nil {
+			a.Log.Error().Err(err).Msg("RabbitMQ bağlantı denemeleri başarısız oldu, servis sonlandırılıyor.")
 		}
 	}()
 

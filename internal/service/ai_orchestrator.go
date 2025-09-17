@@ -23,8 +23,6 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// KnowledgeClientInterface, hem gRPC hem de HTTP istemcilerinin uygulayacağı arayüzü tanımlar.
-// Bu, AIOrchestrator'ın hangi protokolün kullanıldığını bilmeden çalışmasını sağlar.
 type KnowledgeClientInterface interface {
 	Query(ctx context.Context, req *knowledgev1.QueryRequest) (*knowledgev1.QueryResponse, error)
 }
@@ -63,23 +61,18 @@ func NewAIOrchestrator(
 
 func (a *AIOrchestrator) QueryKnowledgeBase(ctx context.Context, query string, callState *state.CallState) (string, error) {
 	l := ctxlogger.FromContext(ctx)
-
 	if a.knowledgeClient == nil {
 		l.Warn().Msg("Knowledge service istemcisi yapılandırılmamış, RAG sorgulaması atlanıyor.")
 		return "", nil
 	}
-
 	l.Info().Str("query", query).Msg("Knowledge base sorgulanıyor...")
-
 	req := &knowledgev1.QueryRequest{
 		TenantId: callState.TenantID,
 		Query:    query,
 		TopK:     int32(a.cfg.KnowledgeServiceTopK),
 	}
-
 	queryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-
 	res, err := a.knowledgeClient.Query(queryCtx, req)
 	if err != nil {
 		st, ok := status.FromError(err)
@@ -90,18 +83,15 @@ func (a *AIOrchestrator) QueryKnowledgeBase(ctx context.Context, query string, c
 		l.Error().Err(err).Msg("Knowledge base sorgulanırken beklenmedik bir hata oluştu.")
 		return "", err
 	}
-
 	if len(res.GetResults()) == 0 {
 		l.Info().Msg("Knowledge base'de ilgili sonuç bulunamadı.")
 		return "", nil
 	}
-
 	var contextBuilder strings.Builder
 	contextBuilder.WriteString("İlgili Bilgiler:\n")
 	for i, result := range res.GetResults() {
 		contextBuilder.WriteString(fmt.Sprintf("%d. %s\n", i+1, result.GetContent()))
 	}
-
 	contextStr := contextBuilder.String()
 	l.Info().Int("result_count", len(res.GetResults())).Msg("Knowledge base'den sonuçlar başarıyla alındı.")
 	return contextStr, nil
@@ -114,20 +104,16 @@ func (a *AIOrchestrator) GenerateResponse(ctx context.Context, prompt string, ca
 func (a *AIOrchestrator) SynthesizeAndGetAudio(ctx context.Context, callState *state.CallState, textToPlay string) (string, error) {
 	l := ctxlogger.FromContext(ctx)
 	l.Info().Str("text", textToPlay).Msg("Metin sese dönüştürülüyor...")
-
 	var speakerURL, voiceSelector string
 	var useCloning bool
-
-	if callState.Event.Dialplan.Action.ActionData != nil && callState.Event.Dialplan.Action.ActionData.Data != nil {
-		actionData := callState.Event.Dialplan.Action.ActionData.Data
+	if callState.Event.Dialplan != nil && callState.Event.Dialplan.Action != nil && callState.Event.Dialplan.Action.ActionData != nil {
+		actionData := callState.Event.Dialplan.Action.ActionData
 		speakerURL, useCloning = actionData["speaker_wav_url"]
 		voiceSelector = actionData["voice_selector"]
 	}
-
 	mdCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", callState.TraceID)
-	languageCode := getLanguageCode(callState.Event)
+	languageCode := GetLanguageCode(callState.Event)
 	ttsReq := &ttsv1.SynthesizeRequest{Text: textToPlay, LanguageCode: languageCode}
-
 	if useCloning && speakerURL != "" {
 		if !isAllowedSpeakerURL(speakerURL, a.cfg.AgentAllowedSpeakerDomains) {
 			err := fmt.Errorf("güvenlik uyarisi: İzin verilmeyen bir speaker_wav_url engellendi: %s", speakerURL)
@@ -139,10 +125,8 @@ func (a *AIOrchestrator) SynthesizeAndGetAudio(ctx context.Context, callState *s
 		l.Info().Str("voice_selector", voiceSelector).Msg("Dinamik ses seçici kullanılıyor.")
 		ttsReq.VoiceSelector = &voiceSelector
 	}
-
 	ttsCtx, ttsCancel := context.WithTimeout(mdCtx, 20*time.Second)
 	defer ttsCancel()
-
 	ttsResp, err := a.ttsClient.Synthesize(ttsCtx, ttsReq)
 	if err != nil {
 		l.Error().Err(err).Msg("TTS Gateway'den yanıt alınamadı (muhtemelen zaman aşımı).")
@@ -153,7 +137,6 @@ func (a *AIOrchestrator) SynthesizeAndGetAudio(ctx context.Context, callState *s
 		l.Error().Err(err).Msg("Bu beklenmedik bir durum.")
 		return "", err
 	}
-
 	audioBytes := ttsResp.GetAudioContent()
 	audioURI := fmt.Sprintf("data:audio/wav;base64,%s", base64.StdEncoding.EncodeToString(audioBytes))
 	return audioURI, nil
@@ -162,7 +145,6 @@ func (a *AIOrchestrator) SynthesizeAndGetAudio(ctx context.Context, callState *s
 func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *state.CallState) (TranscriptionResult, error) {
 	l := ctxlogger.FromContext(ctx)
 	var result TranscriptionResult
-
 	portVal, ok := callState.Event.Media["server_rtp_port"]
 	if !ok {
 		return result, fmt.Errorf("kritik hata: CallState içinde 'server_rtp_port' bulunamadı")
@@ -172,7 +154,6 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 		l.Error().Interface("value", portVal).Msg("Kritik hata: 'server_rtp_port' beklenen float64 tipinde değil.")
 		return result, fmt.Errorf("kritik hata: 'server_rtp_port' tipi geçersiz")
 	}
-
 	grpcCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", callState.TraceID)
 	mediaStream, err := a.mediaClient.RecordAudio(grpcCtx, &mediav1.RecordAudioRequest{
 		ServerRtpPort:    uint32(serverRtpPortFloat),
@@ -182,45 +163,38 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 		return result, fmt.Errorf("media service ile stream oluşturulamadı: %w", err)
 	}
 	l.Info().Msg("Media-Service'ten ses akışı başlatıldı.")
-
 	u, err := url.Parse(a.sttClient.BaseURL())
 	if err != nil {
 		return result, fmt.Errorf("stt service url parse edilemedi: %w", err)
 	}
-
 	scheme := "wss"
 	if u.Scheme == "http" {
 		scheme = "ws"
 	}
-
 	sttURL := url.URL{Scheme: scheme, Host: u.Host, Path: "/api/v1/transcribe-stream"}
 	q := sttURL.Query()
-	q.Set("language", getLanguageCode(callState.Event))
+	q.Set("language", GetLanguageCode(callState.Event))
 	q.Set("logprob_threshold", fmt.Sprintf("%f", a.cfg.SttServiceLogprobThreshold))
 	q.Set("no_speech_threshold", fmt.Sprintf("%f", a.cfg.SttServiceNoSpeechThreshold))
 	vadLevel := "1"
-	if callState.Event.Dialplan.Action.ActionData != nil && callState.Event.Dialplan.Action.ActionData.Data != nil {
-		if val, ok := callState.Event.Dialplan.Action.ActionData.Data["stt_vad_level"]; ok {
+	if callState.Event.Dialplan != nil && callState.Event.Dialplan.Action != nil && callState.Event.Dialplan.Action.ActionData != nil {
+		if val, ok := callState.Event.Dialplan.Action.ActionData["stt_vad_level"]; ok {
 			vadLevel = val
 		}
 	}
 	q.Set("vad_aggressiveness", vadLevel)
 	sttURL.RawQuery = q.Encode()
-
 	l.Info().Str("url", sttURL.String()).Msg("STT-Service'e WebSocket bağlantısı kuruluyor...")
-
 	wsConn, _, err := websocket.DefaultDialer.Dial(sttURL.String(), nil)
 	if err != nil {
 		return result, fmt.Errorf("stt service websocket bağlantısı kurulamadı: %w", err)
 	}
 	defer wsConn.Close()
 	l.Info().Msg("STT-Service'e WebSocket bağlantısı başarılı.")
-
 	errChan := make(chan error, 2)
 	resultChan := make(chan TranscriptionResult, 1)
 	streamCtx, cancelStream := context.WithCancel(ctx)
 	defer cancelStream()
-
 	go func() {
 		defer func() {
 			wsConn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
@@ -246,7 +220,6 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 			}
 		}
 	}()
-
 	go func() {
 		defer close(resultChan)
 		for {
@@ -271,7 +244,6 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 			}
 		}
 	}()
-
 	select {
 	case res, ok := <-resultChan:
 		if !ok {
@@ -289,24 +261,11 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 	}
 }
 
-func getLanguageCode(event *state.CallEvent) string {
-	if event != nil && event.Dialplan != nil {
-		if event.Dialplan.MatchedUser != nil && event.Dialplan.MatchedUser.PreferredLanguageCode != nil && *event.Dialplan.MatchedUser.PreferredLanguageCode != "" {
-			return *event.Dialplan.MatchedUser.PreferredLanguageCode
-		}
-		if event.Dialplan.GetInboundRoute() != nil && event.Dialplan.GetInboundRoute().DefaultLanguageCode != "" {
-			return event.Dialplan.GetInboundRoute().DefaultLanguageCode
-		}
-	}
-	return "tr"
-}
-
 func isAllowedSpeakerURL(rawURL, allowedDomainsCSV string) bool {
 	u, err := url.Parse(rawURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
 		return false
 	}
-
 	allowedDomains := strings.Split(allowedDomainsCSV, ",")
 	domainMap := make(map[string]bool)
 	for _, domain := range allowedDomains {
