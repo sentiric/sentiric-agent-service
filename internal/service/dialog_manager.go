@@ -1,3 +1,4 @@
+// sentiric-agent-service/internal/service/dialog_manager.go
 package service
 
 import (
@@ -104,8 +105,13 @@ func (dm *DialogManager) publishUserIdentifiedEvent(ctx context.Context, event *
 func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.CallState) {
 	l := ctxlogger.FromContext(ctx)
 	currentCallID := initialSt.CallID
+
+	// Çağrı kaydını burada başlatalım
+	dm.mediaManager.StartRecording(ctx, initialSt)
+
 	defer func() {
-		dm.mediaManager.StopRecording(ctx, initialSt)
+		// Döngü bittiğinde kaydı durdur
+		dm.mediaManager.StopRecording(context.Background(), initialSt)
 		finalState, err := dm.stateManager.Get(context.Background(), currentCallID)
 		if err != nil || finalState == nil {
 			l.Error().Err(err).Msg("Döngü sonu durumu alınamadı, sonlandırma isteği gönderilemiyor.")
@@ -129,18 +135,10 @@ func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.Cal
 			}
 		}
 	}()
-	var actionName string
-	if initialSt.Event.Dialplan != nil && initialSt.Event.Dialplan.Action != nil {
-		actionName = initialSt.Event.Dialplan.Action.Action
-	}
-	var initialAnnouncementID constants.AnnouncementID
-	if actionName == "PROCESS_GUEST_CALL" {
-		initialAnnouncementID = constants.AnnounceGuestWelcome
-	} else {
-		initialAnnouncementID = constants.AnnounceSystemConnecting
-	}
-	dm.mediaManager.PlayAnnouncement(ctx, initialSt, initialAnnouncementID)
-	dm.mediaManager.StartRecording(ctx, initialSt)
+
+	// DEĞİŞİKLİK: Statik anons çalma mantığını kaldırıyoruz.
+	// İlk karşılama tamamen stateFnWelcoming tarafından yönetilecek.
+
 	type DialogFunc func(context.Context, *state.CallState) (*state.CallState, error)
 	stateMap := map[constants.DialogState]DialogFunc{
 		constants.StateWelcoming: dm.stateFnWelcoming,
@@ -148,6 +146,7 @@ func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.Cal
 		constants.StateThinking:  dm.stateFnThinking,
 		constants.StateSpeaking:  dm.stateFnSpeaking,
 	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -191,8 +190,11 @@ func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.Cal
 
 func (dm *DialogManager) stateFnWelcoming(ctx context.Context, st *state.CallState) (*state.CallState, error) {
 	l := ctxlogger.FromContext(ctx)
-	l.Info().Msg("İlk AI yanıtı öncesi 1.5 saniye bekleniyor...")
-	time.Sleep(1500 * time.Millisecond)
+
+	// DEĞİŞİKLİK: SIP çağrısı kurulur kurulmaz ilk anonsun başlaması için bekleme süresini kısaltıyoruz/kaldırıyoruz.
+	l.Info().Msg("İlk AI yanıtı üretiliyor...")
+	// time.Sleep(1500 * time.Millisecond) // Bu bekleme kaldırıldı.
+
 	prompt, err := dm.templateProvider.GetWelcomePrompt(ctx, st)
 	if err != nil {
 		return st, err
