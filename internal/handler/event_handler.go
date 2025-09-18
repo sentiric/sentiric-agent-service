@@ -42,7 +42,6 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 		TraceID   string `json:"traceId"`
 	}
 
-	// Gelen ham mesajı loglayalım
 	h.log.Debug().Bytes("raw_message", body).Msg("RabbitMQ'dan ham mesaj alındı")
 
 	if err := json.Unmarshal(body, &genericEvent); err != nil {
@@ -60,19 +59,15 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 
 	ctx := ctxlogger.ToContext(context.Background(), l)
 
-	l.Info().Msg("Olay alındı")
+	l.Info().Msg("Olay alındı ve işlenmeye başlandı.")
 
 	switch constants.EventType(genericEvent.EventType) {
 	case constants.EventTypeCallStarted:
 		var event state.CallEvent
-
-		// Unmarshal hatasını daha detaylı loglayalım
 		if err := json.Unmarshal(body, &event); err != nil {
 			l.Error().Err(err).Msg("call.started olayı parse edilemedi. Gelen veri ile Go struct'ı arasında uyumsuzluk var.")
-			// Hatalı durumda bile devam etmeyelim
 			return
 		}
-		// Sadece başarılı olursa devam et
 		go h.callHandler.HandleCallStarted(ctx, &event)
 
 	case constants.EventTypeCallEnded:

@@ -103,9 +103,8 @@ func (a *App) buildDependencies(db *sql.DB, redisClient *redis.Client, rabbitCh 
 	sttClient := client.NewSttClient(a.Cfg.SttServiceURL, a.Log)
 
 	var knowledgeClient service.KnowledgeClientInterface
-	// DEĞİŞİKLİK: gRPC'yi önceliklendir
 	if a.Cfg.KnowledgeServiceGrpcURL != "" {
-		a.Log.Info().Str("url", a.Cfg.KnowledgeServiceGrpcURL).Msg("gRPC Knowledge Service istemcisi kullanılıyor.")
+		a.Log.Debug().Str("url", a.Cfg.KnowledgeServiceGrpcURL).Msg("gRPC Knowledge Service istemcisi kullanılıyor.")
 		grpcClient, err := client.NewKnowledgeServiceClient(a.Cfg)
 		if err != nil {
 			a.Log.Error().Err(err).Msg("gRPC Knowledge Service istemcisi oluşturulamadı. RAG devre dışı kalacak.")
@@ -113,7 +112,7 @@ func (a *App) buildDependencies(db *sql.DB, redisClient *redis.Client, rabbitCh 
 			knowledgeClient = client.NewGrpcKnowledgeClientAdapter(grpcClient)
 		}
 	} else if a.Cfg.KnowledgeServiceURL != "" {
-		a.Log.Info().Str("url", a.Cfg.KnowledgeServiceURL).Msg("HTTP Knowledge Service istemcisi (fallback) kullanılıyor.")
+		a.Log.Debug().Str("url", a.Cfg.KnowledgeServiceURL).Msg("HTTP Knowledge Service istemcisi (fallback) kullanılıyor.")
 		knowledgeClient = client.NewKnowledgeClient(a.Cfg.KnowledgeServiceURL, a.Log)
 	} else {
 		a.Log.Warn().Msg("Knowledge service için ne gRPC ne de HTTP URL'si tanımlanmamış. RAG devre dışı.")
@@ -135,7 +134,6 @@ func (a *App) buildDependencies(db *sql.DB, redisClient *redis.Client, rabbitCh 
 	}
 }
 
-// ... setupInfrastructure fonksiyonu aynı ...
 func (a *App) setupInfrastructure(ctx context.Context) (
 	db *sql.DB,
 	redisClient *redis.Client,

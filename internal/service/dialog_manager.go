@@ -71,7 +71,7 @@ func (dm *DialogManager) Start(ctx context.Context, event *state.CallEvent) {
 func (dm *DialogManager) publishUserIdentifiedEvent(ctx context.Context, event *state.CallEvent) {
 	l := ctxlogger.FromContext(ctx)
 	if event.Dialplan != nil && event.Dialplan.MatchedUser != nil && event.Dialplan.MatchedContact != nil {
-		l.Info().Msg("Kullanıcı kimliği belirlendi, user.identified.for_call olayı yayınlanacak.")
+		l.Info().Str("user_id", event.Dialplan.MatchedUser.ID).Msg("Kullanıcı kimliği belirlendi, olay yayınlanıyor.")
 		user := event.Dialplan.MatchedUser
 		contact := event.Dialplan.MatchedContact
 		userIdentifiedPayload := struct {
@@ -95,10 +95,10 @@ func (dm *DialogManager) publishUserIdentifiedEvent(ctx context.Context, event *
 		if err != nil {
 			l.Error().Err(err).Msg("user.identified.for_call olayı yayınlanamadı.")
 		} else {
-			l.Info().Msg("user.identified.for_call olayı başarıyla yayınlandı.")
+			l.Debug().Msg("user.identified.for_call olayı başarıyla yayınlandı.")
 		}
 	} else {
-		l.Info().Msg("Kullanıcı veya contact bilgisi eksik. Bu bir misafir araması olabilir, user.identified.for_call olayı yayınlanmıyor.")
+		l.Info().Msg("Misafir araması, user.identified.for_call olayı yayınlanmıyor.")
 	}
 }
 
@@ -106,11 +106,9 @@ func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.Cal
 	l := ctxlogger.FromContext(ctx)
 	currentCallID := initialSt.CallID
 
-	// Çağrı kaydını burada başlatalım
 	dm.mediaManager.StartRecording(ctx, initialSt)
 
 	defer func() {
-		// Döngü bittiğinde kaydı durdur
 		dm.mediaManager.StopRecording(context.Background(), initialSt)
 		finalState, err := dm.stateManager.Get(context.Background(), currentCallID)
 		if err != nil || finalState == nil {
@@ -118,7 +116,7 @@ func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.Cal
 			return
 		}
 		if finalState.CurrentState == constants.StateTerminated {
-			l.Info().Msg("Diyalog sonlandı, sip-signaling'e çağrıyı kapatma isteği gönderiliyor.")
+			l.Info().Msg("Diyalog sonlandı, çağrıyı kapatma isteği gönderiliyor.")
 			type TerminationRequest struct {
 				EventType string    `json:"eventType"`
 				CallID    string    `json:"callId"`
@@ -135,9 +133,6 @@ func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.Cal
 			}
 		}
 	}()
-
-	// DEĞİŞİKLİK: Statik anons çalma mantığını kaldırıyoruz.
-	// İlk karşılama tamamen stateFnWelcoming tarafından yönetilecek.
 
 	type DialogFunc func(context.Context, *state.CallState) (*state.CallState, error)
 	stateMap := map[constants.DialogState]DialogFunc{
@@ -168,7 +163,7 @@ func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.Cal
 			l.Error().Str("state", string(st.CurrentState)).Msg("Bilinmeyen durum, döngü sonlandırılıyor.")
 			st.CurrentState = constants.StateTerminated
 		} else {
-			l.Info().Str("state", string(st.CurrentState)).Msg("Diyalog döngüsü adımı işleniyor.")
+			l.Info().Str("state", string(st.CurrentState)).Msg("Diyalog durumuna giriliyor.")
 			st, err = handlerFunc(ctx, st)
 		}
 		if err != nil {
@@ -190,11 +185,7 @@ func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.Cal
 
 func (dm *DialogManager) stateFnWelcoming(ctx context.Context, st *state.CallState) (*state.CallState, error) {
 	l := ctxlogger.FromContext(ctx)
-
-	// DEĞİŞİKLİK: SIP çağrısı kurulur kurulmaz ilk anonsun başlaması için bekleme süresini kısaltıyoruz/kaldırıyoruz.
-	l.Info().Msg("İlk AI yanıtı üretiliyor...")
-	// time.Sleep(1500 * time.Millisecond) // Bu bekleme kaldırıldı.
-
+	l.Info().Msg("İlk AI karşılama yanıtı üretiliyor...")
 	prompt, err := dm.templateProvider.GetWelcomePrompt(ctx, st)
 	if err != nil {
 		return st, err
@@ -244,6 +235,7 @@ func (dm *DialogManager) stateFnListening(ctx context.Context, st *state.CallSta
 		st.CurrentState = constants.StateListening
 		return st, nil
 	}
+	l.Info().Str("transcribed_text", cleanedText).Msg("Kullanıcıdan gelen ses metne çevrildi.")
 	st.ConsecutiveFailures = 0
 	st.Conversation = append(st.Conversation, map[string]string{"user": cleanedText})
 	st.CurrentState = constants.StateThinking
@@ -265,7 +257,6 @@ func (dm *DialogManager) stateFnThinking(ctx context.Context, st *state.CallStat
 		return st, fmt.Errorf("düşünme durumu için son kullanıcı mesajı bulunamadı")
 	}
 
-	// Akıllı RAG Tetikleme Mantığı
 	var ragContext string
 	var err error
 	if shouldTriggerRAG(lastUserMessage) {
@@ -274,7 +265,7 @@ func (dm *DialogManager) stateFnThinking(ctx context.Context, st *state.CallStat
 			return st, fmt.Errorf("knowledge base sorgulanamadı: %w", err)
 		}
 	} else {
-		l.Info().Str("user_message", lastUserMessage).Msg("Basit niyet algılandı, RAG sorgusu atlanıyor.")
+		l.Debug().Str("user_message", lastUserMessage).Msg("Basit niyet algılandı, RAG sorgusu atlanıyor.")
 	}
 
 	prompt, err := dm.templateProvider.BuildLlmPrompt(ctx, st, ragContext)
@@ -287,15 +278,14 @@ func (dm *DialogManager) stateFnThinking(ctx context.Context, st *state.CallStat
 		return st, fmt.Errorf("LLM yanıtı üretilemedi: %w", err)
 	}
 
+	l.Info().Str("llm_response", llmRespText).Msg("LLM yanıtı başarıyla üretildi.")
 	st.Conversation = append(st.Conversation, map[string]string{"ai": llmRespText})
 	st.CurrentState = constants.StateSpeaking
 	return st, nil
 }
 
-// Basit Niyet Tespiti
 func shouldTriggerRAG(text string) bool {
 	lowerText := strings.ToLower(text)
-	// Selamlaşma veya çok kısa, anlamsız ifadeler için RAG tetikleme
 	greetings := []string{"merhaba", "selam", "alo", "iyi günler", "teşekkür ederim", "eyvallah", "sağ ol"}
 
 	if len(strings.Fields(lowerText)) < 3 {
@@ -306,7 +296,6 @@ func shouldTriggerRAG(text string) bool {
 		}
 	}
 
-	// Varsayılan olarak RAG tetikle
 	return true
 }
 

@@ -65,7 +65,7 @@ func (m *MediaManager) PlayAudio(ctx context.Context, callState *state.CallState
 			m.eventsFailed.WithLabelValues(callState.Event.EventType, "play_audio_failed").Inc()
 		}
 	} else {
-		l.Info().Str("audio_uri_type", audioURI[:15]).Msg("Ses başarıyla çalındı ve tamamlandı.")
+		l.Debug().Str("audio_uri_type", audioURI[:15]).Msg("Ses çalındı ve tamamlandı.")
 	}
 }
 

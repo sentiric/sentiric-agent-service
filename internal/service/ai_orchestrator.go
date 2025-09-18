@@ -65,7 +65,7 @@ func (a *AIOrchestrator) QueryKnowledgeBase(ctx context.Context, query string, c
 		l.Warn().Msg("Knowledge service istemcisi yapılandırılmamış, RAG sorgulaması atlanıyor.")
 		return "", nil
 	}
-	l.Info().Str("query", query).Msg("Knowledge base sorgulanıyor...")
+	l.Debug().Str("query", query).Msg("Knowledge base sorgulanıyor...")
 	req := &knowledgev1.QueryRequest{
 		TenantId: callState.TenantID,
 		Query:    query,
@@ -103,7 +103,7 @@ func (a *AIOrchestrator) GenerateResponse(ctx context.Context, prompt string, ca
 
 func (a *AIOrchestrator) SynthesizeAndGetAudio(ctx context.Context, callState *state.CallState, textToPlay string) (string, error) {
 	l := ctxlogger.FromContext(ctx)
-	l.Info().Str("text", textToPlay).Msg("Metin sese dönüştürülüyor...")
+	l.Debug().Str("text", textToPlay).Msg("Metin sese dönüştürülüyor...")
 	var speakerURL, voiceSelector string
 	var useCloning bool
 
@@ -124,7 +124,7 @@ func (a *AIOrchestrator) SynthesizeAndGetAudio(ctx context.Context, callState *s
 		}
 		ttsReq.SpeakerWavUrl = &speakerURL
 	} else if voiceSelector != "" {
-		l.Info().Str("voice_selector", voiceSelector).Msg("Dinamik ses seçici kullanılıyor.")
+		l.Debug().Str("voice_selector", voiceSelector).Msg("Dinamik ses seçici kullanılıyor.")
 		ttsReq.VoiceSelector = &voiceSelector
 	}
 	ttsCtx, ttsCancel := context.WithTimeout(mdCtx, 20*time.Second)
@@ -164,7 +164,7 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 	if err != nil {
 		return result, fmt.Errorf("media service ile stream oluşturulamadı: %w", err)
 	}
-	l.Info().Msg("Media-Service'ten ses akışı başlatıldı.")
+	l.Debug().Msg("Media-Service'ten ses akışı başlatıldı.")
 	u, err := url.Parse(a.sttClient.BaseURL())
 	if err != nil {
 		return result, fmt.Errorf("stt service url parse edilemedi: %w", err)
@@ -186,7 +186,7 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 	}
 	q.Set("vad_aggressiveness", vadLevel)
 	sttURL.RawQuery = q.Encode()
-	l.Info().Str("url", sttURL.String()).Msg("STT-Service'e WebSocket bağlantısı kuruluyor...")
+	l.Debug().Str("url", sttURL.String()).Msg("STT-Service'e WebSocket bağlantısı kuruluyor...")
 	wsConn, _, err := websocket.DefaultDialer.Dial(sttURL.String(), nil)
 	if err != nil {
 		return result, fmt.Errorf("stt service websocket bağlantısı kurulamadı: %w", err)
@@ -252,7 +252,7 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 			l.Warn().Msg("Transkript alınamadan STT bağlantısı kapandı.")
 			return TranscriptionResult{Text: "", IsNoSpeechTimeout: false}, nil
 		}
-		l.Info().Interface("result", res).Msg("Nihai transkript sonucu alındı.")
+		l.Debug().Interface("result", res).Msg("Nihai transkript sonucu alındı.")
 		return res, nil
 	case err := <-errChan:
 		l.Error().Err(err).Msg("Akış sırasında hata oluştu.")
