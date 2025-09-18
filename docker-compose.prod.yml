@@ -42,11 +42,12 @@ services:
       retries: 5
       start_period: 45s   
     # depends_on:
-    #   postgres: { condition: service_healthy }
-    #   rabbitmq: { condition: service_healthy }
-    #   redis: { condition: service_healthy }
-    #   media-service: { condition: service_healthy }
-    #   user-service: { condition: service_healthy }
-    #   tts-gateway: { condition: service_healthy }
-    #   stt-service: { condition: service_healthy }
-    #   llm-service: { condition: service_healthy } 
+      # postgres: { condition: service_healthy }
+      # rabbitmq: { condition: service_healthy }
+      # redis: { condition: service_healthy }
+      # media-service: { condition: service_healthy }
+      # user-service: { condition: service_healthy }
+      # tts-gateway: { condition: service_healthy }
+      # stt-service: { condition: service_healthy }
+      # llm-service: { condition: service_healthy }
+      # knowledge-service: { condition: service_healthy }
