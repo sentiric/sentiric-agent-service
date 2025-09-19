@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"net/http" // YENİ: HTTP istemcisi için import
 	"os"
 	"strings"
 	"time"
@@ -21,7 +22,7 @@ import (
 
 
 func NewMediaServiceClient(cfg *config.Config) (mediav1.MediaServiceClient, error) {
-	conn, err := createSecureGrpcClient(cfg, cfg.MediaServiceGrpcURL)
+	conn, err := createSecureGrpcClient(cfg, cfg.MediaServiceGrpcURL, "") // Media service'in health endpoint'i yok, bu yüzden boş bırakıyoruz.
 	if err != nil {
 		return nil, fmt.Errorf("media service istemcisi için bağlantı oluşturulamadı: %w", err)
 	}
@@ -29,7 +30,7 @@ func NewMediaServiceClient(cfg *config.Config) (mediav1.MediaServiceClient, erro
 }
 
 func NewUserServiceClient(cfg *config.Config) (userv1.UserServiceClient, error) {
-	conn, err := createSecureGrpcClient(cfg, cfg.UserServiceGrpcURL)
+	conn, err := createSecureGrpcClient(cfg, cfg.UserServiceGrpcURL, "") // User service'in health endpoint'i yok.
 	if err != nil {
 		return nil, fmt.Errorf("user service istemcisi için bağlantı oluşturulamadı: %w", err)
 	}
@@ -37,7 +38,7 @@ func NewUserServiceClient(cfg *config.Config) (userv1.UserServiceClient, error) 
 }
 
 func NewTTSServiceClient(cfg *config.Config) (ttsv1.TextToSpeechServiceClient, error) {
-	conn, err := createSecureGrpcClient(cfg, cfg.TtsServiceGrpcURL)
+	conn, err := createSecureGrpcClient(cfg, cfg.TtsServiceGrpcURL, "") // TTS Gateway'in health endpoint'i yok.
 	if err != nil {
 		return nil, fmt.Errorf("tts gateway istemcisi için bağlantı oluşturulamadı: %w", err)
 	}
@@ -48,14 +49,45 @@ func NewKnowledgeServiceClient(cfg *config.Config) (knowledgev1.KnowledgeService
 	if cfg.KnowledgeServiceGrpcURL == "" {
 		return nil, nil
 	}
-	conn, err := createSecureGrpcClient(cfg, cfg.KnowledgeServiceGrpcURL)
+	// YENİ: Health check URL'ini de gönderiyoruz.
+	conn, err := createSecureGrpcClient(cfg, cfg.KnowledgeServiceGrpcURL, cfg.KnowledgeServiceURL+"/health")
 	if err != nil {
 		return nil, fmt.Errorf("knowledge service istemcisi için bağlantı oluşturulamadı: %w", err)
 	}
 	return knowledgev1.NewKnowledgeServiceClient(conn), nil
 }
 
-func createSecureGrpcClient(cfg *config.Config, addr string) (*grpc.ClientConn, error) {
+func createSecureGrpcClient(cfg *config.Config, addr string, healthCheckURL string) (*grpc.ClientConn, error) {
+	// --- YENİ: HEALTH CHECK MANTIĞI ---
+	if healthCheckURL != "" {
+		maxRetries := 12 // 12 * 5s = 60 saniye toplam bekleme
+		retryDelay := 5 * time.Second
+		httpClient := &http.Client{Timeout: 3 * time.Second}
+		
+		fmt.Printf("gRPC bağlantısı kurulmadan önce '%s' adresinin sağlıklı olması bekleniyor...\n", healthCheckURL)
+		for i := 0; i < maxRetries; i++ {
+			resp, err := httpClient.Get(healthCheckURL)
+			if err == nil && resp.StatusCode == http.StatusOK {
+				fmt.Printf("'%s' başarıyla yanıt verdi (status 200 OK).\n", healthCheckURL)
+				resp.Body.Close()
+				break // Sağlıklı, döngüden çık.
+			}
+			
+			if resp != nil {
+				resp.Body.Close()
+			}
+
+			if i == maxRetries-1 {
+				return nil, fmt.Errorf("maksimum deneme (%d) sonrası servis '%s' sağlıklı duruma geçemedi", maxRetries, healthCheckURL)
+			}
+			
+			fmt.Printf("Servis '%s' henüz hazır değil (deneme %d/%d). %v saniye sonra tekrar denenecek.\n", healthCheckURL, i+1, maxRetries, retryDelay.Seconds())
+			time.Sleep(retryDelay)
+		}
+	}
+	// --- HEALTH CHECK MANTIĞI SONU ---
+
+	// --- Mevcut gRPC Bağlantı Mantığı ---
 	clientCert, err := tls.LoadX509KeyPair(cfg.AgentServiceCertPath, cfg.AgentServiceKeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("istemci sertifikası yüklenemedi: %w", err)
@@ -71,7 +103,6 @@ func createSecureGrpcClient(cfg *config.Config, addr string) (*grpc.ClientConn, 
 	}
 
 	serverName := strings.Split(addr, ":")[0]
-
 	creds := credentials.NewTLS(&tls.Config{
 		Certificates: []tls.Certificate{clientCert},
 		RootCAs:      caCertPool,
@@ -80,26 +111,13 @@ func createSecureGrpcClient(cfg *config.Config, addr string) (*grpc.ClientConn, 
 	})
 
 	target := fmt.Sprintf("passthrough:///%s", addr)
-	
-	// --- YENİ: TEKRAR DENEME MANTIĞI ---
-	var conn *grpc.ClientConn
-	var lastErr error
-	maxRetries := 5
-	retryDelay := 5 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second) // Timeout'u biraz artırdık.
+	defer cancel()
 
-	for i := 0; i < maxRetries; i++ {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		conn, err = grpc.DialContext(ctx, target, grpc.WithTransportCredentials(creds), grpc.WithBlock())
-		cancel() // cancel'ı her döngüde çağırıyoruz.
-
-		if err == nil {
-			return conn, nil
-		}
-		
-		lastErr = err
-		fmt.Printf("gRPC sunucusuna (%s) bağlanılamadı (deneme %d/%d). %v saniye sonra tekrar denenecek. Hata: %v\n", addr, i+1, maxRetries, retryDelay.Seconds(), err)
-		time.Sleep(retryDelay)
+	conn, err := grpc.DialContext(ctx, target, grpc.WithTransportCredentials(creds), grpc.WithBlock())
+	if err != nil {
+		return nil, fmt.Errorf("gRPC sunucusuna (%s) bağlanılamadı: %w", addr, err)
 	}
 
-	return nil, fmt.Errorf("maksimum deneme (%d) sonrası gRPC sunucusuna (%s) bağlanılamadı: %w", maxRetries, addr, lastErr)
+	return conn, nil
 }
