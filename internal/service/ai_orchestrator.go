@@ -1,3 +1,4 @@
+// sentiric-agent-service\internal\service\ai_orchestrator.go
 package service
 
 import (
@@ -27,10 +28,13 @@ type KnowledgeClientInterface interface {
 	Query(ctx context.Context, req *knowledgev1.QueryRequest) (*knowledgev1.QueryResponse, error)
 }
 
+// --- DEĞİŞİKLİK 1: Yeni struct tanımı ---
 type TranscriptionResult struct {
 	Text              string
 	IsNoSpeechTimeout bool
 }
+
+// --- DEĞİŞİKLİK SONU ---
 
 type AIOrchestrator struct {
 	cfg             *config.Config
@@ -59,6 +63,7 @@ func NewAIOrchestrator(
 	}
 }
 
+// QueryKnowledgeBase, GenerateResponse, SynthesizeAndGetAudio fonksiyonları aynı kalacak...
 func (a *AIOrchestrator) QueryKnowledgeBase(ctx context.Context, query string, callState *state.CallState) (string, error) {
 	l := ctxlogger.FromContext(ctx)
 	if a.knowledgeClient == nil {
@@ -144,6 +149,7 @@ func (a *AIOrchestrator) SynthesizeAndGetAudio(ctx context.Context, callState *s
 	return audioURI, nil
 }
 
+// --- DEĞİŞİKLİK 2: Fonksiyonun tamamı güncellendi ---
 func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *state.CallState) (TranscriptionResult, error) {
 	l := ctxlogger.FromContext(ctx)
 	var result TranscriptionResult
@@ -262,6 +268,8 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 		return TranscriptionResult{Text: "", IsNoSpeechTimeout: true}, nil
 	}
 }
+
+// --- DEĞİŞİKLİK SONU ---
 
 func isAllowedSpeakerURL(rawURL, allowedDomainsCSV string) bool {
 	u, err := url.Parse(rawURL)
