@@ -1,4 +1,4 @@
-// ========== DOSYA: sentiric-agent-service/internal/client/grpc_client.go (TAM VE GÜNCEL İÇERİK) ==========
+//  sentiric-agent-service/internal/client/grpc_client.go
 package client
 
 import (
@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
+
 
 func NewMediaServiceClient(cfg *config.Config) (mediav1.MediaServiceClient, error) {
 	conn, err := createSecureGrpcClient(cfg, cfg.MediaServiceGrpcURL)
@@ -45,7 +46,7 @@ func NewTTSServiceClient(cfg *config.Config) (ttsv1.TextToSpeechServiceClient, e
 
 func NewKnowledgeServiceClient(cfg *config.Config) (knowledgev1.KnowledgeServiceClient, error) {
 	if cfg.KnowledgeServiceGrpcURL == "" {
-		return nil, nil // Yapılandırılmamışsa istemci oluşturma, hata da verme.
+		return nil, nil
 	}
 	conn, err := createSecureGrpcClient(cfg, cfg.KnowledgeServiceGrpcURL)
 	if err != nil {
@@ -69,29 +70,36 @@ func createSecureGrpcClient(cfg *config.Config, addr string) (*grpc.ClientConn, 
 		return nil, fmt.Errorf("CA sertifikası havuza eklenemedi")
 	}
 
-	// DEĞİŞİKLİK BURADA: ServerName'i adresin host kısmıyla eşleştiriyoruz.
-	// Bu, Docker'ın servis adını sertifika CN'i olarak kullanmasını sağlar.
 	serverName := strings.Split(addr, ":")[0]
 
 	creds := credentials.NewTLS(&tls.Config{
 		Certificates: []tls.Certificate{clientCert},
 		RootCAs:      caCertPool,
-		ServerName:   serverName, // Örn: "knowledge-service"
+		ServerName:   serverName,
 		MinVersion:   tls.VersionTLS12,
 	})
-	// DEĞİŞİKLİK SONU
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// "passthrough" şeması, gRPC'nin kendi yük dengeleyicisini kullanmasını engeller
-	// ve doğrudan verdiğimiz adrese bağlanmasını sağlar. Bu, Docker ortamları için önemlidir.
 	target := fmt.Sprintf("passthrough:///%s", addr)
+	
+	// --- YENİ: TEKRAR DENEME MANTIĞI ---
+	var conn *grpc.ClientConn
+	var lastErr error
+	maxRetries := 5
+	retryDelay := 5 * time.Second
 
-	conn, err := grpc.DialContext(ctx, target, grpc.WithTransportCredentials(creds), grpc.WithBlock())
-	if err != nil {
-		return nil, fmt.Errorf("gRPC sunucusuna (%s) bağlanılamadı: %w", addr, err)
+	for i := 0; i < maxRetries; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		conn, err = grpc.DialContext(ctx, target, grpc.WithTransportCredentials(creds), grpc.WithBlock())
+		cancel() // cancel'ı her döngüde çağırıyoruz.
+
+		if err == nil {
+			return conn, nil
+		}
+		
+		lastErr = err
+		fmt.Printf("gRPC sunucusuna (%s) bağlanılamadı (deneme %d/%d). %v saniye sonra tekrar denenecek. Hata: %v\n", addr, i+1, maxRetries, retryDelay.Seconds(), err)
+		time.Sleep(retryDelay)
 	}
 
-	return conn, nil
+	return nil, fmt.Errorf("maksimum deneme (%d) sonrası gRPC sunucusuna (%s) bağlanılamadı: %w", maxRetries, addr, lastErr)
 }
