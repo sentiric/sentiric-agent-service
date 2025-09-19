@@ -41,7 +41,6 @@ func NewDialogManager(
 	}
 }
 
-// Start, publishUserIdentifiedEvent, runDialogLoop, stateFnWelcoming fonksiyonları aynı kalacak...
 func (dm *DialogManager) Start(ctx context.Context, event *state.CallEvent) {
 	l := ctxlogger.FromContext(ctx)
 	dm.publishUserIdentifiedEvent(ctx, event)
@@ -205,7 +204,6 @@ func (dm *DialogManager) stateFnWelcoming(ctx context.Context, st *state.CallSta
 	return st, nil
 }
 
-// --- DEĞİŞİKLİK: Bu fonksiyonun tamamı güncellendi ---
 func (dm *DialogManager) stateFnListening(ctx context.Context, st *state.CallState) (*state.CallState, error) {
 	l := ctxlogger.FromContext(ctx)
 	if st.ConsecutiveFailures >= dm.cfg.AgentMaxConsecutiveFailures {
@@ -244,7 +242,6 @@ func (dm *DialogManager) stateFnListening(ctx context.Context, st *state.CallSta
 	return st, nil
 }
 
-// stateFnThinking, shouldTriggerRAG, stateFnSpeaking fonksiyonları aynı kalacak...
 func (dm *DialogManager) stateFnThinking(ctx context.Context, st *state.CallState) (*state.CallState, error) {
 	l := ctxlogger.FromContext(ctx)
 	l.Info().Msg("LLM'den yanıt üretiliyor (RAG akışı)...")
@@ -302,15 +299,20 @@ func shouldTriggerRAG(text string) bool {
 	return true
 }
 
+// --- DÜZELTME BURADA ---
 func (dm *DialogManager) stateFnSpeaking(ctx context.Context, st *state.CallState) (*state.CallState, error) {
 	l := ctxlogger.FromContext(ctx)
 	lastAiMessage := st.Conversation[len(st.Conversation)-1]["ai"]
 	l.Info().Str("text", lastAiMessage).Msg("AI yanıtı seslendiriliyor...")
+
 	audioURI, err := dm.aiOrchestrator.SynthesizeAndGetAudio(ctx, st, lastAiMessage)
 	if err != nil {
 		return st, err
 	}
-	dm.mediaManager.PlayAudio(ctx, st, lastAiMessage)
+
+	// HATA BURADAYDI: PlayAudio'ya 'lastAiMessage' yerine 'audioURI' gönderilmeli.
+	dm.mediaManager.PlayAudio(ctx, st, audioURI)
+
 	time.Sleep(250 * time.Millisecond)
 	st.CurrentState = constants.StateListening
 	return st, nil
