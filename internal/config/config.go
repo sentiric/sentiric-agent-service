@@ -1,3 +1,4 @@
+// sentiric-agent-service/internal/config/config.go
 package config
 
 import (
@@ -10,6 +11,8 @@ import (
 
 type Config struct {
 	Env                         string
+	// YENİ ALAN: Log seviyesini de config'den okuyacağız.
+	LogLevel                    string 
 	PostgresURL                 string
 	RabbitMQURL                 string
 	RedisURL                    string
@@ -22,15 +25,15 @@ type Config struct {
 	TtsServiceGrpcURL           string
 	MediaServiceGrpcURL         string
 	UserServiceGrpcURL          string
-	KnowledgeServiceGrpcURL     string // gRPC için
-	KnowledgeServiceURL         string // YENİ: HTTP için
-	KnowledgeServiceTopK        int    // YENİ: Yapılandırılabilir RAG parametresi
+	KnowledgeServiceGrpcURL     string 
+	KnowledgeServiceURL         string 
+	KnowledgeServiceTopK        int    
 	AgentServiceCertPath        string
 	AgentServiceKeyPath         string
 	GrpcTlsCaPath               string
 	AgentMaxConsecutiveFailures int
 	AgentAllowedSpeakerDomains  string
-	BucketName                  string // YENİ ALAN
+	BucketName                  string
 }
 
 func Load() (*Config, error) {
@@ -68,6 +71,8 @@ func Load() (*Config, error) {
 
 	cfg := &Config{
 		Env:                         getEnvWithDefault("ENV", "production"),
+		// YENİ ALAN: LOG_LEVEL değişkenini okuyoruz.
+		LogLevel:                    getEnvWithDefault("LOG_LEVEL", "info"),
 		PostgresURL:                 getEnv("POSTGRES_URL"),
 		RabbitMQURL:                 getEnv("RABBITMQ_URL"),
 		RedisURL:                    getEnv("REDIS_URL"),
@@ -88,7 +93,7 @@ func Load() (*Config, error) {
 		GrpcTlsCaPath:               getEnv("GRPC_TLS_CA_PATH"),
 		AgentMaxConsecutiveFailures: maxFailures,
 		AgentAllowedSpeakerDomains:  getEnvWithDefault("AGENT_ALLOWED_SPEAKER_DOMAINS", "sentiric.github.io"),
-		BucketName:                  getEnv("BUCKET_NAME"), // YENİ ALAN
+		BucketName:                  getEnv("BUCKET_NAME"),
 	}
 
 	return cfg, nil
