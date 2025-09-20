@@ -22,6 +22,7 @@ type Config struct {
 	SttServiceTargetSampleRate  uint32
 	SttServiceLogprobThreshold  float64
 	SttServiceNoSpeechThreshold float64
+	SttServiceStreamTimeoutSeconds int
 	TtsServiceGrpcURL           string
 	MediaServiceGrpcURL         string
 	UserServiceGrpcURL          string
@@ -57,6 +58,9 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("geçersiz STT_SERVICE_NO_SPEECH_THRESHOLD: %w", err)
 	}
 
+	sttTimeoutStr := getEnvWithDefault("STT_SERVICE_STREAM_TIMEOUT_SECONDS", "30")
+	sttTimeout, err := strconv.Atoi(sttTimeoutStr)
+
 	maxFailuresStr := getEnvWithDefault("AGENT_MAX_CONSECUTIVE_FAILURES", "2")
 	maxFailures, err := strconv.Atoi(maxFailuresStr)
 	if err != nil {
@@ -82,6 +86,7 @@ func Load() (*Config, error) {
 		SttServiceTargetSampleRate:  uint32(sttSampleRate),
 		SttServiceLogprobThreshold:  sttLogprob,
 		SttServiceNoSpeechThreshold: sttNoSpeech,
+		SttServiceStreamTimeoutSeconds: sttTimeout,
 		TtsServiceGrpcURL:           getEnv("TTS_GATEWAY_GRPC_URL"),
 		MediaServiceGrpcURL:         getEnv("MEDIA_SERVICE_GRPC_URL"),
 		UserServiceGrpcURL:          getEnv("USER_SERVICE_GRPC_URL"),

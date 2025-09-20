@@ -57,48 +57,42 @@ func NewKnowledgeServiceClient(cfg *config.Config) (knowledgev1.KnowledgeService
 	return knowledgev1.NewKnowledgeServiceClient(conn), nil
 }
 
-// DÜZELTİLMİŞ FONKSİYON
 func createSecureGrpcClient(cfg *config.Config, addr string) (*grpc.ClientConn, error) {
-	// --- KALDIRILAN BÖLÜM ---
-	// Artık burada manuel bir HTTP health check döngüsü yok.
-	// Docker Compose'daki `depends_on` ve `healthcheck` direktifleri,
-	// servisin TCP portu açmasını beklemek için yeterlidir.
-	// gRPC'nin kendi `WithBlock` ve timeout mekanizması, bağlantı için daha doğru bir yöntemdir.
-	// --- KALDIRILAN BÖLÜM SONU ---
-	
-	clientCert, err := tls.LoadX509KeyPair(cfg.AgentServiceCertPath, cfg.AgentServiceKeyPath)
-	if err != nil {
-		return nil, fmt.Errorf("istemci sertifikası yüklenemedi: %w", err)
-	}
+    // --- SERTİFİKA YÜKLEME KISMI AYNI KALIYOR ---
+    clientCert, err := tls.LoadX509KeyPair(cfg.AgentServiceCertPath, cfg.AgentServiceKeyPath)
+    if err != nil {
+        return nil, fmt.Errorf("istemci sertifikası yüklenemedi: %w", err)
+    }
 
-	caCert, err := os.ReadFile(cfg.GrpcTlsCaPath)
-	if err != nil {
-		return nil, fmt.Errorf("CA sertifikası okunamadı: %w", err)
-	}
-	caCertPool := x509.NewCertPool()
-	if !caCertPool.AppendCertsFromPEM(caCert) {
-		return nil, fmt.Errorf("CA sertifikası havuza eklenemedi")
-	}
+    caCert, err := os.ReadFile(cfg.GrpcTlsCaPath)
+    if err != nil {
+        return nil, fmt.Errorf("CA sertifikası okunamadı: %w", err)
+    }
+    caCertPool := x509.NewCertPool()
+    if !caCertPool.AppendCertsFromPEM(caCert) {
+        return nil, fmt.Errorf("CA sertifikası havuza eklenemedi")
+    }
 
-	serverName := strings.Split(addr, ":")[0]
-	creds := credentials.NewTLS(&tls.Config{
-		Certificates: []tls.Certificate{clientCert},
-		RootCAs:      caCertPool,
-		ServerName:   serverName,
-		MinVersion:   tls.VersionTLS12,
-	})
-
-	target := fmt.Sprintf("passthrough:///%s", addr)
-    // Bağlantı için 15 saniyelik bir zaman aşımı ekliyoruz.
+    serverName := strings.Split(addr, ":")[0]
+    creds := credentials.NewTLS(&tls.Config{
+        Certificates: []tls.Certificate{clientCert},
+        RootCAs:      caCertPool,
+        ServerName:   serverName,
+        MinVersion:   tls.VersionTLS12,
+    })
+    // --- DEĞİŞİKLİK BURADA BAŞLIYOR ---
+    target := fmt.Sprintf("passthrough:///%s", addr)
+    // Bağlantı için 15 saniyelik bir zaman aşımı ekliyoruz. Docker Compose'un `start_period`'ı ile uyumlu çalışır.
     ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second) 
-	defer cancel()
+    defer cancel()
 
-	// WithBlock() seçeneği, bağlantı kurulana kadar bekler veya zaman aşımına uğrar.
+    // WithBlock() seçeneği, bağlantı gerçekten kurulana kadar bekler veya zaman aşımına uğrar.
+    // Bu, `depends_on`'dan daha güçlü bir garantidir.
     conn, err := grpc.DialContext(ctx, target, grpc.WithTransportCredentials(creds), grpc.WithBlock())
+    if err != nil {
+        return nil, fmt.Errorf("gRPC sunucusuna (%s) bağlanılamadı: %w", addr, err)
+    }
 
-	if err != nil {
-		return nil, fmt.Errorf("gRPC sunucusuna (%s) bağlanılamadı: %w", addr, err)
-	}
-
-	return conn, nil
+    return conn, nil
+    // --- DEĞİŞİKLİK SONA ERİYOR ---
 }

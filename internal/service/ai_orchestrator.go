@@ -263,10 +263,10 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 	case err := <-errChan:
 		l.Error().Err(err).Msg("Akış sırasında hata oluştu.")
 		return result, err
-	case <-time.After(30 * time.Second):
+	case <-time.After(time.Duration(a.cfg.SttServiceStreamTimeoutSeconds) * time.Second):
 		l.Warn().Msg("Transkripsiyon için zaman aşımına ulaşıldı.")
 		return TranscriptionResult{Text: "", IsNoSpeechTimeout: true}, nil
-	}
+		}
 }
 
 // --- DEĞİŞİKLİK SONU ---
