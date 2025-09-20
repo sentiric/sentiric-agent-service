@@ -226,17 +226,24 @@ func (dm *DialogManager) stateFnListening(ctx context.Context, st *state.CallSta
 		st.CurrentState = constants.StateListening
 		return st, nil
 	}
+
 	cleanedText := strings.TrimSpace(transcriptionResult.Text)
+
+	// --- YENİ ANLAMSIZLIK KONTROLÜ ---
+	// "Bu dizinin betimlemesi" gibi Whisper halüsinasyonlarını veya
+	// "centrik mideş" gibi anlamsız sonuçları filtrele.
 	isMeaningless := len(cleanedText) < 3 || strings.Contains(cleanedText, "Bu dizinin betimlemesi")
 	if isMeaningless {
 		l.Warn().Str("stt_result", cleanedText).Msg("STT anlamsız veya çok kısa metin döndürdü, 'anlayamadım' anonsu çalınacak.")
 		dm.mediaManager.PlayAnnouncement(ctx, st, constants.AnnounceSystemCantUnderstand)
-		st.ConsecutiveFailures++
+		st.ConsecutiveFailures++ // Hata sayacını artır
 		st.CurrentState = constants.StateListening
 		return st, nil
 	}
+	// --- DEĞİŞİKLİK SONU ---
+
 	l.Info().Str("transcribed_text", cleanedText).Msg("Kullanıcıdan gelen ses metne çevrildi.")
-	st.ConsecutiveFailures = 0
+	st.ConsecutiveFailures = 0 // Başarılı transkripsiyonda sayacı sıfırla
 	st.Conversation = append(st.Conversation, map[string]string{"user": cleanedText})
 	st.CurrentState = constants.StateThinking
 	return st, nil
