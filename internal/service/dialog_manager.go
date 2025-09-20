@@ -259,7 +259,9 @@ func (dm *DialogManager) stateFnThinking(ctx context.Context, st *state.CallStat
 
 	var ragContext string
 	var err error
-	if shouldTriggerRAG(lastUserMessage) {
+
+	// --- YENİ NİYET KONTROLÜ ---
+	if dm.shouldTriggerRAG(lastUserMessage) {
 		ragContext, err = dm.aiOrchestrator.QueryKnowledgeBase(ctx, lastUserMessage, st)
 		if err != nil {
 			return st, fmt.Errorf("knowledge base sorgulanamadı: %w", err)
@@ -267,6 +269,7 @@ func (dm *DialogManager) stateFnThinking(ctx context.Context, st *state.CallStat
 	} else {
 		l.Debug().Str("user_message", lastUserMessage).Msg("Basit niyet algılandı, RAG sorgusu atlanıyor.")
 	}
+	// --- DEĞİŞİKLİK SONU ---
 
 	prompt, err := dm.templateProvider.BuildLlmPrompt(ctx, st, ragContext)
 	if err != nil {
@@ -284,19 +287,41 @@ func (dm *DialogManager) stateFnThinking(ctx context.Context, st *state.CallStat
 	return st, nil
 }
 
-func shouldTriggerRAG(text string) bool {
-	lowerText := strings.ToLower(text)
-	greetings := []string{"merhaba", "selam", "alo", "iyi günler", "teşekkür ederim", "eyvallah", "sağ ol"}
+func (dm *DialogManager) shouldTriggerRAG(text string) bool {
+    lowerText := strings.ToLower(text)
+    
+    // Selamlaşma, teşekkür ve kapanış gibi ifadeler RAG tetiklememeli.
+    nonRagKeywords := []string{
+        "merhaba", "selam", "alo", "iyi günler", "teşekkür ederim", 
+        "teşekkürler", "eyvallah", "sağ ol", "hoşça kal", "görüşürüz",
+    }
 
-	if len(strings.Fields(lowerText)) < 3 {
-		for _, greet := range greetings {
-			if strings.Contains(lowerText, greet) {
-				return false
-			}
-		}
-	}
+    for _, keyword := range nonRagKeywords {
+        if strings.Contains(lowerText, keyword) {
+            // Eğer cümle sadece bu kelimelerden oluşuyorsa veya çok kısaysa, RAG yapma.
+            if len(strings.Fields(lowerText)) <= 2 {
+                return false
+            }
+        }
+    }
 
-	return true
+    // Eğer bir soru kelimesi içeriyorsa, büyük ihtimalle bir bilgi talebidir.
+    questionKeywords := []string{
+        "nedir", "nasıl", "ne kadar", "hangi", "kimdir", "nerede",
+    }
+    for _, keyword := range questionKeywords {
+        if strings.Contains(lowerText, keyword) {
+            return true
+        }
+    }
+    
+    // Eğer cümle 3 kelimeden uzunsa ve yukarıdaki basit ifadelere girmiyorsa,
+    // varsayılan olarak bir bilgi talebi olduğunu kabul et.
+    if len(strings.Fields(lowerText)) > 3 {
+        return true
+    }
+
+    return false
 }
 
 // --- DÜZELTME BURADA ---
