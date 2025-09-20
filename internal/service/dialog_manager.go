@@ -1,4 +1,4 @@
-// sentiric-agent-service/internal/service/dialog_manager.go
+// ========== DOSYA: sentiric-agent-service/internal/service/dialog_manager.go (TAM VE GÜNCEL İÇERİK) ==========
 package service
 
 import (
@@ -229,71 +229,67 @@ func (dm *DialogManager) stateFnListening(ctx context.Context, st *state.CallSta
 
 	cleanedText := strings.TrimSpace(transcriptionResult.Text)
 
-	// --- YENİ ANLAMSIZLIK KONTROLÜ ---
-	// "Bu dizinin betimlemesi" gibi Whisper halüsinasyonlarını veya
-	// "centrik mideş" gibi anlamsız sonuçları filtrele.
 	isMeaningless := len(cleanedText) < 3 || strings.Contains(cleanedText, "Bu dizinin betimlemesi")
 	if isMeaningless {
 		l.Warn().Str("stt_result", cleanedText).Msg("STT anlamsız veya çok kısa metin döndürdü, 'anlayamadım' anonsu çalınacak.")
 		dm.mediaManager.PlayAnnouncement(ctx, st, constants.AnnounceSystemCantUnderstand)
-		st.ConsecutiveFailures++ // Hata sayacını artır
+		st.ConsecutiveFailures++
 		st.CurrentState = constants.StateListening
 		return st, nil
 	}
-	// --- DEĞİŞİKLİK SONU ---
 
 	l.Info().Str("transcribed_text", cleanedText).Msg("Kullanıcıdan gelen ses metne çevrildi.")
-	st.ConsecutiveFailures = 0 // Başarılı transkripsiyonda sayacı sıfırla
+	st.ConsecutiveFailures = 0
 	st.Conversation = append(st.Conversation, map[string]string{"user": cleanedText})
 	st.CurrentState = constants.StateThinking
 	return st, nil
 }
 
 func (dm *DialogManager) stateFnThinking(ctx context.Context, st *state.CallState) (*state.CallState, error) {
-    l := ctxlogger.FromContext(ctx)
-    l.Info().Msg("LLM'den yanıt üretiliyor (RAG akışı)...")
+	l := ctxlogger.FromContext(ctx)
+	l.Info().Msg("LLM'den yanıt üretiliyor (RAG akışı)...")
 
-    lastUserMessage := ""
-    for i := len(st.Conversation) - 1; i >= 0; i-- {
-        if msg, ok := st.Conversation[i]["user"]; ok {
-            lastUserMessage = msg
-            break
-        }
-    }
-    if lastUserMessage == "" {
-        return st, fmt.Errorf("düşünme durumu için son kullanıcı mesajı bulunamadı")
-    }
+	lastUserMessage := ""
+	for i := len(st.Conversation) - 1; i >= 0; i-- {
+		if msg, ok := st.Conversation[i]["user"]; ok {
+			lastUserMessage = msg
+			break
+		}
+	}
+	if lastUserMessage == "" {
+		return st, fmt.Errorf("düşünme durumu için son kullanıcı mesajı bulunamadı")
+	}
 
-    var ragContext string
-    var err error
+	var ragContext string
+	var err error
 
-    // --- YENİ NİYET KONTROLÜ ---
-    if dm.shouldTriggerRAG(lastUserMessage) {
-        ragContext, err = dm.aiOrchestrator.QueryKnowledgeBase(ctx, lastUserMessage, st)
-        if err != nil {
-            return st, fmt.Errorf("knowledge base sorgulanamadı: %w", err)
-        }
-    } else {
-        l.Debug().Str("user_message", lastUserMessage).Msg("Basit niyet algılandı, RAG sorgusu atlanıyor.")
-    }
-    // --- DEĞİŞİKLİK SONU ---
+	if dm.shouldTriggerRAG(lastUserMessage) {
+		ragContext, err = dm.aiOrchestrator.QueryKnowledgeBase(ctx, lastUserMessage, st)
+		if err != nil {
+			return st, fmt.Errorf("knowledge base sorgulanamadı: %w", err)
+		}
+	} else {
+		l.Debug().Str("user_message", lastUserMessage).Msg("Basit niyet algılandı, RAG sorgusu atlanıyor.")
+	}
 
-    prompt, err := dm.templateProvider.BuildLlmPrompt(ctx, st, ragContext)
-    if err != nil {
-        return st, fmt.Errorf("LLM prompt'u oluşturulamadı: %w", err)
-    }
+	prompt, err := dm.templateProvider.BuildLlmPrompt(ctx, st, ragContext)
+	if err != nil {
+		return st, fmt.Errorf("LLM prompt'u oluşturulamadı: %w", err)
+	}
 
-    llmRespText, err := dm.aiOrchestrator.GenerateResponse(ctx, prompt, st)
-    if err != nil {
-        return st, fmt.Errorf("LLM yanıtı üretilemedi: %w", err)
-    }
+	llmRespText, err := dm.aiOrchestrator.GenerateResponse(ctx, prompt, st)
+	if err != nil {
+		return st, fmt.Errorf("LLM yanıtı üretilemedi: %w", err)
+	}
 
-    l.Info().Str("llm_response", llmRespText).Msg("LLM yanıtı başarıyla üretildi.")
-    st.Conversation = append(st.Conversation, map[string]string{"ai": llmRespText})
-    st.CurrentState = constants.StateSpeaking
-    return st, nil
+	l.Info().Str("llm_response", llmRespText).Msg("LLM yanıtı başarıyla üretildi.")
+	st.Conversation = append(st.Conversation, map[string]string{"ai": llmRespText})
+	st.CurrentState = constants.StateSpeaking
+	return st, nil
 }
 
+// --- DÜZELTME: Bu fonksiyonun (veya metodun) doğru yere eklenmesi derleme hatasını çözecektir. ---
+// Bu metot, DialogManager'a aittir ve diyalog mantığının bir parçasıdır.
 func (dm *DialogManager) shouldTriggerRAG(text string) bool {
     lowerText := strings.ToLower(text)
     
@@ -306,7 +302,6 @@ func (dm *DialogManager) shouldTriggerRAG(text string) bool {
 
     for _, keyword := range nonRagKeywords {
         if strings.Contains(lowerText, keyword) {
-            // Eğer cümle sadece bu kelimelerden oluşuyorsa veya çok kısaysa, RAG yapma.
             if len(strings.Fields(lowerText)) <= 3 {
                 return false
             }
@@ -324,8 +319,6 @@ func (dm *DialogManager) shouldTriggerRAG(text string) bool {
         }
     }
     
-    // Eğer cümle 3 kelimeden uzunsa ve yukarıdaki basit ifadelere girmiyorsa,
-    // varsayılan olarak bir bilgi talebi olduğunu kabul et.
     if len(strings.Fields(lowerText)) > 3 {
         return true
     }
@@ -333,27 +326,6 @@ func (dm *DialogManager) shouldTriggerRAG(text string) bool {
     return false
 }
 
-    // Eğer bir soru kelimesi içeriyorsa, büyük ihtimalle bir bilgi talebidir.
-    questionKeywords := []string{
-        "nedir", "nasıl", "ne kadar", "hangi", "kimdir", "nerede",
-        "bilgi alabilir miyim", "anlatır mısın", // YENİ: Soru kalıpları eklendi
-    }
-    for _, keyword := range questionKeywords {
-        if strings.Contains(lowerText, keyword) {
-            return true
-        }
-    }
-    
-    // Eğer cümle 3 kelimeden uzunsa ve yukarıdaki basit ifadelere girmiyorsa,
-    // varsayılan olarak bir bilgi talebi olduğunu kabul et.
-    if len(strings.Fields(lowerText)) > 3 {
-        return true
-    }
-
-    return false
-}
-
-// --- KRİTİK DÜZELTME BURADA ---
 func (dm *DialogManager) stateFnSpeaking(ctx context.Context, st *state.CallState) (*state.CallState, error) {
 	l := ctxlogger.FromContext(ctx)
 	lastAiMessage := st.Conversation[len(st.Conversation)-1]["ai"]
@@ -364,7 +336,6 @@ func (dm *DialogManager) stateFnSpeaking(ctx context.Context, st *state.CallStat
 		return st, err
 	}
 
-	// DÜZELTME: PlayAudio'ya 'lastAiMessage' yerine doğru değişken olan 'audioURI' gönderiliyor.
 	dm.mediaManager.PlayAudio(ctx, st, audioURI)
 
 	time.Sleep(250 * time.Millisecond)
