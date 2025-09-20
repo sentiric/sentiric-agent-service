@@ -36,10 +36,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("Konfigürasyon yüklenemedi: %v", err)
 	}
-
-	appLog := logger.New(serviceName, cfg.Env)
-	// Artık cfg.LogLevel alanına erişebiliriz.
-	initGrpcLogger(cfg.LogLevel) 
+    
+    // --- DEĞİŞİKLİK 3: Hem ENV hem de LOG_LEVEL'i logger'a gönder ---
+	appLog := logger.New(serviceName, cfg.Env, cfg.LogLevel) 
+	initGrpcLogger(cfg.LogLevel)
 
 	appLog.Info().
 		Str("version", ServiceVersion).
