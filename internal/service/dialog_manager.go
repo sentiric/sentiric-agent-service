@@ -1,4 +1,4 @@
-// ========== DOSYA: sentiric-agent-service/internal/service/dialog_manager.go (TAM VE GÜNCEL İÇERİK) ==========
+// sentiric-agent-service/internal/service/dialog_manager.go
 package service
 
 import (
@@ -40,8 +40,6 @@ func NewDialogManager(
 		publisher:        pub,
 	}
 }
-
-// ... Start, publishUserIdentifiedEvent, runDialogLoop, stateFnWelcoming, stateFnListening fonksiyonları aynı kalacak ...
 
 func (dm *DialogManager) Start(ctx context.Context, event *state.CallEvent) {
 	l := ctxlogger.FromContext(ctx)
@@ -110,8 +108,6 @@ func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.Cal
 
 	dm.mediaManager.StartRecording(ctx, initialSt)
 
-	// --- DEĞİŞİKLİK: 'defer' bloğundan sonlandırma isteği kaldırıldı ---
-	// Artık sonlandırma isteği stateFnThinking içinde doğrudan gönderilecek.
 	defer func() {
 		dm.mediaManager.StopRecording(context.Background(), initialSt)
 		l.Info().Msg("Diyalog döngüsü sonlandı, kaynaklar temizleniyor.")
@@ -157,7 +153,6 @@ func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.Cal
 				l.Error().Err(err).Msg("Durum işlenirken hata oluştu, sonlandırma deneniyor.")
 				dm.mediaManager.PlayAnnouncement(ctx, st, constants.AnnounceSystemError)
 				st.CurrentState = constants.StateTerminated
-				// Hata durumunda da çağrıyı sonlandırma isteği gönder
 				dm.publishTerminationRequest(ctx, st.CallID)
 			}
 		}
@@ -168,7 +163,6 @@ func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.Cal
 	}
 }
 
-// YENİ YARDIMCI FONKSİYON
 func (dm *DialogManager) publishTerminationRequest(ctx context.Context, callID string) {
 	l := ctxlogger.FromContext(ctx)
 	l.Info().Msg("Çağrıyı kapatma isteği gönderiliyor...")
@@ -188,67 +182,6 @@ func (dm *DialogManager) publishTerminationRequest(ctx context.Context, callID s
 	}
 }
 
-// --- stateFnThinking fonksiyonu güncellendi ---
-func (dm *DialogManager) stateFnThinking(ctx context.Context, st *state.CallState) (*state.CallState, error) {
-	l := ctxlogger.FromContext(ctx)
-	l.Info().Msg("LLM'den yanıt üretiliyor (RAG akışı)...")
-
-	lastUserMessage := ""
-	for i := len(st.Conversation) - 1; i >= 0; i-- {
-		if msg, ok := st.Conversation[i]["user"]; ok {
-			lastUserMessage = msg
-			break
-		}
-	}
-	if lastUserMessage == "" {
-		return st, fmt.Errorf("düşünme durumu için son kullanıcı mesajı bulunamadı")
-	}
-
-	// DEĞİŞİKLİK BURADA BAŞLIYOR
-	if dm.detectTerminationIntent(lastUserMessage) {
-		l.Info().Str("user_message", lastUserMessage).Msg("Sonlandırma niyeti algılandı. Veda ediliyor ve çağrı sonlandırılıyor.")
-
-		// 1. Veda anonsunu çal. Bu asenkron bir işlemdir, beklemez.
-		dm.mediaManager.PlayAnnouncement(ctx, st, constants.AnnounceSystemGoodbye)
-
-		// 2. Anons çalınmaya başlarken, anında çağrıyı sonlandırma isteğini gönder.
-		dm.publishTerminationRequest(ctx, st.CallID)
-
-		// 3. Diyalog döngüsünü temiz bir şekilde bitirmek için durumu ayarla.
-		st.CurrentState = constants.StateTerminated
-		return st, nil
-	}
-	// DEĞİŞİKLİK SONA ERİYOR
-
-	var ragContext string
-	var err error
-
-	if dm.shouldTriggerRAG(lastUserMessage) {
-		ragContext, err = dm.aiOrchestrator.QueryKnowledgeBase(ctx, lastUserMessage, st)
-		if err != nil {
-			return st, fmt.Errorf("knowledge base sorgulanamadı: %w", err)
-		}
-	} else {
-		l.Debug().Str("user_message", lastUserMessage).Msg("Basit niyet algılandı, RAG sorgusu atlanıyor.")
-	}
-
-	prompt, err := dm.templateProvider.BuildLlmPrompt(ctx, st, ragContext)
-	if err != nil {
-		return st, fmt.Errorf("LLM prompt'u oluşturulamadı: %w", err)
-	}
-
-	llmRespText, err := dm.aiOrchestrator.GenerateResponse(ctx, prompt, st)
-	if err != nil {
-		return st, fmt.Errorf("LLM yanıtı üretilemedi: %w", err)
-	}
-
-	l.Info().Str("llm_response", llmRespText).Msg("LLM yanıtı başarıyla üretildi.")
-	st.Conversation = append(st.Conversation, map[string]string{"ai": llmRespText})
-	st.CurrentState = constants.StateSpeaking
-	return st, nil
-}
-
-// ... (Diğer fonksiyonlar aynı kalacak) ...
 func (dm *DialogManager) stateFnWelcoming(ctx context.Context, st *state.CallState) (*state.CallState, error) {
 	l := ctxlogger.FromContext(ctx)
 	l.Info().Msg("İlk AI karşılama yanıtı üretiliyor...")
@@ -275,7 +208,7 @@ func (dm *DialogManager) stateFnListening(ctx context.Context, st *state.CallSta
 	if st.ConsecutiveFailures >= dm.cfg.AgentMaxConsecutiveFailures {
 		l.Warn().Int("failures", st.ConsecutiveFailures).Int("max_failures", dm.cfg.AgentMaxConsecutiveFailures).Msg("Art arda çok fazla anlama hatası. Çağrı sonlandırılıyor.")
 		dm.mediaManager.PlayAnnouncement(ctx, st, constants.AnnounceSystemMaxFailures)
-		dm.publishTerminationRequest(ctx, st.CallID) // Hata durumunda da çağrıyı sonlandır
+		dm.publishTerminationRequest(ctx, st.CallID)
 		st.CurrentState = constants.StateTerminated
 		return st, nil
 	}
@@ -306,6 +239,60 @@ func (dm *DialogManager) stateFnListening(ctx context.Context, st *state.CallSta
 	st.ConsecutiveFailures = 0
 	st.Conversation = append(st.Conversation, map[string]string{"user": cleanedText})
 	st.CurrentState = constants.StateThinking
+	return st, nil
+}
+
+func (dm *DialogManager) stateFnThinking(ctx context.Context, st *state.CallState) (*state.CallState, error) {
+	l := ctxlogger.FromContext(ctx)
+	l.Info().Msg("LLM'den yanıt üretiliyor (RAG akışı)...")
+
+	lastUserMessage := ""
+	for i := len(st.Conversation) - 1; i >= 0; i-- {
+		if msg, ok := st.Conversation[i]["user"]; ok {
+			lastUserMessage = msg
+			break
+		}
+	}
+	if lastUserMessage == "" {
+		return st, fmt.Errorf("düşünme durumu için son kullanıcı mesajı bulunamadı")
+	}
+
+	if dm.detectTerminationIntent(lastUserMessage) {
+		l.Info().Str("user_message", lastUserMessage).Msg("Sonlandırma niyeti algılandı. Veda ediliyor ve çağrı sonlandırılıyor.")
+
+		dm.mediaManager.PlayAnnouncement(ctx, st, constants.AnnounceSystemGoodbye)
+
+		dm.publishTerminationRequest(ctx, st.CallID)
+
+		st.CurrentState = constants.StateTerminated
+		return st, nil
+	}
+
+	var ragContext string
+	var err error
+
+	if dm.shouldTriggerRAG(lastUserMessage) {
+		ragContext, err = dm.aiOrchestrator.QueryKnowledgeBase(ctx, lastUserMessage, st)
+		if err != nil {
+			return st, fmt.Errorf("knowledge base sorgulanamadı: %w", err)
+		}
+	} else {
+		l.Debug().Str("user_message", lastUserMessage).Msg("Basit niyet algılandı, RAG sorgusu atlanıyor.")
+	}
+
+	prompt, err := dm.templateProvider.BuildLlmPrompt(ctx, st, ragContext)
+	if err != nil {
+		return st, fmt.Errorf("LLM prompt'u oluşturulamadı: %w", err)
+	}
+
+	llmRespText, err := dm.aiOrchestrator.GenerateResponse(ctx, prompt, st)
+	if err != nil {
+		return st, fmt.Errorf("LLM yanıtı üretilemedi: %w", err)
+	}
+
+	l.Info().Str("llm_response", llmRespText).Msg("LLM yanıtı başarıyla üretildi.")
+	st.Conversation = append(st.Conversation, map[string]string{"ai": llmRespText})
+	st.CurrentState = constants.StateSpeaking
 	return st, nil
 }
 
