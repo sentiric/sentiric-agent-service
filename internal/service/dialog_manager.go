@@ -250,48 +250,48 @@ func (dm *DialogManager) stateFnListening(ctx context.Context, st *state.CallSta
 }
 
 func (dm *DialogManager) stateFnThinking(ctx context.Context, st *state.CallState) (*state.CallState, error) {
-	l := ctxlogger.FromContext(ctx)
-	l.Info().Msg("LLM'den yanıt üretiliyor (RAG akışı)...")
+    l := ctxlogger.FromContext(ctx)
+    l.Info().Msg("LLM'den yanıt üretiliyor (RAG akışı)...")
 
-	lastUserMessage := ""
-	for i := len(st.Conversation) - 1; i >= 0; i-- {
-		if msg, ok := st.Conversation[i]["user"]; ok {
-			lastUserMessage = msg
-			break
-		}
-	}
-	if lastUserMessage == "" {
-		return st, fmt.Errorf("düşünme durumu için son kullanıcı mesajı bulunamadı")
-	}
+    lastUserMessage := ""
+    for i := len(st.Conversation) - 1; i >= 0; i-- {
+        if msg, ok := st.Conversation[i]["user"]; ok {
+            lastUserMessage = msg
+            break
+        }
+    }
+    if lastUserMessage == "" {
+        return st, fmt.Errorf("düşünme durumu için son kullanıcı mesajı bulunamadı")
+    }
 
-	var ragContext string
-	var err error
+    var ragContext string
+    var err error
 
-	// --- YENİ NİYET KONTROLÜ ---
-	if dm.shouldTriggerRAG(lastUserMessage) {
-		ragContext, err = dm.aiOrchestrator.QueryKnowledgeBase(ctx, lastUserMessage, st)
-		if err != nil {
-			return st, fmt.Errorf("knowledge base sorgulanamadı: %w", err)
-		}
-	} else {
-		l.Debug().Str("user_message", lastUserMessage).Msg("Basit niyet algılandı, RAG sorgusu atlanıyor.")
-	}
-	// --- DEĞİŞİKLİK SONU ---
+    // --- YENİ NİYET KONTROLÜ ---
+    if dm.shouldTriggerRAG(lastUserMessage) {
+        ragContext, err = dm.aiOrchestrator.QueryKnowledgeBase(ctx, lastUserMessage, st)
+        if err != nil {
+            return st, fmt.Errorf("knowledge base sorgulanamadı: %w", err)
+        }
+    } else {
+        l.Debug().Str("user_message", lastUserMessage).Msg("Basit niyet algılandı, RAG sorgusu atlanıyor.")
+    }
+    // --- DEĞİŞİKLİK SONU ---
 
-	prompt, err := dm.templateProvider.BuildLlmPrompt(ctx, st, ragContext)
-	if err != nil {
-		return st, fmt.Errorf("LLM prompt'u oluşturulamadı: %w", err)
-	}
+    prompt, err := dm.templateProvider.BuildLlmPrompt(ctx, st, ragContext)
+    if err != nil {
+        return st, fmt.Errorf("LLM prompt'u oluşturulamadı: %w", err)
+    }
 
-	llmRespText, err := dm.aiOrchestrator.GenerateResponse(ctx, prompt, st)
-	if err != nil {
-		return st, fmt.Errorf("LLM yanıtı üretilemedi: %w", err)
-	}
+    llmRespText, err := dm.aiOrchestrator.GenerateResponse(ctx, prompt, st)
+    if err != nil {
+        return st, fmt.Errorf("LLM yanıtı üretilemedi: %w", err)
+    }
 
-	l.Info().Str("llm_response", llmRespText).Msg("LLM yanıtı başarıyla üretildi.")
-	st.Conversation = append(st.Conversation, map[string]string{"ai": llmRespText})
-	st.CurrentState = constants.StateSpeaking
-	return st, nil
+    l.Info().Str("llm_response", llmRespText).Msg("LLM yanıtı başarıyla üretildi.")
+    st.Conversation = append(st.Conversation, map[string]string{"ai": llmRespText})
+    st.CurrentState = constants.StateSpeaking
+    return st, nil
 }
 
 func (dm *DialogManager) shouldTriggerRAG(text string) bool {
@@ -301,17 +301,37 @@ func (dm *DialogManager) shouldTriggerRAG(text string) bool {
     nonRagKeywords := []string{
         "merhaba", "selam", "alo", "iyi günler", "teşekkür ederim", 
         "teşekkürler", "eyvallah", "sağ ol", "hoşça kal", "görüşürüz",
-        "bay bay", "kapat", // YENİ: Kapanış ifadeleri eklendi
+        "bay bay", "kapat",
     }
 
     for _, keyword := range nonRagKeywords {
         if strings.Contains(lowerText, keyword) {
             // Eğer cümle sadece bu kelimelerden oluşuyorsa veya çok kısaysa, RAG yapma.
-            if len(strings.Fields(lowerText)) <= 3 { // Toleransı biraz artır
+            if len(strings.Fields(lowerText)) <= 3 {
                 return false
             }
         }
     }
+
+    // Eğer bir soru kelimesi içeriyorsa, büyük ihtimalle bir bilgi talebidir.
+    questionKeywords := []string{
+        "nedir", "nasıl", "ne kadar", "hangi", "kimdir", "nerede",
+        "bilgi alabilir miyim", "anlatır mısın",
+    }
+    for _, keyword := range questionKeywords {
+        if strings.Contains(lowerText, keyword) {
+            return true
+        }
+    }
+    
+    // Eğer cümle 3 kelimeden uzunsa ve yukarıdaki basit ifadelere girmiyorsa,
+    // varsayılan olarak bir bilgi talebi olduğunu kabul et.
+    if len(strings.Fields(lowerText)) > 3 {
+        return true
+    }
+
+    return false
+}
 
     // Eğer bir soru kelimesi içeriyorsa, büyük ihtimalle bir bilgi talebidir.
     questionKeywords := []string{

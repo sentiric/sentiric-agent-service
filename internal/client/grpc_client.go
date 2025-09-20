@@ -89,10 +89,13 @@ func createSecureGrpcClient(cfg *config.Config, addr string) (*grpc.ClientConn, 
 	})
 
 	target := fmt.Sprintf("passthrough:///%s", addr)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second) 
+    // Bağlantı için 15 saniyelik bir zaman aşımı ekliyoruz.
+    ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second) 
 	defer cancel()
 
-	conn, err := grpc.DialContext(ctx, target, grpc.WithTransportCredentials(creds), grpc.WithBlock())
+	// WithBlock() seçeneği, bağlantı kurulana kadar bekler veya zaman aşımına uğrar.
+    conn, err := grpc.DialContext(ctx, target, grpc.WithTransportCredentials(creds), grpc.WithBlock())
+
 	if err != nil {
 		return nil, fmt.Errorf("gRPC sunucusuna (%s) bağlanılamadı: %w", addr, err)
 	}
