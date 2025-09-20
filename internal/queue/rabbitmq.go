@@ -12,7 +12,7 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// ... NewPublisher ve struct tanımı aynı kalacak ...
+
 const (
 	exchangeName   = "sentiric_events"
 	agentQueueName = "sentiric.agent_service.events"
