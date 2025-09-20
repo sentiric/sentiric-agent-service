@@ -1,4 +1,4 @@
-// ========== DOSYA: sentiric-agent-service/internal/service/dialog_manager.go (TAM VE GÜNCEL İÇERİK) ==========
+// ========== DOSYA: sentiric-agent-service/internal/service/dialog_manager.go (TAM VE NİHAİ İÇERİK) ==========
 package service
 
 import (
@@ -213,16 +213,21 @@ func (dm *DialogManager) stateFnListening(ctx context.Context, st *state.CallSta
 		return st, nil
 	}
 	l.Info().Msg("Kullanıcıdan ses bekleniyor (gerçek zamanlı akış modu)...")
+
+	// --- FOKSİYON ÇAĞRISI VE HATA YÖNETİMİ GÜNCELLENDİ ---
 	transcriptionResult, err := dm.aiOrchestrator.StreamAndTranscribe(ctx, st)
 	if err != nil {
+		l.Error().Err(err).Msg("StreamAndTranscribe sırasında beklenmedik hata oluştu.")
 		dm.mediaManager.PlayAnnouncement(ctx, st, constants.AnnounceSystemError)
 		st.ConsecutiveFailures++
 		st.CurrentState = constants.StateListening
 		return st, nil
 	}
+
 	if transcriptionResult.IsNoSpeechTimeout {
 		l.Warn().Msg("STT'den ses algılanmadı (timeout). Kullanıcıya bir şans daha veriliyor.")
 		dm.mediaManager.PlayAnnouncement(ctx, st, constants.AnnounceSystemCantHearYou)
+		// Sessizlik bir "hata" değildir, bu yüzden hata sayacını artırmıyoruz.
 		st.CurrentState = constants.StateListening
 		return st, nil
 	}
@@ -233,13 +238,13 @@ func (dm *DialogManager) stateFnListening(ctx context.Context, st *state.CallSta
 	if isMeaningless {
 		l.Warn().Str("stt_result", cleanedText).Msg("STT anlamsız veya çok kısa metin döndürdü, 'anlayamadım' anonsu çalınacak.")
 		dm.mediaManager.PlayAnnouncement(ctx, st, constants.AnnounceSystemCantUnderstand)
-		st.ConsecutiveFailures++
+		st.ConsecutiveFailures++ // Bu gerçek bir anlama hatasıdır, sayacı artır.
 		st.CurrentState = constants.StateListening
 		return st, nil
 	}
 
 	l.Info().Str("transcribed_text", cleanedText).Msg("Kullanıcıdan gelen ses metne çevrildi.")
-	st.ConsecutiveFailures = 0
+	st.ConsecutiveFailures = 0 // Başarılı transkripsiyonda sayacı sıfırla
 	st.Conversation = append(st.Conversation, map[string]string{"user": cleanedText})
 	st.CurrentState = constants.StateThinking
 	return st, nil
@@ -288,42 +293,33 @@ func (dm *DialogManager) stateFnThinking(ctx context.Context, st *state.CallStat
 	return st, nil
 }
 
-// --- DÜZELTME: Bu fonksiyonun (veya metodun) doğru yere eklenmesi derleme hatasını çözecektir. ---
-// Bu metot, DialogManager'a aittir ve diyalog mantığının bir parçasıdır.
 func (dm *DialogManager) shouldTriggerRAG(text string) bool {
-    lowerText := strings.ToLower(text)
-    
-    // Selamlaşma, teşekkür ve kapanış gibi ifadeler RAG tetiklememeli.
-    nonRagKeywords := []string{
-        "merhaba", "selam", "alo", "iyi günler", "teşekkür ederim", 
-        "teşekkürler", "eyvallah", "sağ ol", "hoşça kal", "görüşürüz",
-        "bay bay", "kapat",
-    }
-
-    for _, keyword := range nonRagKeywords {
-        if strings.Contains(lowerText, keyword) {
-            if len(strings.Fields(lowerText)) <= 3 {
-                return false
-            }
-        }
-    }
-
-    // Eğer bir soru kelimesi içeriyorsa, büyük ihtimalle bir bilgi talebidir.
-    questionKeywords := []string{
-        "nedir", "nasıl", "ne kadar", "hangi", "kimdir", "nerede",
-        "bilgi alabilir miyim", "anlatır mısın",
-    }
-    for _, keyword := range questionKeywords {
-        if strings.Contains(lowerText, keyword) {
-            return true
-        }
-    }
-    
-    if len(strings.Fields(lowerText)) > 3 {
-        return true
-    }
-
-    return false
+	lowerText := strings.ToLower(text)
+	nonRagKeywords := []string{
+		"merhaba", "selam", "alo", "iyi günler", "teşekkür ederim",
+		"teşekkürler", "eyvallah", "sağ ol", "hoşça kal", "görüşürüz",
+		"bay bay", "kapat",
+	}
+	for _, keyword := range nonRagKeywords {
+		if strings.Contains(lowerText, keyword) {
+			if len(strings.Fields(lowerText)) <= 3 {
+				return false
+			}
+		}
+	}
+	questionKeywords := []string{
+		"nedir", "nasıl", "ne kadar", "hangi", "kimdir", "nerede",
+		"bilgi alabilir miyim", "anlatır mısın",
+	}
+	for _, keyword := range questionKeywords {
+		if strings.Contains(lowerText, keyword) {
+			return true
+		}
+	}
+	if len(strings.Fields(lowerText)) > 3 {
+		return true
+	}
+	return false
 }
 
 func (dm *DialogManager) stateFnSpeaking(ctx context.Context, st *state.CallState) (*state.CallState, error) {
@@ -335,9 +331,7 @@ func (dm *DialogManager) stateFnSpeaking(ctx context.Context, st *state.CallStat
 	if err != nil {
 		return st, err
 	}
-
 	dm.mediaManager.PlayAudio(ctx, st, audioURI)
-
 	time.Sleep(250 * time.Millisecond)
 	st.CurrentState = constants.StateListening
 	return st, nil

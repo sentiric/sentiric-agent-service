@@ -1,4 +1,4 @@
-// sentiric-agent-service\internal\service\ai_orchestrator.go
+// ========== DOSYA: sentiric-agent-service/internal/service/ai_orchestrator.go (TAM VE NİHAİ İÇERİK) ==========
 package service
 
 import (
@@ -28,13 +28,12 @@ type KnowledgeClientInterface interface {
 	Query(ctx context.Context, req *knowledgev1.QueryRequest) (*knowledgev1.QueryResponse, error)
 }
 
-// --- DEĞİŞİKLİK 1: Yeni struct tanımı ---
+// TranscriptionResult, StreamAndTranscribe fonksiyonunun sonucunu
+// daha zengin bir şekilde ifade etmek için kullanılır.
 type TranscriptionResult struct {
 	Text              string
 	IsNoSpeechTimeout bool
 }
-
-// --- DEĞİŞİKLİK SONU ---
 
 type AIOrchestrator struct {
 	cfg             *config.Config
@@ -63,7 +62,6 @@ func NewAIOrchestrator(
 	}
 }
 
-// QueryKnowledgeBase, GenerateResponse, SynthesizeAndGetAudio fonksiyonları aynı kalacak...
 func (a *AIOrchestrator) QueryKnowledgeBase(ctx context.Context, query string, callState *state.CallState) (string, error) {
 	l := ctxlogger.FromContext(ctx)
 	if a.knowledgeClient == nil {
@@ -149,10 +147,11 @@ func (a *AIOrchestrator) SynthesizeAndGetAudio(ctx context.Context, callState *s
 	return audioURI, nil
 }
 
-// --- DEĞİŞİKLİK 2: Fonksiyonun tamamı güncellendi ---
+// --- FOKSİYONUN TAMAMI GÜNCELLENDİ ---
 func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *state.CallState) (TranscriptionResult, error) {
 	l := ctxlogger.FromContext(ctx)
 	var result TranscriptionResult
+
 	portVal, ok := callState.Event.Media["server_rtp_port"]
 	if !ok {
 		return result, fmt.Errorf("kritik hata: CallState içinde 'server_rtp_port' bulunamadı")
@@ -162,6 +161,7 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 		l.Error().Interface("value", portVal).Msg("Kritik hata: 'server_rtp_port' beklenen float64 tipinde değil.")
 		return result, fmt.Errorf("kritik hata: 'server_rtp_port' tipi geçersiz")
 	}
+
 	grpcCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", callState.TraceID)
 	mediaStream, err := a.mediaClient.RecordAudio(grpcCtx, &mediav1.RecordAudioRequest{
 		ServerRtpPort:    uint32(serverRtpPortFloat),
@@ -171,6 +171,7 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 		return result, fmt.Errorf("media service ile stream oluşturulamadı: %w", err)
 	}
 	l.Debug().Msg("Media-Service'ten ses akışı başlatıldı.")
+
 	u, err := url.Parse(a.sttClient.BaseURL())
 	if err != nil {
 		return result, fmt.Errorf("stt service url parse edilemedi: %w", err)
@@ -179,11 +180,13 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 	if u.Scheme == "http" {
 		scheme = "ws"
 	}
+
 	sttURL := url.URL{Scheme: scheme, Host: u.Host, Path: "/api/v1/transcribe-stream"}
 	q := sttURL.Query()
 	q.Set("language", GetLanguageCode(callState.Event))
 	q.Set("logprob_threshold", fmt.Sprintf("%f", a.cfg.SttServiceLogprobThreshold))
 	q.Set("no_speech_threshold", fmt.Sprintf("%f", a.cfg.SttServiceNoSpeechThreshold))
+
 	vadLevel := "1"
 	if callState.Event.Dialplan != nil && callState.Event.Dialplan.Action != nil && callState.Event.Dialplan.Action.ActionData != nil && callState.Event.Dialplan.Action.ActionData.Data != nil {
 		if val, ok := callState.Event.Dialplan.Action.ActionData.Data["stt_vad_level"]; ok {
@@ -192,6 +195,7 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 	}
 	q.Set("vad_aggressiveness", vadLevel)
 	sttURL.RawQuery = q.Encode()
+
 	l.Debug().Str("url", sttURL.String()).Msg("STT-Service'e WebSocket bağlantısı kuruluyor...")
 	wsConn, _, err := websocket.DefaultDialer.Dial(sttURL.String(), nil)
 	if err != nil {
@@ -199,10 +203,13 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 	}
 	defer wsConn.Close()
 	l.Info().Msg("STT-Service'e WebSocket bağlantısı başarılı.")
+
 	errChan := make(chan error, 2)
 	resultChan := make(chan TranscriptionResult, 1)
 	streamCtx, cancelStream := context.WithCancel(ctx)
 	defer cancelStream()
+
+	// Media-Service'ten STT'ye ses iletme
 	go func() {
 		defer func() {
 			wsConn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
@@ -228,6 +235,8 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 			}
 		}
 	}()
+
+	// STT'den sonuçları dinleme
 	go func() {
 		defer close(resultChan)
 		for {
@@ -252,13 +261,15 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 			}
 		}
 	}()
+
+	// Sonucu bekleme ve timeout yönetimi
 	select {
 	case res, ok := <-resultChan:
 		if !ok {
 			l.Warn().Msg("Transkript alınamadan STT bağlantısı kapandı.")
 			return TranscriptionResult{Text: "", IsNoSpeechTimeout: false}, nil
 		}
-		l.Debug().Interface("result", res).Msg("Nihai transkript sonucu alındı.")
+		l.Info().Str("transcribed_text", res.Text).Bool("is_timeout", res.IsNoSpeechTimeout).Msg("Nihai transkript sonucu alındı.")
 		return res, nil
 	case err := <-errChan:
 		l.Error().Err(err).Msg("Akış sırasında hata oluştu.")
@@ -266,10 +277,8 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 	case <-time.After(time.Duration(a.cfg.SttServiceStreamTimeoutSeconds) * time.Second):
 		l.Warn().Msg("Transkripsiyon için zaman aşımına ulaşıldı.")
 		return TranscriptionResult{Text: "", IsNoSpeechTimeout: true}, nil
-		}
+	}
 }
-
-// --- DEĞİŞİKLİK SONU ---
 
 func isAllowedSpeakerURL(rawURL, allowedDomainsCSV string) bool {
 	u, err := url.Parse(rawURL)
