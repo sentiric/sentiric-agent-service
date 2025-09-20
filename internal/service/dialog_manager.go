@@ -294,12 +294,13 @@ func (dm *DialogManager) shouldTriggerRAG(text string) bool {
     nonRagKeywords := []string{
         "merhaba", "selam", "alo", "iyi günler", "teşekkür ederim", 
         "teşekkürler", "eyvallah", "sağ ol", "hoşça kal", "görüşürüz",
+        "bay bay", "kapat", // YENİ: Kapanış ifadeleri eklendi
     }
 
     for _, keyword := range nonRagKeywords {
         if strings.Contains(lowerText, keyword) {
             // Eğer cümle sadece bu kelimelerden oluşuyorsa veya çok kısaysa, RAG yapma.
-            if len(strings.Fields(lowerText)) <= 2 {
+            if len(strings.Fields(lowerText)) <= 3 { // Toleransı biraz artır
                 return false
             }
         }
@@ -308,6 +309,7 @@ func (dm *DialogManager) shouldTriggerRAG(text string) bool {
     // Eğer bir soru kelimesi içeriyorsa, büyük ihtimalle bir bilgi talebidir.
     questionKeywords := []string{
         "nedir", "nasıl", "ne kadar", "hangi", "kimdir", "nerede",
+        "bilgi alabilir miyim", "anlatır mısın", // YENİ: Soru kalıpları eklendi
     }
     for _, keyword := range questionKeywords {
         if strings.Contains(lowerText, keyword) {
