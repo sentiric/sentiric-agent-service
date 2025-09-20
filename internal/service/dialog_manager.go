@@ -333,7 +333,7 @@ func (dm *DialogManager) shouldTriggerRAG(text string) bool {
     return false
 }
 
-// --- DÜZELTME BURADA ---
+// --- KRİTİK DÜZELTME BURADA ---
 func (dm *DialogManager) stateFnSpeaking(ctx context.Context, st *state.CallState) (*state.CallState, error) {
 	l := ctxlogger.FromContext(ctx)
 	lastAiMessage := st.Conversation[len(st.Conversation)-1]["ai"]
@@ -344,7 +344,7 @@ func (dm *DialogManager) stateFnSpeaking(ctx context.Context, st *state.CallStat
 		return st, err
 	}
 
-	// HATA BURADAYDI: PlayAudio'ya 'lastAiMessage' yerine 'audioURI' gönderilmeli.
+	// DÜZELTME: PlayAudio'ya 'lastAiMessage' yerine doğru değişken olan 'audioURI' gönderiliyor.
 	dm.mediaManager.PlayAudio(ctx, st, audioURI)
 
 	time.Sleep(250 * time.Millisecond)
