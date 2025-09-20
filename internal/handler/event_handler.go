@@ -1,5 +1,4 @@
-// internal/handler/event_handler.go
-
+// ========== DOSYA: sentiric-agent-service/internal/handler/event_handler.go (TAM VE GÜNCEL İÇERİK) ==========
 package handler
 
 import (
@@ -13,7 +12,6 @@ import (
 	"github.com/sentiric/sentiric-agent-service/internal/state"
 )
 
-// EventHandler, RabbitMQ'dan gelen mesajları deşifre eder ve ilgili işleyiciye (handler) yönlendirir.
 type EventHandler struct {
 	log             zerolog.Logger
 	eventsProcessed *prometheus.CounterVec
@@ -21,7 +19,6 @@ type EventHandler struct {
 	callHandler     *CallHandler
 }
 
-// NewEventHandler, yeni bir EventHandler örneği oluşturur.
 func NewEventHandler(
 	log zerolog.Logger,
 	processed, failed *prometheus.CounterVec,
@@ -42,7 +39,6 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 		TraceID   string `json:"traceId"`
 	}
 
-	// DEĞİŞİKLİK: Bu log artık DEBUG seviyesinde.
 	h.log.Debug().Bytes("raw_message", body).Msg("RabbitMQ'dan ham mesaj alındı")
 
 	if err := json.Unmarshal(body, &genericEvent); err != nil {
@@ -60,10 +56,9 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 
 	ctx := ctxlogger.ToContext(context.Background(), l)
 
-	l.Info().Msg("Olay alındı ve işlenmeye başlandı.")
-
 	switch constants.EventType(genericEvent.EventType) {
 	case constants.EventTypeCallStarted:
+		l.Info().Msg("Olay alındı ve işlenmeye başlandı.")
 		var event state.CallEvent
 		if err := json.Unmarshal(body, &event); err != nil {
 			l.Error().Err(err).Msg("call.started olayı parse edilemedi. Gelen veri ile Go struct'ı arasında uyumsuzluk var.")
@@ -72,6 +67,7 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 		go h.callHandler.HandleCallStarted(ctx, &event)
 
 	case constants.EventTypeCallEnded:
+		l.Info().Msg("Olay alındı ve işlenmeye başlandı.")
 		var event state.CallEvent
 		if err := json.Unmarshal(body, &event); err == nil {
 			go h.callHandler.HandleCallEnded(ctx, &event)
@@ -79,7 +75,7 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 			l.Error().Err(err).Msg("call.ended olayı parse edilemedi.")
 		}
 	default:
-		// DEĞİŞİKLİK: Bilinmeyen olaylar hata değil, uyarıdır.
-		l.Warn().Msg("Bilinmeyen olay türü, görmezden geliniyor.")
+		// DÜZELTME: Bu olaylar agent için önemli değil. `WARN` yerine `DEBUG` seviyesinde logla.
+		l.Debug().Msg("Agent-service için tanımlanmamış olay türü, görmezden geliniyor.")
 	}
 }
