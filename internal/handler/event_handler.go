@@ -1,4 +1,4 @@
-// ========== DOSYA: sentiric-agent-service/internal/handler/event_handler.go (TAM VE GÜNCEL İÇERİK) ==========
+// ========== DOSYA: sentiric-agent-service/internal/handler/event_handler.go (TAM VE NİHAİ İÇERİK) ==========
 package handler
 
 import (
@@ -62,6 +62,7 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 		var event state.CallEvent
 		if err := json.Unmarshal(body, &event); err != nil {
 			l.Error().Err(err).Msg("call.started olayı parse edilemedi. Gelen veri ile Go struct'ı arasında uyumsuzluk var.")
+			h.eventsFailed.WithLabelValues(genericEvent.EventType, "json_unmarshal").Inc()
 			return
 		}
 		go h.callHandler.HandleCallStarted(ctx, &event)
@@ -69,13 +70,18 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 	case constants.EventTypeCallEnded:
 		l.Info().Msg("Olay alındı ve işlenmeye başlandı.")
 		var event state.CallEvent
-		if err := json.Unmarshal(body, &event); err == nil {
-			go h.callHandler.HandleCallEnded(ctx, &event)
-		} else {
+		if err := json.Unmarshal(body, &event); err != nil {
 			l.Error().Err(err).Msg("call.ended olayı parse edilemedi.")
+			h.eventsFailed.WithLabelValues(genericEvent.EventType, "json_unmarshal").Inc()
+			return
 		}
+		go h.callHandler.HandleCallEnded(ctx, &event)
+		
 	default:
-		// DÜZELTME: Bu olaylar agent için önemli değil. `WARN` yerine `DEBUG` seviyesinde logla.
+		// --- DEĞİŞTİRİLDİ ---
+		// Olayın ne olduğunu logluyoruz, ancak seviyesini `DEBUG` olarak ayarlıyoruz.
+		// Bu sayede normal çalışmada logları kirletmez, ama hata ayıklama gerektiğinde
+		// hangi olayların göz ardı edildiğini görebiliriz.
 		l.Debug().Msg("Agent-service için tanımlanmamış olay türü, görmezden geliniyor.")
 	}
 }
