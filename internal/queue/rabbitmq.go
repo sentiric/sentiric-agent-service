@@ -1,3 +1,4 @@
+// sentiric-agent-service/internal/queue/rabbitmq.go
 package queue
 
 import (
@@ -11,6 +12,7 @@ import (
 	"github.com/rs/zerolog"
 )
 
+// ... NewPublisher ve struct tanımı aynı kalacak ...
 const (
 	exchangeName   = "sentiric_events"
 	agentQueueName = "sentiric.agent_service.events"
@@ -25,6 +27,7 @@ func NewPublisher(ch *amqp091.Channel, log zerolog.Logger) *Publisher {
 	return &Publisher{ch: ch, log: log}
 }
 
+
 func (p *Publisher) PublishJSON(ctx context.Context, routingKey string, body interface{}) error {
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
@@ -32,7 +35,8 @@ func (p *Publisher) PublishJSON(ctx context.Context, routingKey string, body int
 		return err
 	}
 
-	p.log.Info().Str("routing_key", routingKey).Bytes("payload", jsonBody).Msg("RabbitMQ'ya olay yayınlanıyor...")
+    // DEĞİŞİKLİK: Bu logu INFO'dan DEBUG'a çekiyoruz.
+	p.log.Debug().Str("routing_key", routingKey).Bytes("payload", jsonBody).Msg("RabbitMQ'ya olay yayınlanıyor...")
 
 	err = p.ch.PublishWithContext(
 		ctx,

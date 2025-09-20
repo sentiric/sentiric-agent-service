@@ -42,6 +42,7 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 		TraceID   string `json:"traceId"`
 	}
 
+	// DEĞİŞİKLİK: Bu log artık DEBUG seviyesinde.
 	h.log.Debug().Bytes("raw_message", body).Msg("RabbitMQ'dan ham mesaj alındı")
 
 	if err := json.Unmarshal(body, &genericEvent); err != nil {
@@ -78,6 +79,7 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 			l.Error().Err(err).Msg("call.ended olayı parse edilemedi.")
 		}
 	default:
+		// DEĞİŞİKLİK: Bilinmeyen olaylar hata değil, uyarıdır.
 		l.Warn().Msg("Bilinmeyen olay türü, görmezden geliniyor.")
 	}
 }
