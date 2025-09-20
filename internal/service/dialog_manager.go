@@ -1,4 +1,4 @@
-// ========== DOSYA: sentiric-agent-service/internal/service/dialog_manager.go (TAM VE NİHAİ İÇERİK) ==========
+// ========== DOSYA: sentiric-agent-service/internal/service/dialog_manager.go (TAM VE GÜNCEL İÇERİK) ==========
 package service
 
 import (
@@ -40,6 +40,8 @@ func NewDialogManager(
 		publisher:        pub,
 	}
 }
+
+// ... Start, publishUserIdentifiedEvent, runDialogLoop, stateFnWelcoming, stateFnListening fonksiyonları aynı kalacak ...
 
 func (dm *DialogManager) Start(ctx context.Context, event *state.CallEvent) {
 	l := ctxlogger.FromContext(ctx)
@@ -213,41 +215,52 @@ func (dm *DialogManager) stateFnListening(ctx context.Context, st *state.CallSta
 		return st, nil
 	}
 	l.Info().Msg("Kullanıcıdan ses bekleniyor (gerçek zamanlı akış modu)...")
-
-	// --- FOKSİYON ÇAĞRISI VE HATA YÖNETİMİ GÜNCELLENDİ ---
 	transcriptionResult, err := dm.aiOrchestrator.StreamAndTranscribe(ctx, st)
 	if err != nil {
-		l.Error().Err(err).Msg("StreamAndTranscribe sırasında beklenmedik hata oluştu.")
 		dm.mediaManager.PlayAnnouncement(ctx, st, constants.AnnounceSystemError)
 		st.ConsecutiveFailures++
 		st.CurrentState = constants.StateListening
 		return st, nil
 	}
-
 	if transcriptionResult.IsNoSpeechTimeout {
 		l.Warn().Msg("STT'den ses algılanmadı (timeout). Kullanıcıya bir şans daha veriliyor.")
 		dm.mediaManager.PlayAnnouncement(ctx, st, constants.AnnounceSystemCantHearYou)
-		// Sessizlik bir "hata" değildir, bu yüzden hata sayacını artırmıyoruz.
 		st.CurrentState = constants.StateListening
 		return st, nil
 	}
-
 	cleanedText := strings.TrimSpace(transcriptionResult.Text)
-
 	isMeaningless := len(cleanedText) < 3 || strings.Contains(cleanedText, "Bu dizinin betimlemesi")
 	if isMeaningless {
 		l.Warn().Str("stt_result", cleanedText).Msg("STT anlamsız veya çok kısa metin döndürdü, 'anlayamadım' anonsu çalınacak.")
 		dm.mediaManager.PlayAnnouncement(ctx, st, constants.AnnounceSystemCantUnderstand)
-		st.ConsecutiveFailures++ // Bu gerçek bir anlama hatasıdır, sayacı artır.
+		st.ConsecutiveFailures++
 		st.CurrentState = constants.StateListening
 		return st, nil
 	}
-
 	l.Info().Str("transcribed_text", cleanedText).Msg("Kullanıcıdan gelen ses metne çevrildi.")
-	st.ConsecutiveFailures = 0 // Başarılı transkripsiyonda sayacı sıfırla
+	st.ConsecutiveFailures = 0
 	st.Conversation = append(st.Conversation, map[string]string{"user": cleanedText})
 	st.CurrentState = constants.StateThinking
 	return st, nil
+}
+
+// --- DEĞİŞİKLİK BURADA BAŞLIYOR ---
+// stateFnThinking fonksiyonu güncellendi ve yeni bir yardımcı metot eklendi.
+
+// detectTerminationIntent, kullanıcının konuşmayı bitirmek isteyip istemediğini anlar.
+func (dm *DialogManager) detectTerminationIntent(text string) bool {
+	lowerText := strings.ToLower(text)
+	terminationKeywords := []string{
+		"kapat", "kapatıyorum", "görüşürüz", "hoşça kal", "bay bay",
+		"yeterli", "tamamdır", "teşekkürler", "teşekkür ederim",
+	}
+
+	for _, keyword := range terminationKeywords {
+		if strings.Contains(lowerText, keyword) {
+			return true
+		}
+	}
+	return false
 }
 
 func (dm *DialogManager) stateFnThinking(ctx context.Context, st *state.CallState) (*state.CallState, error) {
@@ -263,6 +276,14 @@ func (dm *DialogManager) stateFnThinking(ctx context.Context, st *state.CallStat
 	}
 	if lastUserMessage == "" {
 		return st, fmt.Errorf("düşünme durumu için son kullanıcı mesajı bulunamadı")
+	}
+
+	// YENİ ADIM: Yanıt üretmeden önce sonlandırma niyetini kontrol et.
+	if dm.detectTerminationIntent(lastUserMessage) {
+		l.Info().Str("user_message", lastUserMessage).Msg("Sonlandırma niyeti algılandı. Veda ediliyor.")
+		dm.mediaManager.PlayAnnouncement(ctx, st, constants.AnnounceSystemGoodbye)
+		st.CurrentState = constants.StateTerminated // Durumu sonlandırılmış olarak ayarla.
+		return st, nil                             // Döngüden güvenle çık.
 	}
 
 	var ragContext string
@@ -292,13 +313,12 @@ func (dm *DialogManager) stateFnThinking(ctx context.Context, st *state.CallStat
 	st.CurrentState = constants.StateSpeaking
 	return st, nil
 }
+// --- DEĞİŞİKLİK SONA ERİYOR ---
 
 func (dm *DialogManager) shouldTriggerRAG(text string) bool {
 	lowerText := strings.ToLower(text)
 	nonRagKeywords := []string{
-		"merhaba", "selam", "alo", "iyi günler", "teşekkür ederim",
-		"teşekkürler", "eyvallah", "sağ ol", "hoşça kal", "görüşürüz",
-		"bay bay", "kapat",
+		"merhaba", "selam", "alo", "iyi günler",
 	}
 	for _, keyword := range nonRagKeywords {
 		if strings.Contains(lowerText, keyword) {
