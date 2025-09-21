@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/rabbitmq/amqp091-go"
@@ -20,6 +21,11 @@ import (
 	"github.com/sentiric/sentiric-agent-service/internal/queue"
 	"github.com/sentiric/sentiric-agent-service/internal/service"
 	"github.com/sentiric/sentiric-agent-service/internal/state"
+	knowledgev1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/knowledge/v1"
+	mediav1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/media/v1"
+	sipv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/sip/v1"
+	ttsv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/tts/v1"
+	userv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/user/v1"
 )
 
 type Dependencies struct {
@@ -64,7 +70,11 @@ func (a *App) Run() {
 			defer rabbitCh.Close()
 		}
 
-		deps := a.buildDependencies(db, redisClient, rabbitCh)
+		deps := a.buildDependencies(ctx, db, redisClient, rabbitCh)
+		// Eğer context iptal edildiyse, buildDependencies nil dönebilir.
+		if deps == nil {
+			return
+		}
 
 		var consumerWg sync.WaitGroup
 		go queue.StartConsumer(ctx, rabbitCh, deps.EventHandler.HandleRabbitMQMessage, a.Log, &consumerWg)
@@ -95,25 +105,62 @@ func (a *App) Run() {
 	a.Log.Info().Msg("Tüm servisler başarıyla durduruldu. Çıkış yapılıyor.")
 }
 
-func (a *App) buildDependencies(db *sql.DB, redisClient *redis.Client, rabbitCh *amqp091.Channel) *Dependencies {
-	mediaClient, _ := client.NewMediaServiceClient(a.Cfg)
-	userClient, _ := client.NewUserServiceClient(a.Cfg)
-	ttsClient, _ := client.NewTTSServiceClient(a.Cfg)
-	sipSignalingClient, err := client.NewSipSignalingServiceClient(a.Cfg)
-	if err != nil {
-		a.Log.Fatal().Err(err).Msg("SIP Signaling Service istemcisi oluşturulamadı.")
+func (a *App) buildDependencies(ctx context.Context, db *sql.DB, redisClient *redis.Client, rabbitCh *amqp091.Channel) *Dependencies {
+
+	// Generic retry fonksiyonu
+	connectWithRetry := func(serviceName string, connectFunc func() (interface{}, error)) interface{} {
+		for {
+			select {
+			case <-ctx.Done():
+				a.Log.Warn().Str("service", serviceName).Msg("Servis kapatıldığı için bağlantı denemeleri iptal edildi.")
+				return nil
+			default:
+				client, err := connectFunc()
+				if err == nil {
+					a.Log.Info().Str("service", serviceName).Msg("gRPC istemci bağlantısı başarılı.")
+					return client
+				}
+				a.Log.Warn().Err(err).Str("service", serviceName).Msg("gRPC istemcisine bağlanılamadı, 5 saniye sonra tekrar denenecek...")
+				time.Sleep(5 * time.Second)
+			}
+		}
 	}
+
+	// Her bir gRPC istemcisi için bağlantı fonksiyonları
+	mediaConnect := func() (interface{}, error) { return client.NewMediaServiceClient(a.Cfg) }
+	userConnect := func() (interface{}, error) { return client.NewUserServiceClient(a.Cfg) }
+	ttsConnect := func() (interface{}, error) { return client.NewTTSServiceClient(a.Cfg) }
+	sipSignalingConnect := func() (interface{}, error) { return client.NewSipSignalingServiceClient(a.Cfg) }
+	knowledgeConnect := func() (interface{}, error) { return client.NewKnowledgeServiceClient(a.Cfg) }
+
+	// İstemcileri retry mantığıyla oluştur
+	mediaClient := connectWithRetry("media-service", mediaConnect)
+	if mediaClient == nil {
+		return nil
+	}
+	userClient := connectWithRetry("user-service", userConnect)
+	if userClient == nil {
+		return nil
+	}
+	ttsClient := connectWithRetry("tts-gateway", ttsConnect)
+	if ttsClient == nil {
+		return nil
+	}
+	sipSignalingClient := connectWithRetry("sip-signaling-service", sipSignalingConnect)
+	if sipSignalingClient == nil {
+		return nil
+	}
+
 	llmClient := client.NewLlmClient(a.Cfg.LlmServiceURL, a.Log)
 	sttClient := client.NewSttClient(a.Cfg.SttServiceURL, a.Log)
 
 	var knowledgeClient service.KnowledgeClientInterface
 	if a.Cfg.KnowledgeServiceGrpcURL != "" {
-		a.Log.Debug().Str("url", a.Cfg.KnowledgeServiceGrpcURL).Msg("gRPC Knowledge Service istemcisi kullanılıyor.")
-		grpcClient, err := client.NewKnowledgeServiceClient(a.Cfg)
-		if err != nil {
-			a.Log.Error().Err(err).Msg("gRPC Knowledge Service istemcisi oluşturulamadı. RAG devre dışı kalacak.")
+		grpcClientResult := connectWithRetry("knowledge-service-grpc", knowledgeConnect)
+		if grpcClientResult != nil {
+			knowledgeClient = client.NewGrpcKnowledgeClientAdapter(grpcClientResult.(knowledgev1.KnowledgeServiceClient))
 		} else {
-			knowledgeClient = client.NewGrpcKnowledgeClientAdapter(grpcClient)
+			return nil // Eğer context iptal edildiyse devam etme
 		}
 	} else if a.Cfg.KnowledgeServiceURL != "" {
 		a.Log.Debug().Str("url", a.Cfg.KnowledgeServiceURL).Msg("HTTP Knowledge Service istemcisi (fallback) kullanılıyor.")
@@ -125,10 +172,10 @@ func (a *App) buildDependencies(db *sql.DB, redisClient *redis.Client, rabbitCh 
 	stateManager := state.NewManager(redisClient)
 	publisher := queue.NewPublisher(rabbitCh, a.Log)
 	templateProvider := service.NewTemplateProvider(db)
-	mediaManager := service.NewMediaManager(db, mediaClient, metrics.EventsFailed, a.Cfg.BucketName)
-	aiOrchestrator := service.NewAIOrchestrator(a.Cfg, llmClient, sttClient, ttsClient, mediaClient, knowledgeClient)
-	dialogManager := service.NewDialogManager(a.Cfg, stateManager, aiOrchestrator, mediaManager, templateProvider, publisher, sipSignalingClient)
-	userManager := service.NewUserManager(userClient)
+	mediaManager := service.NewMediaManager(db, mediaClient.(mediav1.MediaServiceClient), metrics.EventsFailed, a.Cfg.BucketName)
+	aiOrchestrator := service.NewAIOrchestrator(a.Cfg, llmClient, sttClient, ttsClient.(ttsv1.TextToSpeechServiceClient), mediaClient.(mediav1.MediaServiceClient), knowledgeClient)
+	dialogManager := service.NewDialogManager(a.Cfg, stateManager, aiOrchestrator, mediaManager, templateProvider, publisher, sipSignalingClient.(sipv1.SipSignalingServiceClient))
+	userManager := service.NewUserManager(userClient.(userv1.UserServiceClient))
 	callHandler := handler.NewCallHandler(userManager, dialogManager, stateManager)
 	eventHandler := handler.NewEventHandler(a.Log, metrics.EventsProcessed, metrics.EventsFailed, callHandler)
 

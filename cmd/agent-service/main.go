@@ -36,9 +36,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("Konfigürasyon yüklenemedi: %v", err)
 	}
-    
-    // --- DEĞİŞİKLİK 3: Hem ENV hem de LOG_LEVEL'i logger'a gönder ---
-	appLog := logger.New(serviceName, cfg.Env, cfg.LogLevel) 
+
+	// --- DEĞİŞİKLİK 3: Hem ENV hem de LOG_LEVEL'i logger'a gönder ---
+	appLog := logger.New(serviceName, cfg.Env, cfg.LogLevel)
 	initGrpcLogger(cfg.LogLevel)
 
 	appLog.Info().

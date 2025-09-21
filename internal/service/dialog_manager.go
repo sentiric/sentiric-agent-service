@@ -330,10 +330,7 @@ func (dm *DialogManager) shouldTriggerRAG(text string) bool {
 			return true
 		}
 	}
-	if len(strings.Fields(lowerText)) > 3 {
-		return true
-	}
-	return false
+	return len(strings.Fields(lowerText)) > 3
 }
 
 func (dm *DialogManager) stateFnSpeaking(ctx context.Context, st *state.CallState) (*state.CallState, error) {

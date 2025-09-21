@@ -76,7 +76,7 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 			return
 		}
 		go h.callHandler.HandleCallEnded(ctx, &event)
-		
+
 	default:
 		// --- DEĞİŞTİRİLDİ ---
 		// Olayın ne olduğunu logluyoruz, ancak seviyesini `DEBUG` olarak ayarlıyoruz.
