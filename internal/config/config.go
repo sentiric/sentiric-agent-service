@@ -10,31 +10,31 @@ import (
 )
 
 type Config struct {
-	Env                         string
-	// YENİ ALAN: Log seviyesini de config'den okuyacağız.
-	LogLevel                    string 
-	PostgresURL                 string
-	RabbitMQURL                 string
-	RedisURL                    string
-	MetricsPort                 string
-	LlmServiceURL               string
-	SttServiceURL               string
-	SttServiceTargetSampleRate  uint32
-	SttServiceLogprobThreshold  float64
-	SttServiceNoSpeechThreshold float64
+	Env                            string
+	LogLevel                       string
+	PostgresURL                    string
+	RabbitMQURL                    string
+	RedisURL                       string
+	MetricsPort                    string
+	LlmServiceURL                  string
+	SttServiceURL                  string
+	SttServiceTargetSampleRate     uint32
+	SttServiceLogprobThreshold     float64
+	SttServiceNoSpeechThreshold    float64
 	SttServiceStreamTimeoutSeconds int
-	TtsServiceGrpcURL           string
-	MediaServiceGrpcURL         string
-	UserServiceGrpcURL          string
-	KnowledgeServiceGrpcURL     string 
-	KnowledgeServiceURL         string 
-	KnowledgeServiceTopK        int    
-	AgentServiceCertPath        string
-	AgentServiceKeyPath         string
-	GrpcTlsCaPath               string
-	AgentMaxConsecutiveFailures int
-	AgentAllowedSpeakerDomains  string
-	BucketName                  string
+	TtsServiceGrpcURL              string
+	MediaServiceGrpcURL            string
+	UserServiceGrpcURL             string
+	KnowledgeServiceGrpcURL        string
+	KnowledgeServiceURL            string
+	SipSignalingGrpcURL            string // YENİ ALAN
+	KnowledgeServiceTopK           int
+	AgentServiceCertPath           string
+	AgentServiceKeyPath            string
+	GrpcTlsCaPath                  string
+	AgentMaxConsecutiveFailures    int
+	AgentAllowedSpeakerDomains     string
+	BucketName                     string
 }
 
 func Load() (*Config, error) {
@@ -60,6 +60,9 @@ func Load() (*Config, error) {
 
 	sttTimeoutStr := getEnvWithDefault("STT_SERVICE_STREAM_TIMEOUT_SECONDS", "30")
 	sttTimeout, err := strconv.Atoi(sttTimeoutStr)
+	if err != nil {
+		return nil, fmt.Errorf("geçersiz STT_SERVICE_STREAM_TIMEOUT_SECONDS: %w", err)
+	}
 
 	maxFailuresStr := getEnvWithDefault("AGENT_MAX_CONSECUTIVE_FAILURES", "2")
 	maxFailures, err := strconv.Atoi(maxFailuresStr)
@@ -74,31 +77,31 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		Env:                         getEnvWithDefault("ENV", "production"),
-		// YENİ ALAN: LOG_LEVEL değişkenini okuyoruz.
-		LogLevel:                    getEnvWithDefault("LOG_LEVEL", "info"),
-		PostgresURL:                 getEnv("POSTGRES_URL"),
-		RabbitMQURL:                 getEnv("RABBITMQ_URL"),
-		RedisURL:                    getEnv("REDIS_URL"),
-		MetricsPort:                 getEnvWithDefault("AGENT_SERVICE_METRICS_PORT", "12032"),
-		LlmServiceURL:               getEnv("LLM_SERVICE_HTTP_URL"),
-		SttServiceURL:               getEnv("STT_SERVICE_HTTP_URL"),
-		SttServiceTargetSampleRate:  uint32(sttSampleRate),
-		SttServiceLogprobThreshold:  sttLogprob,
-		SttServiceNoSpeechThreshold: sttNoSpeech,
+		Env:                            getEnvWithDefault("ENV", "production"),
+		LogLevel:                       getEnvWithDefault("LOG_LEVEL", "info"),
+		PostgresURL:                    getEnv("POSTGRES_URL"),
+		RabbitMQURL:                    getEnv("RABBITMQ_URL"),
+		RedisURL:                       getEnv("REDIS_URL"),
+		MetricsPort:                    getEnvWithDefault("AGENT_SERVICE_METRICS_PORT", "12032"),
+		LlmServiceURL:                  getEnv("LLM_SERVICE_HTTP_URL"),
+		SttServiceURL:                  getEnv("STT_SERVICE_HTTP_URL"),
+		SttServiceTargetSampleRate:     uint32(sttSampleRate),
+		SttServiceLogprobThreshold:     sttLogprob,
+		SttServiceNoSpeechThreshold:    sttNoSpeech,
 		SttServiceStreamTimeoutSeconds: sttTimeout,
-		TtsServiceGrpcURL:           getEnv("TTS_GATEWAY_GRPC_URL"),
-		MediaServiceGrpcURL:         getEnv("MEDIA_SERVICE_GRPC_URL"),
-		UserServiceGrpcURL:          getEnv("USER_SERVICE_GRPC_URL"),
-		KnowledgeServiceGrpcURL:     getEnv("KNOWLEDGE_SERVICE_GRPC_URL"),
-		KnowledgeServiceURL:         getEnv("KNOWLEDGE_SERVICE_HTTP_URL"),
-		KnowledgeServiceTopK:        knowledgeTopK,
-		AgentServiceCertPath:        getEnv("AGENT_SERVICE_CERT_PATH"),
-		AgentServiceKeyPath:         getEnv("AGENT_SERVICE_KEY_PATH"),
-		GrpcTlsCaPath:               getEnv("GRPC_TLS_CA_PATH"),
-		AgentMaxConsecutiveFailures: maxFailures,
-		AgentAllowedSpeakerDomains:  getEnvWithDefault("AGENT_ALLOWED_SPEAKER_DOMAINS", "sentiric.github.io"),
-		BucketName:                  getEnv("BUCKET_NAME"),
+		TtsServiceGrpcURL:              getEnv("TTS_GATEWAY_GRPC_URL"),
+		MediaServiceGrpcURL:            getEnv("MEDIA_SERVICE_GRPC_URL"),
+		UserServiceGrpcURL:             getEnv("USER_SERVICE_GRPC_URL"),
+		KnowledgeServiceGrpcURL:        getEnv("KNOWLEDGE_SERVICE_GRPC_URL"),
+		KnowledgeServiceURL:            getEnv("KNOWLEDGE_SERVICE_HTTP_URL"),
+		SipSignalingGrpcURL:            getEnv("SIP_SIGNALING_GRPC_URL"),
+		KnowledgeServiceTopK:           knowledgeTopK,
+		AgentServiceCertPath:           getEnv("AGENT_SERVICE_CERT_PATH"),
+		AgentServiceKeyPath:            getEnv("AGENT_SERVICE_KEY_PATH"),
+		GrpcTlsCaPath:                  getEnv("GRPC_TLS_CA_PATH"),
+		AgentMaxConsecutiveFailures:    maxFailures,
+		AgentAllowedSpeakerDomains:     getEnvWithDefault("AGENT_ALLOWED_SPEAKER_DOMAINS", "sentiric.github.io"),
+		BucketName:                     getEnv("BUCKET_NAME"),
 	}
 
 	return cfg, nil

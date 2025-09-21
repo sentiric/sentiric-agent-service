@@ -1,4 +1,4 @@
-// ========== DOSYA: sentiric-agent-service/internal/client/grpc_client.go (TAM VE GÜNCEL İÇERİK) ==========
+// sentiric-agent-service/internal/client/grpc_client.go
 package client
 
 import (
@@ -13,12 +13,20 @@ import (
 	"github.com/sentiric/sentiric-agent-service/internal/config"
 	knowledgev1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/knowledge/v1"
 	mediav1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/media/v1"
+	sipv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/sip/v1"
 	ttsv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/tts/v1"
 	userv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/user/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
 
+func NewSipSignalingServiceClient(cfg *config.Config) (sipv1.SipSignalingServiceClient, error) {
+	conn, err := createSecureGrpcClient(cfg, cfg.SipSignalingGrpcURL)
+	if err != nil {
+		return nil, fmt.Errorf("sip signaling service istemcisi için bağlantı oluşturulamadı: %w", err)
+	}
+	return sipv1.NewSipSignalingServiceClient(conn), nil
+}
 
 func NewMediaServiceClient(cfg *config.Config) (mediav1.MediaServiceClient, error) {
 	conn, err := createSecureGrpcClient(cfg, cfg.MediaServiceGrpcURL)
@@ -79,7 +87,7 @@ func createSecureGrpcClient(cfg *config.Config, addr string) (*grpc.ClientConn, 
 	})
 
 	target := fmt.Sprintf("passthrough:///%s", addr)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second) 
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	conn, err := grpc.DialContext(ctx, target, grpc.WithTransportCredentials(creds), grpc.WithBlock())

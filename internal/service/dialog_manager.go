@@ -12,15 +12,17 @@ import (
 	"github.com/sentiric/sentiric-agent-service/internal/ctxlogger"
 	"github.com/sentiric/sentiric-agent-service/internal/queue"
 	"github.com/sentiric/sentiric-agent-service/internal/state"
+	sipv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/sip/v1"
 )
 
 type DialogManager struct {
-	cfg              *config.Config
-	stateManager     *state.Manager
-	aiOrchestrator   *AIOrchestrator
-	mediaManager     *MediaManager
-	templateProvider *TemplateProvider
-	publisher        *queue.Publisher
+	cfg                *config.Config
+	stateManager       *state.Manager
+	aiOrchestrator     *AIOrchestrator
+	mediaManager       *MediaManager
+	templateProvider   *TemplateProvider
+	publisher          *queue.Publisher
+	sipSignalingClient sipv1.SipSignalingServiceClient
 }
 
 func NewDialogManager(
@@ -30,14 +32,16 @@ func NewDialogManager(
 	mm *MediaManager,
 	tp *TemplateProvider,
 	pub *queue.Publisher,
+	sipClient sipv1.SipSignalingServiceClient,
 ) *DialogManager {
 	return &DialogManager{
-		cfg:              cfg,
-		stateManager:     sm,
-		aiOrchestrator:   aio,
-		mediaManager:     mm,
-		templateProvider: tp,
-		publisher:        pub,
+		cfg:                cfg,
+		stateManager:       sm,
+		aiOrchestrator:     aio,
+		mediaManager:       mm,
+		templateProvider:   tp,
+		publisher:          pub,
+		sipSignalingClient: sipClient,
 	}
 }
 
@@ -94,8 +98,6 @@ func (dm *DialogManager) publishUserIdentifiedEvent(ctx context.Context, event *
 		err := dm.publisher.PublishJSON(ctx, string(constants.EventTypeUserIdentifiedForCall), userIdentifiedPayload)
 		if err != nil {
 			l.Error().Err(err).Msg("user.identified.for_call olayı yayınlanamadı.")
-		} else {
-			l.Debug().Msg("user.identified.for_call olayı başarıyla yayınlandı.")
 		}
 	} else {
 		l.Info().Msg("Misafir araması, user.identified.for_call olayı yayınlanmıyor.")
@@ -153,7 +155,7 @@ func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.Cal
 				l.Error().Err(err).Msg("Durum işlenirken hata oluştu, sonlandırma deneniyor.")
 				dm.mediaManager.PlayAnnouncement(ctx, st, constants.AnnounceSystemError)
 				st.CurrentState = constants.StateTerminated
-				dm.publishTerminationRequest(ctx, st.CallID)
+				dm.terminateCallGrpc(ctx, st.CallID, "error_in_state_machine")
 			}
 		}
 		if err := dm.stateManager.Set(ctx, st); err != nil {
@@ -163,22 +165,18 @@ func (dm *DialogManager) runDialogLoop(ctx context.Context, initialSt *state.Cal
 	}
 }
 
-func (dm *DialogManager) publishTerminationRequest(ctx context.Context, callID string) {
+func (dm *DialogManager) terminateCallGrpc(ctx context.Context, callID string, reason string) {
 	l := ctxlogger.FromContext(ctx)
-	l.Info().Msg("Çağrıyı kapatma isteği gönderiliyor...")
-	type TerminationRequest struct {
-		EventType string    `json:"eventType"`
-		CallID    string    `json:"callId"`
-		Timestamp time.Time `json:"timestamp"`
+	l.Info().Str("reason", reason).Msg("Çağrıyı gRPC üzerinden sonlandırma isteği gönderiliyor...")
+
+	req := &sipv1.TerminateCallRequest{
+		CallId: callID,
+		Reason: reason,
 	}
-	terminationReq := TerminationRequest{
-		EventType: string(constants.EventTypeCallTerminateRequest),
-		CallID:    callID,
-		Timestamp: time.Now().UTC(),
-	}
-	err := dm.publisher.PublishJSON(ctx, string(constants.EventTypeCallTerminateRequest), terminationReq)
+
+	_, err := dm.sipSignalingClient.TerminateCall(ctx, req)
 	if err != nil {
-		l.Error().Err(err).Msg("Çağrı sonlandırma isteği yayınlanamadı.")
+		l.Error().Err(err).Msg("SIP Signaling'e çağrı sonlandırma isteği gönderilemedi.")
 	}
 }
 
@@ -208,7 +206,7 @@ func (dm *DialogManager) stateFnListening(ctx context.Context, st *state.CallSta
 	if st.ConsecutiveFailures >= dm.cfg.AgentMaxConsecutiveFailures {
 		l.Warn().Int("failures", st.ConsecutiveFailures).Int("max_failures", dm.cfg.AgentMaxConsecutiveFailures).Msg("Art arda çok fazla anlama hatası. Çağrı sonlandırılıyor.")
 		dm.mediaManager.PlayAnnouncement(ctx, st, constants.AnnounceSystemMaxFailures)
-		dm.publishTerminationRequest(ctx, st.CallID)
+		dm.terminateCallGrpc(ctx, st.CallID, "max_failures_reached")
 		st.CurrentState = constants.StateTerminated
 		return st, nil
 	}
@@ -262,7 +260,7 @@ func (dm *DialogManager) stateFnThinking(ctx context.Context, st *state.CallStat
 
 		dm.mediaManager.PlayAnnouncement(ctx, st, constants.AnnounceSystemGoodbye)
 
-		dm.publishTerminationRequest(ctx, st.CallID)
+		dm.terminateCallGrpc(ctx, st.CallID, "completed_by_user_request")
 
 		st.CurrentState = constants.StateTerminated
 		return st, nil

@@ -1,4 +1,4 @@
-// ========== DOSYA: sentiric-agent-service/internal/app/app.go (TAM VE GÜNCEL İÇERİK) ==========
+// sentiric-agent-service/internal/app/app.go
 package app
 
 import (
@@ -99,6 +99,10 @@ func (a *App) buildDependencies(db *sql.DB, redisClient *redis.Client, rabbitCh 
 	mediaClient, _ := client.NewMediaServiceClient(a.Cfg)
 	userClient, _ := client.NewUserServiceClient(a.Cfg)
 	ttsClient, _ := client.NewTTSServiceClient(a.Cfg)
+	sipSignalingClient, err := client.NewSipSignalingServiceClient(a.Cfg)
+	if err != nil {
+		a.Log.Fatal().Err(err).Msg("SIP Signaling Service istemcisi oluşturulamadı.")
+	}
 	llmClient := client.NewLlmClient(a.Cfg.LlmServiceURL, a.Log)
 	sttClient := client.NewSttClient(a.Cfg.SttServiceURL, a.Log)
 
@@ -123,7 +127,7 @@ func (a *App) buildDependencies(db *sql.DB, redisClient *redis.Client, rabbitCh 
 	templateProvider := service.NewTemplateProvider(db)
 	mediaManager := service.NewMediaManager(db, mediaClient, metrics.EventsFailed, a.Cfg.BucketName)
 	aiOrchestrator := service.NewAIOrchestrator(a.Cfg, llmClient, sttClient, ttsClient, mediaClient, knowledgeClient)
-	dialogManager := service.NewDialogManager(a.Cfg, stateManager, aiOrchestrator, mediaManager, templateProvider, publisher)
+	dialogManager := service.NewDialogManager(a.Cfg, stateManager, aiOrchestrator, mediaManager, templateProvider, publisher, sipSignalingClient)
 	userManager := service.NewUserManager(userClient)
 	callHandler := handler.NewCallHandler(userManager, dialogManager, stateManager)
 	eventHandler := handler.NewEventHandler(a.Log, metrics.EventsProcessed, metrics.EventsFailed, callHandler)
