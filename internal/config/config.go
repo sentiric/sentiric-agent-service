@@ -10,24 +10,28 @@ import (
 )
 
 type Config struct {
-	Env                            string
-	LogLevel                       string
-	PostgresURL                    string
-	RabbitMQURL                    string
-	RedisURL                       string
-	MetricsPort                    string
-	LlmServiceURL                  string
-	SttServiceURL                  string
+	Env         string
+	LogLevel    string
+	PostgresURL string
+	RabbitMQURL string
+	RedisURL    string
+	MetricsPort string
+
+	// --- DEĞİŞİKLİK BURADA: Artık tüm bağımlılıklar için _TARGET_ URL'lerini okuyoruz ---
+	LlmServiceURL           string
+	SttServiceURL           string
+	KnowledgeServiceGrpcURL string // Bu, RAG'in hem gRPC hem HTTP desteklemesi için kalabilir
+	KnowledgeServiceURL     string
+	TtsServiceGrpcURL       string
+	MediaServiceGrpcURL     string
+	UserServiceGrpcURL      string
+	SipSignalingGrpcURL     string
+	// --- DEĞİŞİKLİK SONA ERDİ ---
+
 	SttServiceTargetSampleRate     uint32
 	SttServiceLogprobThreshold     float64
 	SttServiceNoSpeechThreshold    float64
 	SttServiceStreamTimeoutSeconds int
-	TtsServiceGrpcURL              string
-	MediaServiceGrpcURL            string
-	UserServiceGrpcURL             string
-	KnowledgeServiceGrpcURL        string
-	KnowledgeServiceURL            string
-	SipSignalingGrpcURL            string // YENİ ALAN
 	KnowledgeServiceTopK           int
 	AgentServiceCertPath           string
 	AgentServiceKeyPath            string
@@ -77,24 +81,28 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		Env:                            getEnvWithDefault("ENV", "production"),
-		LogLevel:                       getEnvWithDefault("LOG_LEVEL", "info"),
-		PostgresURL:                    getEnv("POSTGRES_URL"),
-		RabbitMQURL:                    getEnv("RABBITMQ_URL"),
-		RedisURL:                       getEnv("REDIS_URL"),
-		MetricsPort:                    getEnvWithDefault("AGENT_SERVICE_METRICS_PORT", "12032"),
-		LlmServiceURL:                  getEnv("LLM_SERVICE_HTTP_URL"),
-		SttServiceURL:                  getEnv("STT_SERVICE_HTTP_URL"),
+		Env:         getEnvWithDefault("ENV", "production"),
+		LogLevel:    getEnvWithDefault("LOG_LEVEL", "info"),
+		PostgresURL: getEnv("POSTGRES_URL"),
+		RabbitMQURL: getEnv("RABBITMQ_URL"),
+		RedisURL:    getEnv("REDIS_URL"),
+		MetricsPort: getEnvWithDefault("AGENT_SERVICE_METRICS_PORT", "12032"),
+
+		// --- DEĞİŞİKLİK BURADA: _TARGET_ değişkenlerini okuyoruz ---
+		LlmServiceURL:           getEnv("LLM_SERVICE_TARGET_HTTP_URL"),
+		SttServiceURL:           getEnv("STT_SERVICE_TARGET_HTTP_URL"),
+		KnowledgeServiceGrpcURL: getEnv("KNOWLEDGE_SERVICE_TARGET_GRPC_URL"), // Hibrit RAG desteği için
+		KnowledgeServiceURL:     getEnv("KNOWLEDGE_SERVICE_TARGET_HTTP_URL"), // Hibrit RAG desteği için
+		TtsServiceGrpcURL:       getEnv("TTS_GATEWAY_TARGET_GRPC_URL"),
+		MediaServiceGrpcURL:     getEnv("MEDIA_SERVICE_TARGET_GRPC_URL"),
+		UserServiceGrpcURL:      getEnv("USER_SERVICE_TARGET_GRPC_URL"),
+		SipSignalingGrpcURL:     getEnv("SIP_SIGNALING_TARGET_GRPC_URL"),
+		// --- DEĞİŞİKLİK SONA ERDİ ---
+
 		SttServiceTargetSampleRate:     uint32(sttSampleRate),
 		SttServiceLogprobThreshold:     sttLogprob,
 		SttServiceNoSpeechThreshold:    sttNoSpeech,
 		SttServiceStreamTimeoutSeconds: sttTimeout,
-		TtsServiceGrpcURL:              getEnv("TTS_GATEWAY_GRPC_URL"),
-		MediaServiceGrpcURL:            getEnv("MEDIA_SERVICE_GRPC_URL"),
-		UserServiceGrpcURL:             getEnv("USER_SERVICE_GRPC_URL"),
-		KnowledgeServiceGrpcURL:        getEnv("KNOWLEDGE_SERVICE_GRPC_URL"),
-		KnowledgeServiceURL:            getEnv("KNOWLEDGE_SERVICE_HTTP_URL"),
-		SipSignalingGrpcURL:            getEnv("SIP_SIGNALING_GRPC_URL"),
 		KnowledgeServiceTopK:           knowledgeTopK,
 		AgentServiceCertPath:           getEnv("AGENT_SERVICE_CERT_PATH"),
 		AgentServiceKeyPath:            getEnv("AGENT_SERVICE_KEY_PATH"),
@@ -111,10 +119,10 @@ func getEnv(key string) string {
 	return os.Getenv(key)
 }
 
-func getEnvWithDefault(key, defaultValue string) string {
+func getEnvWithDefault(key, fallback string) string {
 	val := os.Getenv(key)
 	if val == "" {
-		return defaultValue
+		return fallback
 	}
 	return val
 }
