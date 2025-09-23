@@ -1,3 +1,5 @@
+// sentiric-agent-service/internal/database/postgres.go
+
 package database
 
 import (
@@ -10,80 +12,107 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
-	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/rs/zerolog"
 )
 
+const (
+	maxRetries  = 10
+	retryDelay  = 5 * time.Second
+	pingTimeout = 5 * time.Second
+)
+
+// Connect, yeniden deneme mekanizması ile PostgreSQL'e bağlanır.
 func Connect(ctx context.Context, url string, log zerolog.Logger) (*sql.DB, error) {
-	var db *sql.DB
-	var err error
 	config, err := pgxpool.ParseConfig(url)
 	if err != nil {
-		return nil, fmt.Errorf("PostgreSQL URL parse edilemedi: %w", err)
+		// DÜZELTME (ST1005): Hata mesajı küçük harfle başlar.
+		return nil, fmt.Errorf("postgresql URL parse edilemedi: %w", err)
 	}
 	config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 	finalURL := stdlib.RegisterConnConfig(config.ConnConfig)
-	for {
+
+	var db *sql.DB
+	for i := 0; i < maxRetries; i++ {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		default:
 		}
+
 		db, err = sql.Open("pgx", finalURL)
 		if err == nil {
 			db.SetConnMaxLifetime(time.Minute * 3)
 			db.SetMaxIdleConns(5)
 			db.SetMaxOpenConns(10)
-			if pingErr := db.Ping(); pingErr == nil {
+
+			pingCtx, cancel := context.WithTimeout(ctx, pingTimeout)
+			pingErr := db.PingContext(pingCtx)
+			cancel()
+
+			if pingErr == nil {
 				log.Info().Msg("Veritabanına bağlantı başarılı (Simple Protocol Mode).")
 				return db, nil
-			} else {
-				err = pingErr
 			}
+			err = pingErr
+			db.Close()
 		}
+
 		if ctx.Err() == nil {
-			log.Warn().Err(err).Msg("Veritabanına bağlanılamadı, 5 saniye sonra tekrar denenecek...")
+			log.Warn().Err(err).Int("attempt", i+1).Int("max_attempts", maxRetries).Msg("Veritabanına bağlanılamadı, 5 saniye sonra tekrar denenecek...")
 		}
+
 		select {
-		case <-time.After(5 * time.Second):
+		case <-time.After(retryDelay):
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
 	}
+
+	return nil, fmt.Errorf("maksimum deneme (%d) sonrası veritabanına bağlanılamadı: %w", maxRetries, err)
 }
 
+// ConnectRedis, yeniden deneme mekanizması ile Redis'e bağlanır.
 func ConnectRedis(ctx context.Context, url string, log zerolog.Logger) (*redis.Client, error) {
 	var rdb *redis.Client
 	var err error
-	for {
+
+	opt, parseErr := redis.ParseURL(url)
+	if parseErr != nil {
+		// DÜZELTME (ST1005): Hata mesajı küçük harfle başlar.
+		return nil, fmt.Errorf("redis URL parse edilemedi: %w", parseErr)
+	}
+
+	for i := 0; i < maxRetries; i++ {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		default:
 		}
-		opt, parseErr := redis.ParseURL(url)
-		if parseErr != nil {
-			err = parseErr
-		} else {
-			rdb = redis.NewClient(opt)
-			pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			pingErr := rdb.Ping(pingCtx).Err()
-			cancel()
-			if pingErr == nil {
-				log.Info().Msg("Redis bağlantısı başarılı.")
-				return rdb, nil
-			}
-			err = pingErr
+
+		rdb = redis.NewClient(opt)
+		pingCtx, cancel := context.WithTimeout(ctx, pingTimeout)
+		pingErr := rdb.Ping(pingCtx).Err()
+		cancel()
+
+		if pingErr == nil {
+			log.Info().Msg("Redis bağlantısı başarılı.")
+			return rdb, nil
 		}
+		err = pingErr
+		rdb.Close()
+
 		if ctx.Err() == nil {
-			log.Warn().Err(err).Msg("Redis'e bağlanılamadı, 5 saniye sonra tekrar denenecek...")
+			log.Warn().Err(err).Int("attempt", i+1).Int("max_attempts", maxRetries).Msg("Redis'e bağlanılamadı, 5 saniye sonra tekrar denenecek...")
 		}
+
 		select {
-		case <-time.After(5 * time.Second):
+		case <-time.After(retryDelay):
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
 	}
+
+	return nil, fmt.Errorf("maksimum deneme (%d) sonrası Redis'e bağlanılamadı: %w", maxRetries, err)
 }
 
 func GetAnnouncementPathFromDB(db *sql.DB, announcementID, tenantID, languageCode string) (string, error) {
