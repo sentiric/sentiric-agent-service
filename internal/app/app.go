@@ -71,7 +71,6 @@ func (a *App) Run() {
 		}
 
 		deps := a.buildDependencies(ctx, db, redisClient, rabbitCh)
-		// Eğer context iptal edildiyse, buildDependencies nil dönebilir.
 		if deps == nil {
 			return
 		}
@@ -107,7 +106,6 @@ func (a *App) Run() {
 
 func (a *App) buildDependencies(ctx context.Context, db *sql.DB, redisClient *redis.Client, rabbitCh *amqp091.Channel) *Dependencies {
 
-	// Generic retry fonksiyonu
 	connectWithRetry := func(serviceName string, connectFunc func() (interface{}, error)) interface{} {
 		for {
 			select {
@@ -126,14 +124,12 @@ func (a *App) buildDependencies(ctx context.Context, db *sql.DB, redisClient *re
 		}
 	}
 
-	// Her bir gRPC istemcisi için bağlantı fonksiyonları
 	mediaConnect := func() (interface{}, error) { return client.NewMediaServiceClient(a.Cfg) }
 	userConnect := func() (interface{}, error) { return client.NewUserServiceClient(a.Cfg) }
 	ttsConnect := func() (interface{}, error) { return client.NewTTSServiceClient(a.Cfg) }
 	sipSignalingConnect := func() (interface{}, error) { return client.NewSipSignalingServiceClient(a.Cfg) }
 	knowledgeConnect := func() (interface{}, error) { return client.NewKnowledgeServiceClient(a.Cfg) }
 
-	// İstemcileri retry mantığıyla oluştur
 	mediaClient := connectWithRetry("media-service", mediaConnect)
 	if mediaClient == nil {
 		return nil
@@ -160,7 +156,7 @@ func (a *App) buildDependencies(ctx context.Context, db *sql.DB, redisClient *re
 		if grpcClientResult != nil {
 			knowledgeClient = client.NewGrpcKnowledgeClientAdapter(grpcClientResult.(knowledgev1.KnowledgeServiceClient))
 		} else {
-			return nil // Eğer context iptal edildiyse devam etme
+			return nil
 		}
 	} else if a.Cfg.KnowledgeServiceURL != "" {
 		a.Log.Debug().Str("url", a.Cfg.KnowledgeServiceURL).Msg("HTTP Knowledge Service istemcisi (fallback) kullanılıyor.")
