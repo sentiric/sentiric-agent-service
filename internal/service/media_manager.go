@@ -1,3 +1,4 @@
+// sentiric-agent-service\internal\service\media_manager.go
 package service
 
 import (
@@ -39,10 +40,12 @@ func (m *MediaManager) PlayAudio(ctx context.Context, callState *state.CallState
 		l.Error().Msg("PlayAudio için kritik medya bilgisi eksik (st.Event.Media is nil).")
 		return
 	}
-	rtpTargetVal, ok1 := callState.Event.Media["caller_rtp_addr"]
-	serverPortVal, ok2 := callState.Event.Media["server_rtp_port"]
+
+	// --- GÜVENLİ TİP DÖNÜŞÜMÜ BAŞLANGICI ---
+	rtpTargetVal, ok1 := callState.Event.Media["callerRtpAddr"]
+	serverPortVal, ok2 := callState.Event.Media["serverRtpPort"]
 	if !ok1 || !ok2 {
-		l.Error().Msg("PlayAudio için medya bilgileri eksik (caller_rtp_addr veya server_rtp_port anahtarı yok).")
+		l.Error().Msg("PlayAudio için medya bilgileri eksik (callerRtpAddr veya serverRtpPort anahtarı yok).")
 		return
 	}
 	rtpTarget, ok1 := rtpTargetVal.(string)
@@ -51,6 +54,8 @@ func (m *MediaManager) PlayAudio(ctx context.Context, callState *state.CallState
 		l.Error().Interface("rtp_target", rtpTargetVal).Interface("server_port", serverPortVal).Msg("PlayAudio için medya bilgileri geçersiz formatta.")
 		return
 	}
+	// --- GÜVENLİ TİP DÖNÜŞÜMÜ SONU ---
+
 	serverPort := uint32(serverPortFloat)
 	playReq := &mediav1.PlayAudioRequest{RtpTargetAddr: rtpTarget, ServerRtpPort: serverPort, AudioUri: audioURI}
 	playCtx, playCancel := context.WithTimeout(metadata.AppendToOutgoingContext(ctx, "x-trace-id", callState.TraceID), 5*time.Minute)
@@ -61,11 +66,11 @@ func (m *MediaManager) PlayAudio(ctx context.Context, callState *state.CallState
 		if ok && (stErr.Code() == codes.Canceled || stErr.Code() == codes.DeadlineExceeded) {
 			l.Warn().Err(err).Msg("PlayAudio işlemi başka bir komutla veya zaman aşımı nedeniyle iptal edildi.")
 		} else {
-			l.Error().Err(err).Str("audio_uri", audioURI).Msg("Hata: Ses çalma komutu başarısız.")
+			l.Error().Err(err).Str("audio_uri_len", fmt.Sprintf("%d", len(audioURI))).Msg("Hata: Ses çalma komutu başarısız.")
 			m.eventsFailed.WithLabelValues(callState.Event.EventType, "play_audio_failed").Inc()
 		}
 	} else {
-		l.Debug().Str("audio_uri_type", audioURI[:15]).Msg("Ses çalındı ve tamamlandı.")
+		l.Debug().Str("audio_uri_type", audioURI[:20]).Msg("Ses çalındı ve tamamlandı.")
 	}
 }
 
@@ -87,13 +92,29 @@ func (m *MediaManager) PlayAnnouncement(ctx context.Context, callState *state.Ca
 
 func (m *MediaManager) StartRecording(ctx context.Context, callState *state.CallState) {
 	l := ctxlogger.FromContext(ctx)
+
+	// --- GÜVENLİ TİP DÖNÜŞÜMÜ BAŞLANGICI ---
+	portVal, ok := callState.Event.Media["serverRtpPort"]
+	if !ok {
+		l.Error().Msg("StartRecording için kritik medya bilgisi eksik ('serverRtpPort' anahtarı yok). Kayıt başlatılamıyor.")
+		return
+	}
+
+	serverRtpPortFloat, ok := portVal.(float64)
+	if !ok {
+		l.Error().Interface("value", portVal).Msg("StartRecording için 'serverRtpPort' beklenen float64 tipinde değil. Kayıt başlatılamıyor.")
+		return
+	}
+	// --- GÜVENLİ TİP DÖNÜŞÜMÜ SONU ---
+
 	recordingTenantID := callState.TenantID
 	recordingURI := fmt.Sprintf("s3://%s/%s/%s.wav", m.bucketName, recordingTenantID, callState.CallID)
 	l.Info().Str("uri", recordingURI).Msg("Çağrı kaydı başlatılıyor...")
 	startRecCtx, startRecCancel := context.WithTimeout(metadata.AppendToOutgoingContext(ctx, "x-trace-id", callState.TraceID), 10*time.Second)
 	defer startRecCancel()
+
 	_, err := m.mediaClient.StartRecording(startRecCtx, &mediav1.StartRecordingRequest{
-		ServerRtpPort: uint32(callState.Event.Media["server_rtp_port"].(float64)),
+		ServerRtpPort: uint32(serverRtpPortFloat),
 		OutputUri:     recordingURI,
 		CallId:        callState.CallID,
 		TraceId:       callState.TraceID,
@@ -105,11 +126,27 @@ func (m *MediaManager) StartRecording(ctx context.Context, callState *state.Call
 
 func (m *MediaManager) StopRecording(ctx context.Context, callState *state.CallState) {
 	l := ctxlogger.FromContext(ctx)
+
+	// --- GÜVENLİ TİP DÖNÜŞÜMÜ BAŞLANGICI ---
+	portVal, ok := callState.Event.Media["serverRtpPort"]
+	if !ok {
+		l.Error().Msg("StopRecording için kritik medya bilgisi eksik ('serverRtpPort' anahtarı yok). Kayıt durdurulamıyor.")
+		return
+	}
+
+	serverRtpPortFloat, ok := portVal.(float64)
+	if !ok {
+		l.Error().Interface("value", portVal).Msg("StopRecording için 'serverRtpPort' beklenen float64 tipinde değil. Kayıt durdurulamıyor.")
+		return
+	}
+	// --- GÜVENLİ TİP DÖNÜŞÜMÜ SONU ---
+
 	l.Info().Msg("Çağrı kaydı durduruluyor...")
 	stopRecCtx, stopRecCancel := context.WithTimeout(metadata.AppendToOutgoingContext(context.Background(), "x-trace-id", callState.TraceID), 10*time.Second)
 	defer stopRecCancel()
+
 	_, err := m.mediaClient.StopRecording(stopRecCtx, &mediav1.StopRecordingRequest{
-		ServerRtpPort: uint32(callState.Event.Media["server_rtp_port"].(float64)),
+		ServerRtpPort: uint32(serverRtpPortFloat),
 	})
 	if err != nil {
 		l.Error().Err(err).Msg("Media-service'e kayıt durdurma komutu gönderilemedi.")
