@@ -1,3 +1,4 @@
+// sentiric-agent-service/internal/state/manager.go
 package state
 
 import (
@@ -28,43 +29,42 @@ type MatchedUserPayload struct {
 	PreferredLanguageCode *string                  `json:"preferredLanguageCode"`
 }
 
-// DialplanActionPayload, dialplan'deki eylem verisini temsil eder.
-// --- KRİTİK DÜZELTME BURADA ---
-// Gelen JSON: "actionData": {"data": {"voice_selector": "..."}}
-// Bu yüzden ActionData'nın içinde bir "Data" alanı olmalı.
+// ActionDataPayload, dialplan'deki eylem verisini temsil eder.
 type ActionDataPayload struct {
 	Data map[string]string `json:"data"`
 }
 
+// DialplanActionPayload, dialplan'deki eylemi temsil eder.
 type DialplanActionPayload struct {
 	Action     string             `json:"action"`
 	ActionData *ActionDataPayload `json:"actionData"`
 }
 
-// --- DÜZELTME SONU ---
-
 // DialplanPayload, call.started olayının içindeki zenginleştirilmiş dialplan verisini temsil eder.
+// --- DÜZELTME BURADA: Gelen JSON'daki alan adlarıyla eşleşen json etiketleri eklendi ---
 type DialplanPayload struct {
 	DialplanID     string                 `json:"dialplanId"`
 	TenantID       string                 `json:"tenantId"`
 	Action         *DialplanActionPayload `json:"action"`
 	MatchedUser    *MatchedUserPayload    `json:"matchedUser"`
 	MatchedContact *MatchedContactPayload `json:"matchedContact"`
-	// InboundRoute bilgisini de ekleyelim, gelecekte lazım olabilir.
-	InboundRoute struct {
+	InboundRoute   struct {
 		DefaultLanguageCode string `json:"defaultLanguageCode"`
 	} `json:"inboundRoute"`
 }
 
 // CallEvent, RabbitMQ'dan gelen call.started olayının yapısını temsil eder.
+// --- DÜZELTME BURADA: Gelen JSON'daki alan adlarıyla eşleşen json etiketleri eklendi ---
 type CallEvent struct {
-	EventType string                 `json:"eventType"`
-	TraceID   string                 `json:"traceId"`
-	CallID    string                 `json:"callId"`
-	Media     map[string]interface{} `json:"media"`
-	Dialplan  *DialplanPayload       `json:"dialplan"`
-	From      string                 `json:"from"`
+	EventType string          `json:"eventType"`
+	TraceID   string          `json:"traceId"`
+	CallID    string          `json:"callId"`
+	Media     map[string]interface{} `json:"mediaInfo"` // Düzeltme: mediaInfo
+	From      string          `json:"fromUri"`       // Düzeltme: fromUri
+	Dialplan  *DialplanPayload `json:"dialplanResolution"` // Düzeltme: dialplanResolution
 }
+// --- DÜZELTMELERİN SONU ---
+
 
 // CallState, bir çağrının yaşam döngüsü boyunca Redis'te saklanan durumunu temsil eder.
 type CallState struct {
