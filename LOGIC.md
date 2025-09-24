@@ -63,5 +63,3 @@ sequenceDiagram
     AgentService->>+MediaService: Sesi kullanıcıya çal (gRPC)
     MediaService-->>-User: (Sesli olarak) "VIP Check-up paketimiz..."
 ```
-
----
