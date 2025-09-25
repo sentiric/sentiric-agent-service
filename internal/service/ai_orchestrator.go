@@ -1,4 +1,4 @@
-// ========== DOSYA: sentiric-agent-service/internal/service/ai_orchestrator.go (TAM VE İYİLEŞTİRİLMİŞ İÇERİK) ==========
+// ========== DOSYA: sentiric-agent-service/internal/service/ai_orchestrator.go (TAM, GÜNCELLENMİŞ VE NİHAİ İÇERİK) ==========
 package service
 
 import (
@@ -60,7 +60,8 @@ func NewAIOrchestrator(
 	}
 }
 
-
+// QueryKnowledgeBase, GenerateResponse ve SynthesizeAndGetAudio fonksiyonları değişmedi...
+// ... (Bu fonksiyonların önceki yanıttaki içerikleri buraya kopyalanabilir, değişiklik yok) ...
 func (a *AIOrchestrator) QueryKnowledgeBase(ctx context.Context, query string, callState *state.CallState) (string, error) {
 	l := ctxlogger.FromContext(ctx)
 	if a.knowledgeClient == nil {
@@ -98,13 +99,9 @@ func (a *AIOrchestrator) QueryKnowledgeBase(ctx context.Context, query string, c
 	l.Info().Int("result_count", len(res.GetResults())).Msg("Knowledge base'den sonuçlar başarıyla alındı.")
 	return contextStr, nil
 }
-
-
 func (a *AIOrchestrator) GenerateResponse(ctx context.Context, prompt string, callState *state.CallState) (string, error) {
 	return a.llmClient.Generate(ctx, prompt, callState.TraceID)
 }
-
-
 func (a *AIOrchestrator) SynthesizeAndGetAudio(ctx context.Context, callState *state.CallState, textToPlay string) (string, error) {
 	l := ctxlogger.FromContext(ctx)
 	l.Debug().Str("text", textToPlay).Msg("Metin sese dönüştürülüyor...")
@@ -146,22 +143,19 @@ func (a *AIOrchestrator) SynthesizeAndGetAudio(ctx context.Context, callState *s
 	return audioURI, nil
 }
 
-
-
 func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *state.CallState) (TranscriptionResult, error) {
 	l := ctxlogger.FromContext(ctx)
 	var result TranscriptionResult
 
+	// 1. Media Service'ten canlı ses akışını başlat
 	portVal, ok := callState.Event.Media["server_rtp_port"]
 	if !ok {
-		return result, fmt.Errorf("kritik hata: CallState içinde 'server_rtp_port' bulunamadı")
+		return result, fmt.Errorf("kritik hata: 'server_rtp_port' bulunamadı")
 	}
 	serverRtpPortFloat, ok := portVal.(float64)
 	if !ok {
-		l.Error().Interface("value", portVal).Msg("Kritik hata: 'server_rtp_port' beklenen float64 tipinde değil.")
 		return result, fmt.Errorf("kritik hata: 'server_rtp_port' tipi geçersiz")
 	}
-
 	grpcCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", callState.TraceID)
 	mediaStream, err := a.mediaClient.RecordAudio(grpcCtx, &mediav1.RecordAudioRequest{
 		ServerRtpPort:    uint32(serverRtpPortFloat),
@@ -172,9 +166,97 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 	}
 	l.Debug().Msg("Media-Service'ten ses akışı başlatıldı.")
 
+	// 2. STT Service'e WebSocket bağlantısını kur
+	sttURL, err := a.buildSttUrl(callState)
+	if err != nil {
+		return result, err
+	}
+	l.Debug().Str("url", sttURL.String()).Msg("STT-Service'e WebSocket bağlantısı kuruluyor...")
+	var wsConn *websocket.Conn
+	maxRetries := 3
+	retryDelay := 2 * time.Second
+	for i := 0; i < maxRetries; i++ {
+		select {
+		case <-ctx.Done():
+			return result, ctx.Err()
+		default:
+		}
+		wsConn, _, err = websocket.DefaultDialer.Dial(sttURL.String(), nil)
+		if err == nil {
+			break
+		}
+		l.Warn().Err(err).Int("attempt", i+1).Msg("STT-Service'e WebSocket bağlantısı kurulamadı, tekrar denenecek...")
+		time.Sleep(retryDelay)
+	}
+	if err != nil {
+		return result, fmt.Errorf("%d deneme sonrası STT-Service'e bağlanılamadı: %w", maxRetries, err)
+	}
+	defer wsConn.Close()
+	l.Info().Msg("STT-Service'e WebSocket bağlantısı başarılı.")
+
+	// 3. Kanalları ve context'i hazırla
+	errChan := make(chan error, 2)
+	resultChan := make(chan TranscriptionResult, 1)
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
+
+	// 4. STT'den sonuçları dinleyecek goroutine'i başlat
+	go a.listenToStt(streamCtx, wsConn, resultChan)
+
+	// 5. Ana döngü: Media'dan oku, STT'ye yaz, sonuçları dinle
+	for {
+		select {
+		case res, ok := <-resultChan:
+			if !ok {
+				l.Warn().Msg("Transkript alınamadan STT bağlantısı kapandı.")
+				return TranscriptionResult{Text: "", IsNoSpeechTimeout: false}, nil
+			}
+			l.Info().Str("transcribed_text", res.Text).Bool("is_timeout", res.IsNoSpeechTimeout).Msg("Nihai transkript sonucu alındı.")
+			return res, nil
+		case err := <-errChan:
+			l.Error().Err(err).Msg("Akış sırasında hata oluştu.")
+			return result, err
+		case <-time.After(time.Duration(a.cfg.SttServiceStreamTimeoutSeconds) * time.Second):
+			l.Warn().Msg("Genel transkripsiyon zaman aşımına ulaşıldı.")
+			return TranscriptionResult{Text: "", IsNoSpeechTimeout: true}, nil
+		default:
+			// Media'dan bir sonraki ses parçasını al
+			chunk, err := mediaStream.Recv()
+			if err == io.EOF || status.Code(err) == codes.Canceled {
+				l.Info().Msg("Media stream sonlandı.")
+				wsConn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+				// Stream bitti, son sonucu beklemek için kısa bir süre tanı
+				select {
+				case res := <-resultChan:
+					return res, nil
+				case <-time.After(3 * time.Second):
+					l.Warn().Msg("Media stream sonlandıktan sonra STT'den yanıt gelmedi.")
+					return TranscriptionResult{Text: "", IsNoSpeechTimeout: true}, nil
+				}
+			}
+			if err != nil {
+				l.Error().Err(err).Msg("Media stream'den okuma hatası.")
+				return result, err
+			}
+
+			// Gelen ses parçasını STT'ye gönder
+			if err := wsConn.WriteMessage(websocket.BinaryMessage, chunk.AudioData); err != nil {
+				if !websocket.IsCloseError(err) {
+					l.Error().Err(err).Msg("WebSocket'e yazma hatası.")
+					return result, err
+				}
+				l.Info().Msg("WebSocket yazma hatası (bağlantı kapalı).")
+				return result, nil // Bağlantı kapandıysa normal sonlan
+			}
+		}
+	}
+}
+
+// buildSttUrl, WebSocket bağlantısı için URL'i oluşturan yardımcı bir fonksiyondur.
+func (a *AIOrchestrator) buildSttUrl(callState *state.CallState) (*url.URL, error) {
 	u, err := url.Parse(a.sttClient.BaseURL())
 	if err != nil {
-		return result, fmt.Errorf("stt service url parse edilemedi: %w", err)
+		return nil, fmt.Errorf("stt service url parse edilemedi: %w", err)
 	}
 	scheme := "wss"
 	if u.Scheme == "http" {
@@ -187,7 +269,7 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 	q.Set("logprob_threshold", fmt.Sprintf("%f", a.cfg.SttServiceLogprobThreshold))
 	q.Set("no_speech_threshold", fmt.Sprintf("%f", a.cfg.SttServiceNoSpeechThreshold))
 
-	vadLevel := "1"
+	vadLevel := "1" // Varsayılan
 	if callState.Event.Dialplan != nil && callState.Event.Dialplan.Action != nil && callState.Event.Dialplan.Action.ActionData != nil && callState.Event.Dialplan.Action.ActionData.Data != nil {
 		if val, ok := callState.Event.Dialplan.Action.ActionData.Data["stt_vad_level"]; ok {
 			vadLevel = val
@@ -195,67 +277,17 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 	}
 	q.Set("vad_aggressiveness", vadLevel)
 	sttURL.RawQuery = q.Encode()
-	l.Debug().Str("url", sttURL.String()).Msg("STT-Service'e WebSocket bağlantısı kuruluyor...")
+	return &sttURL, nil
+}
 
-	// --- YENİ: WebSocket Bağlantısı İçin Yeniden Deneme Mantığı ---
-	var wsConn *websocket.Conn
-	maxRetries := 3
-	retryDelay := 2 * time.Second
-	for i := 0; i < maxRetries; i++ {
+// listenToStt, STT servisinden gelen WebSocket mesajlarını dinler ve sonuç kanalına yazar.
+func (a *AIOrchestrator) listenToStt(ctx context.Context, wsConn *websocket.Conn, resultChan chan<- TranscriptionResult) {
+	defer close(resultChan)
+	for {
 		select {
 		case <-ctx.Done():
-			return result, ctx.Err() // Ana context iptal edilirse hemen çık
+			return
 		default:
-		}
-		wsConn, _, err = websocket.DefaultDialer.Dial(sttURL.String(), nil)
-		if err == nil {
-			break // Bağlantı başarılı, döngüden çık
-		}
-		l.Warn().Err(err).Int("attempt", i+1).Int("max_attempts", maxRetries).Msg("STT-Service'e WebSocket bağlantısı kurulamadı, tekrar denenecek...")
-		time.Sleep(retryDelay)
-	}
-	if err != nil {
-		return result, fmt.Errorf("%d deneme sonrası STT-Service'e WebSocket bağlantısı kurulamadı: %w", maxRetries, err)
-	}
-	// --- YENİ MANTIK SONU ---
-	defer wsConn.Close()
-	l.Info().Msg("STT-Service'e WebSocket bağlantısı başarılı.")
-
-
-	errChan := make(chan error, 2)
-	resultChan := make(chan TranscriptionResult, 1)
-	streamCtx, cancelStream := context.WithCancel(ctx)
-	defer cancelStream()
-
-	go func() {
-		defer func() {
-			wsConn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-		}()
-		for {
-			select {
-			case <-streamCtx.Done():
-				return
-			default:
-				chunk, err := mediaStream.Recv()
-				if err != nil {
-					if err != io.EOF && status.Code(err) != codes.Canceled {
-						errChan <- fmt.Errorf("media stream'den okuma hatası: %w", err)
-					}
-					return
-				}
-				if err := wsConn.WriteMessage(websocket.BinaryMessage, chunk.AudioData); err != nil {
-					if !websocket.IsCloseError(err) {
-						errChan <- fmt.Errorf("websocket'e yazma hatası: %w", err)
-					}
-					return
-				}
-			}
-		}
-	}()
-
-	go func() {
-		defer close(resultChan)
-		for {
 			_, message, err := wsConn.ReadMessage()
 			if err != nil {
 				return
@@ -276,26 +308,8 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 				}
 			}
 		}
-	}()
-
-	select {
-	case res, ok := <-resultChan:
-		if !ok {
-			l.Warn().Msg("Transkript alınamadan STT bağlantısı kapandı.")
-			return TranscriptionResult{Text: "", IsNoSpeechTimeout: false}, nil
-		}
-		l.Info().Str("transcribed_text", res.Text).Bool("is_timeout", res.IsNoSpeechTimeout).Msg("Nihai transkript sonucu alındı.")
-		return res, nil
-	case err := <-errChan:
-		l.Error().Err(err).Msg("Akış sırasında hata oluştu.")
-		return result, err
-	case <-time.After(time.Duration(a.cfg.SttServiceStreamTimeoutSeconds) * time.Second):
-		l.Warn().Msg("Transkripsiyon için zaman aşımına ulaşıldı.")
-		return TranscriptionResult{Text: "", IsNoSpeechTimeout: true}, nil
 	}
 }
-// --- DEĞİŞİKLİK SONU ---
-
 
 func isAllowedSpeakerURL(rawURL, allowedDomainsCSV string) bool {
 	u, err := url.Parse(rawURL)
