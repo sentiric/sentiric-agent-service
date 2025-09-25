@@ -1,5 +1,4 @@
-// File: sentiric-agent-service/internal/client/llm_client.go
-
+// ========== DOSYA: sentiric-agent-service/internal/client/llm_client.go (TAM VE İYİLEŞTİRİLMİŞ İÇERİK) ==========
 package client
 
 import (
@@ -48,7 +47,6 @@ func (c *LlmClient) Generate(ctx context.Context, prompt, traceID string) (strin
 	payload := LlmGenerateRequest{Prompt: prompt}
 	payloadBytes, _ := json.Marshal(payload)
 
-	// DEĞİŞİKLİK: Bu loglar artık DEBUG seviyesinde.
 	c.log.Debug().Str("url", url).Int("prompt_size", len(prompt)).Msg("LLM'e istek gönderiliyor...")
 	c.log.Debug().Str("prompt", prompt).Msg("Gönderilen tam LLM prompt'u")
 
@@ -81,7 +79,7 @@ func (c *LlmClient) Generate(ctx context.Context, prompt, traceID string) (strin
 	}
 
 	cleanedText := strings.Trim(llmResp.Text, "\" \n\r")
-	// DEĞİŞİKLİK: Bu log da DEBUG seviyesinde olmalı.
+	
 	c.log.Debug().Int("response_size", len(cleanedText)).Str("response_text", cleanedText).Msg("LLM'den yanıt başarıyla alındı.")
 
 	return cleanedText, nil

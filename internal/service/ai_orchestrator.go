@@ -1,4 +1,4 @@
-// ========== DOSYA: sentiric-agent-service/internal/service/ai_orchestrator.go (TAM VE NİHAİ İÇERİK) ==========
+// ========== DOSYA: sentiric-agent-service/internal/service/ai_orchestrator.go (TAM VE İYİLEŞTİRİLMİŞ İÇERİK) ==========
 package service
 
 import (
@@ -28,8 +28,6 @@ type KnowledgeClientInterface interface {
 	Query(ctx context.Context, req *knowledgev1.QueryRequest) (*knowledgev1.QueryResponse, error)
 }
 
-// TranscriptionResult, StreamAndTranscribe fonksiyonunun sonucunu
-// daha zengin bir şekilde ifade etmek için kullanılır.
 type TranscriptionResult struct {
 	Text              string
 	IsNoSpeechTimeout bool
@@ -61,6 +59,7 @@ func NewAIOrchestrator(
 		knowledgeClient: knowC,
 	}
 }
+
 
 func (a *AIOrchestrator) QueryKnowledgeBase(ctx context.Context, query string, callState *state.CallState) (string, error) {
 	l := ctxlogger.FromContext(ctx)
@@ -100,22 +99,22 @@ func (a *AIOrchestrator) QueryKnowledgeBase(ctx context.Context, query string, c
 	return contextStr, nil
 }
 
+
 func (a *AIOrchestrator) GenerateResponse(ctx context.Context, prompt string, callState *state.CallState) (string, error) {
 	return a.llmClient.Generate(ctx, prompt, callState.TraceID)
 }
+
 
 func (a *AIOrchestrator) SynthesizeAndGetAudio(ctx context.Context, callState *state.CallState, textToPlay string) (string, error) {
 	l := ctxlogger.FromContext(ctx)
 	l.Debug().Str("text", textToPlay).Msg("Metin sese dönüştürülüyor...")
 	var speakerURL, voiceSelector string
 	var useCloning bool
-
 	if callState.Event.Dialplan != nil && callState.Event.Dialplan.Action != nil && callState.Event.Dialplan.Action.ActionData != nil && callState.Event.Dialplan.Action.ActionData.Data != nil {
 		actionData := callState.Event.Dialplan.Action.ActionData.Data
 		speakerURL, useCloning = actionData["speaker_wav_url"]
 		voiceSelector = actionData["voice_selector"]
 	}
-
 	mdCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", callState.TraceID)
 	languageCode := GetLanguageCode(callState.Event)
 	ttsReq := &ttsv1.SynthesizeRequest{Text: textToPlay, LanguageCode: languageCode}
@@ -147,7 +146,8 @@ func (a *AIOrchestrator) SynthesizeAndGetAudio(ctx context.Context, callState *s
 	return audioURI, nil
 }
 
-// --- FOKSİYONUN TAMAMI GÜNCELLENDİ ---
+
+
 func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *state.CallState) (TranscriptionResult, error) {
 	l := ctxlogger.FromContext(ctx)
 	var result TranscriptionResult
@@ -195,21 +195,38 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 	}
 	q.Set("vad_aggressiveness", vadLevel)
 	sttURL.RawQuery = q.Encode()
-
 	l.Debug().Str("url", sttURL.String()).Msg("STT-Service'e WebSocket bağlantısı kuruluyor...")
-	wsConn, _, err := websocket.DefaultDialer.Dial(sttURL.String(), nil)
-	if err != nil {
-		return result, fmt.Errorf("stt service websocket bağlantısı kurulamadı: %w", err)
+
+	// --- YENİ: WebSocket Bağlantısı İçin Yeniden Deneme Mantığı ---
+	var wsConn *websocket.Conn
+	maxRetries := 3
+	retryDelay := 2 * time.Second
+	for i := 0; i < maxRetries; i++ {
+		select {
+		case <-ctx.Done():
+			return result, ctx.Err() // Ana context iptal edilirse hemen çık
+		default:
+		}
+		wsConn, _, err = websocket.DefaultDialer.Dial(sttURL.String(), nil)
+		if err == nil {
+			break // Bağlantı başarılı, döngüden çık
+		}
+		l.Warn().Err(err).Int("attempt", i+1).Int("max_attempts", maxRetries).Msg("STT-Service'e WebSocket bağlantısı kurulamadı, tekrar denenecek...")
+		time.Sleep(retryDelay)
 	}
+	if err != nil {
+		return result, fmt.Errorf("%d deneme sonrası STT-Service'e WebSocket bağlantısı kurulamadı: %w", maxRetries, err)
+	}
+	// --- YENİ MANTIK SONU ---
 	defer wsConn.Close()
 	l.Info().Msg("STT-Service'e WebSocket bağlantısı başarılı.")
+
 
 	errChan := make(chan error, 2)
 	resultChan := make(chan TranscriptionResult, 1)
 	streamCtx, cancelStream := context.WithCancel(ctx)
 	defer cancelStream()
 
-	// Media-Service'ten STT'ye ses iletme
 	go func() {
 		defer func() {
 			wsConn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
@@ -236,7 +253,6 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 		}
 	}()
 
-	// STT'den sonuçları dinleme
 	go func() {
 		defer close(resultChan)
 		for {
@@ -262,7 +278,6 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 		}
 	}()
 
-	// Sonucu bekleme ve timeout yönetimi
 	select {
 	case res, ok := <-resultChan:
 		if !ok {
@@ -279,6 +294,8 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 		return TranscriptionResult{Text: "", IsNoSpeechTimeout: true}, nil
 	}
 }
+// --- DEĞİŞİKLİK SONU ---
+
 
 func isAllowedSpeakerURL(rawURL, allowedDomainsCSV string) bool {
 	u, err := url.Parse(rawURL)
