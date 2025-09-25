@@ -1,5 +1,4 @@
-// File: sentiric-agent-service/internal/client/stt_client.go
-
+// ========== DOSYA: sentiric-agent-service/internal/client/stt_client.go (TAM VE DOĞRU İÇERİK) ==========
 package client
 
 import (
@@ -23,16 +22,17 @@ type SttTranscribeResponse struct {
 
 type SttClient struct {
 	httpClient *http.Client
-	baseURL    string // Bu artık "http://stt-service:15010" gibi tam bir URL olacak
+	baseURL    string
 	log        zerolog.Logger
 }
 
 func NewSttClient(rawBaseURL string, log zerolog.Logger) *SttClient {
 	finalBaseURL := rawBaseURL
-	// Eğer URL'de şema yoksa, varsayılan olarak http ekle.
+	// --- DEĞİŞİKLİK: Eğer URL'de şema yoksa, varsayılan olarak http ekle. ---
 	if !strings.HasPrefix(rawBaseURL, "http://") && !strings.HasPrefix(rawBaseURL, "https://") {
 		finalBaseURL = "http://" + rawBaseURL
 	}
+	// --- DEĞİŞİKLİK SONU ---
 
 	return &SttClient{
 		httpClient: &http.Client{},
@@ -46,7 +46,6 @@ func (c *SttClient) BaseURL() string {
 }
 
 func (c *SttClient) Transcribe(ctx context.Context, audioData []byte, language, traceID string) (string, error) {
-
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	_ = writer.WriteField("language", language)
@@ -60,13 +59,10 @@ func (c *SttClient) Transcribe(ctx context.Context, audioData []byte, language, 
 	url := fmt.Sprintf("%s/api/v1/transcribe", c.baseURL)
 	c.log.Info().Str("url", url).Int("audio_size_kb", len(audioData)/1024).Msg("STT'ye transkripsiyon isteği gönderiliyor...")
 
-	// --- DEĞİŞİKLİK: İsteğe özel zaman aşımı ---
-	// STT işlemi daha uzun sürebilir, 60 saniye verelim.
 	reqCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	// --- DEĞİŞİKLİK SONU ---
 
-	req, err := http.NewRequestWithContext(reqCtx, "POST", url, &body) // reqCtx'i kullan
+	req, err := http.NewRequestWithContext(reqCtx, "POST", url, &body)
 	if err != nil {
 		return "", fmt.Errorf("STT isteği oluşturulamadı: %w", err)
 	}
@@ -92,6 +88,5 @@ func (c *SttClient) Transcribe(ctx context.Context, audioData []byte, language, 
 	}
 
 	c.log.Info().Str("transcribed_text", sttResp.Text).Msg("Ses başarıyla metne çevrildi.")
-
 	return sttResp.Text, nil
 }
