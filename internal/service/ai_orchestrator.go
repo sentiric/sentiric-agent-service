@@ -1,4 +1,4 @@
-// ========== DOSYA: sentiric-agent-service/internal/service/ai_orchestrator.go (TAM VE NİHAİ DÜZELTİLMİŞ İÇERİK) ==========
+// ========== DOSYA: sentiric-agent-service/internal/service/ai_orchestrator.go (TAM VE GÜNCELLENMİŞ İÇERİK) ==========
 package service
 
 import (
@@ -147,19 +147,17 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 	l := ctxlogger.FromContext(ctx)
 	var result TranscriptionResult
 
+	// ==================== DÜZELTME VE İYİLEŞTİRME ====================
 	// 1. Media Service'ten canlı ses akışını başlat
-	portVal, ok := callState.Event.Media["server_rtp_port"]
-	if !ok {
-		return result, fmt.Errorf("kritik hata: 'server_rtp_port' bulunamadı")
+	if callState.Event == nil || callState.Event.Media == nil {
+		return result, fmt.Errorf("kritik hata: StreamAndTranscribe için medya bilgisi (MediaInfo) bulunamadı")
 	}
-	serverRtpPortFloat, ok := portVal.(float64)
-	if !ok {
-		return result, fmt.Errorf("kritik hata: 'server_rtp_port' tipi geçersiz")
-	}
+	serverRtpPort := callState.Event.Media.ServerRtpPort
+	// ==================== DÜZELTME SONU ====================
 
 	grpcCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", callState.TraceID)
 	mediaStream, err := a.mediaClient.RecordAudio(grpcCtx, &mediav1.RecordAudioRequest{
-		ServerRtpPort:    uint32(serverRtpPortFloat),
+		ServerRtpPort:    uint32(serverRtpPort), // Tamsayıya çevir
 		TargetSampleRate: &a.cfg.SttServiceTargetSampleRate,
 	})
 	if err != nil {
@@ -168,12 +166,10 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 	l.Debug().Msg("Media-Service'ten ses akışı başlatıldı.")
 
 	// 2. STT Service'e WebSocket bağlantısını kur
-	// --- DÜZELTME: Eksik context parametresi eklendi ---
 	sttURL, err := a.buildSttUrl(ctx, callState)
 	if err != nil {
 		return result, err
 	}
-	// --- DÜZELTME SONU ---
 
 	l.Debug().Str("url", sttURL.String()).Msg("STT-Service'e WebSocket bağlantısı kuruluyor...")
 	var wsConn *websocket.Conn
