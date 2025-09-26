@@ -1,4 +1,4 @@
-// ========== DOSYA: sentiric-agent-service/internal/service/ai_orchestrator.go (TAM VE GÜNCELLENMİŞ İÇERİK) ==========
+// sentiric-agent-service/internal/service/ai_orchestrator.go
 package service
 
 import (
@@ -157,7 +157,7 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 
 	grpcCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", callState.TraceID)
 	mediaStream, err := a.mediaClient.RecordAudio(grpcCtx, &mediav1.RecordAudioRequest{
-		ServerRtpPort:    uint32(serverRtpPort), // Tamsayıya çevir
+		ServerRtpPort:    uint32(serverRtpPort),
 		TargetSampleRate: &a.cfg.SttServiceTargetSampleRate,
 	})
 	if err != nil {
@@ -208,17 +208,17 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 		if err == io.EOF || status.Code(err) == codes.Canceled {
 			l.Info().Msg("Media stream sonlandı.")
 			wsConn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-			break // Media stream bitti, ana döngüyü sonlandır
+			break
 		}
 		if err != nil {
 			l.Error().Err(err).Msg("Media stream'den okuma hatası.")
 			return result, err
 		}
 		if err := wsConn.WriteMessage(websocket.BinaryMessage, chunk.AudioData); err != nil {
-			if !websocket.IsCloseError(err) {
+			if !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
 				l.Error().Err(err).Msg("WebSocket'e yazma hatası.")
 			}
-			break // WebSocket kapandı, döngüyü sonlandır
+			break
 		}
 	}
 

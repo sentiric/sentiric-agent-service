@@ -36,7 +36,6 @@ func NewMediaManager(db *sql.DB, mc mediav1.MediaServiceClient, failed *promethe
 
 func (m *MediaManager) PlayAudio(ctx context.Context, callState *state.CallState, audioURI string) {
 	l := ctxlogger.FromContext(ctx)
-	// ==================== GÜVENLİK VE TİP DÖNÜŞÜMÜ DÜZELTMESİ ====================
 	if callState.Event == nil || callState.Event.Media == nil {
 		l.Error().Msg("PlayAudio için kritik medya bilgisi eksik (st.Event.Media is nil).")
 		return
@@ -44,7 +43,6 @@ func (m *MediaManager) PlayAudio(ctx context.Context, callState *state.CallState
 
 	rtpTarget := callState.Event.Media.CallerRtpAddr
 	serverPort := uint32(callState.Event.Media.ServerRtpPort)
-	// ==================== DÜZELTME SONU ====================
 
 	playReq := &mediav1.PlayAudioRequest{RtpTargetAddr: rtpTarget, ServerRtpPort: serverPort, AudioUri: audioURI}
 	playCtx, playCancel := context.WithTimeout(metadata.AppendToOutgoingContext(ctx, "x-trace-id", callState.TraceID), 5*time.Minute)
@@ -69,7 +67,8 @@ func (m *MediaManager) PlayAnnouncement(ctx context.Context, callState *state.Ca
 	audioPath, err := database.GetAnnouncementPathFromDB(m.db, string(announcementID), callState.TenantID, languageCode)
 	if err != nil {
 		l.Error().Err(err).Str("announcement_id", string(announcementID)).Msg("Anons yolu alınamadı, fallback deneniyor")
-		audioPath, err = database.GetAnnouncementPathFromDB(m.db, "system", "en", string(announcementID))
+		// DÜZELTME: Fallback için tenant_id 'system' ve dil 'en' olmalı.
+		audioPath, err = database.GetAnnouncementPathFromDB(m.db, string(announcementID), "system", "en")
 		if err != nil {
 			l.Error().Err(err).Str("announcement_id", string(announcementID)).Msg("KRİTİK HATA: Sistem fallback anonsu dahi yüklenemedi.")
 			return
@@ -82,13 +81,11 @@ func (m *MediaManager) PlayAnnouncement(ctx context.Context, callState *state.Ca
 func (m *MediaManager) StartRecording(ctx context.Context, callState *state.CallState) {
 	l := ctxlogger.FromContext(ctx)
 
-	// ==================== GÜVENLİK VE TİP DÖNÜŞÜMÜ DÜZELTMESİ ====================
 	if callState.Event == nil || callState.Event.Media == nil {
 		l.Error().Msg("StartRecording için kritik medya bilgisi eksik (st.Event.Media is nil). Kayıt başlatılamıyor.")
 		return
 	}
 	serverRtpPort := uint32(callState.Event.Media.ServerRtpPort)
-	// ==================== DÜZELTME SONU ====================
 
 	recordingTenantID := callState.TenantID
 	recordingURI := fmt.Sprintf("s3://%s/%s/%s.wav", m.bucketName, recordingTenantID, callState.CallID)
@@ -110,19 +107,21 @@ func (m *MediaManager) StartRecording(ctx context.Context, callState *state.Call
 func (m *MediaManager) StopRecording(ctx context.Context, callState *state.CallState) {
 	l := ctxlogger.FromContext(ctx)
 
-	// ==================== GÜVENLİK VE TİP DÖNÜŞÜMÜ DÜZELTMESİ ====================
 	if callState.Event == nil || callState.Event.Media == nil {
 		l.Error().Msg("StopRecording için kritik medya bilgisi eksik (st.Event.Media is nil). Kayıt durdurulamıyor.")
 		return
 	}
 	serverRtpPort := uint32(callState.Event.Media.ServerRtpPort)
-	// ==================== DÜZELTME SONU ====================
 
 	l.Info().Msg("Çağrı kaydı durduruluyor...")
-	stopRecCtx, stopRecCancel := context.WithTimeout(metadata.AppendToOutgoingContext(context.Background(), "x-trace-id", callState.TraceID), 10*time.Second)
-	defer stopRecCancel()
+	// ==================== HATA DÜZELTMESİ ====================
+	stopRecCtx, stopRecCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer stopRecCancel() // Cancel fonksiyonunu çağırıyoruz
+	// ==================== DÜZELTME SONU ====================
 
-	_, err := m.mediaClient.StopRecording(stopRecCtx, &mediav1.StopRecordingRequest{
+	mdCtx := metadata.AppendToOutgoingContext(stopRecCtx, "x-trace-id", callState.TraceID)
+
+	_, err := m.mediaClient.StopRecording(mdCtx, &mediav1.StopRecordingRequest{
 		ServerRtpPort: serverRtpPort,
 	})
 	if err != nil {
