@@ -96,7 +96,7 @@ func Load() (*Config, error) {
 		TtsServiceGrpcURL:       getEnv("TTS_GATEWAY_SERVICE_TARGET_GRPC_URL"),
 		MediaServiceGrpcURL:     getEnv("MEDIA_SERVICE_TARGET_GRPC_URL"),
 		UserServiceGrpcURL:      getEnv("USER_SERVICE_TARGET_GRPC_URL"),
-		SipSignalingGrpcURL:     getEnv("SIP_SIGNALING_TARGET_GRPC_URL"),
+		SipSignalingGrpcURL:     getEnv("SIP_SIGNALING_SERVICE_TARGET_GRPC_URL"),
 		// --- DEĞİŞİKLİK SONA ERDİ ---
 
 		SttServiceTargetSampleRate:     uint32(sttSampleRate),
