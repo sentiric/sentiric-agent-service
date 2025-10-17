@@ -74,10 +74,10 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("geçersiz AGENT_MAX_CONSECUTIVE_FAILURES: %w", err)
 	}
 
-	knowledgeTopKStr := getEnvWithDefault("KNOWLEDGE_SERVICE_TOP_K", "3")
+	knowledgeTopKStr := getEnvWithDefault("KNOWLEDGE_QUERY_DEFAULT_TOP_K", "3")
 	knowledgeTopK, err := strconv.Atoi(knowledgeTopKStr)
 	if err != nil {
-		return nil, fmt.Errorf("geçersiz KNOWLEDGE_SERVICE_TOP_K: %w", err)
+		return nil, fmt.Errorf("geçersiz KNOWLEDGE_QUERY_DEFAULT_TOP_K: %w", err)
 	}
 
 	cfg := &Config{
@@ -91,9 +91,9 @@ func Load() (*Config, error) {
 		// --- DEĞİŞİKLİK BURADA: _TARGET_ değişkenlerini okuyoruz ---
 		LlmServiceURL:           getEnv("LLM_SERVICE_TARGET_HTTP_URL"),
 		SttServiceURL:           getEnv("STT_SERVICE_TARGET_HTTP_URL"),
-		KnowledgeServiceGrpcURL: getEnv("KNOWLEDGE_SERVICE_TARGET_GRPC_URL"), // Hibrit RAG desteği için
-		KnowledgeServiceURL:     getEnv("KNOWLEDGE_SERVICE_TARGET_HTTP_URL"), // Hibrit RAG desteği için
-		TtsServiceGrpcURL:       getEnv("TTS_GATEWAY_TARGET_GRPC_URL"),
+		KnowledgeServiceGrpcURL: getEnv("KNOWLEDGE_QUERY_SERVICE_TARGET_GRPC_URL"), // Hibrit RAG desteği için
+		KnowledgeServiceURL:     getEnv("KNOWLEDGE_QUERY_SERVICE_TARGET_HTTP_URL"), // Hibrit RAG desteği için
+		TtsServiceGrpcURL:       getEnv("TTS_GATEWAY_SERVICE_TARGET_GRPC_URL"),
 		MediaServiceGrpcURL:     getEnv("MEDIA_SERVICE_TARGET_GRPC_URL"),
 		UserServiceGrpcURL:      getEnv("USER_SERVICE_TARGET_GRPC_URL"),
 		SipSignalingGrpcURL:     getEnv("SIP_SIGNALING_TARGET_GRPC_URL"),
