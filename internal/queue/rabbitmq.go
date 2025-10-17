@@ -59,15 +59,22 @@ func (p *Publisher) PublishJSON(ctx context.Context, routingKey string, body int
 func Connect(ctx context.Context, url string, log zerolog.Logger) (*amqp091.Channel, <-chan *amqp091.Error, error) {
 	var conn *amqp091.Connection
 	var err error
+
+    // --- GÜNCELLEME: Heartbeat ayarı eklendi ---
+    config := amqp091.Config{
+        Heartbeat: 60 * time.Second, // 60 saniyelik heartbeat
+        Locale:    "en_US",
+    }
+    // --- GÜNCELLEME SONU ---
+
 	for i := 0; i < 10; i++ {
-		// DEĞİŞİKLİK: Döngünün başında context'in iptal edilip edilmediğini kontrol et.
 		select {
 		case <-ctx.Done():
 			return nil, nil, ctx.Err()
 		default:
 		}
 
-		conn, err = amqp091.Dial(url)
+		conn, err = amqp091.DialConfig(url, config) // Dial yerine DialConfig kullan
 		if err == nil {
 			log.Info().Msg("RabbitMQ bağlantısı başarılı.")
 			ch, chErr := conn.Channel()
@@ -80,15 +87,14 @@ func Connect(ctx context.Context, url string, log zerolog.Logger) (*amqp091.Chan
 		}
 		log.Warn().Err(err).Int("attempt", i+1).Int("max_attempts", 10).Msg("RabbitMQ'ya bağlanılamadı, 5 saniye sonra tekrar denenecek...")
 
-		// DEĞİŞİKLİK: time.Sleep yerine context-aware bekleme yapılıyor.
 		select {
 		case <-time.After(5 * time.Second):
-			// 5 saniye doldu, döngüye devam et.
 		case <-ctx.Done():
-			return nil, nil, ctx.Err() // Bekleme sırasında context iptal edilirse hatayla çık.
+			return nil, nil, ctx.Err()
 		}
 	}
 	return nil, nil, fmt.Errorf("maksimum deneme (%d) sonrası RabbitMQ'ya bağlanılamadı: %w", 10, err)
+	
 }
 
 func StartConsumer(ctx context.Context, ch *amqp091.Channel, handlerFunc func([]byte), log zerolog.Logger, wg *sync.WaitGroup) {
