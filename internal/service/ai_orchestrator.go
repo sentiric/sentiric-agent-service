@@ -37,7 +37,8 @@ type AIOrchestrator struct {
 	cfg             *config.Config
 	llmClient       *client.LlmClient
 	sttClient       *client.SttClient
-	ttsClient       ttsv1.TextToSpeechServiceClient
+	// DÜZELTME: İstemci tipi güncellendi
+	ttsClient       ttsv1.TtsGatewayServiceClient
 	mediaClient     mediav1.MediaServiceClient
 	knowledgeClient KnowledgeClientInterface
 }
@@ -46,7 +47,8 @@ func NewAIOrchestrator(
 	cfg *config.Config,
 	llmC *client.LlmClient,
 	sttC *client.SttClient,
-	ttsC ttsv1.TextToSpeechServiceClient,
+	// DÜZELTME: İstemci tipi güncellendi
+	ttsC ttsv1.TtsGatewayServiceClient,
 	mediaC mediav1.MediaServiceClient,
 	knowC KnowledgeClientInterface,
 ) *AIOrchestrator {
@@ -105,40 +107,55 @@ func (a *AIOrchestrator) GenerateResponse(ctx context.Context, prompt string, ca
 func (a *AIOrchestrator) SynthesizeAndGetAudio(ctx context.Context, callState *state.CallState, textToPlay string) (string, error) {
 	l := ctxlogger.FromContext(ctx)
 	l.Debug().Str("text", textToPlay).Msg("Metin sese dönüştürülüyor...")
-	var speakerURL, voiceSelector string
-	var useCloning bool
+	
+	// Varsayılanlar
+	voiceID := "default" 
+	
 	if callState.Event.Dialplan != nil && callState.Event.Dialplan.Action != nil && callState.Event.Dialplan.Action.ActionData != nil && callState.Event.Dialplan.Action.ActionData.Data != nil {
 		actionData := callState.Event.Dialplan.Action.ActionData.Data
-		speakerURL, useCloning = actionData["speaker_wav_url"]
-		voiceSelector = actionData["voice_selector"]
+		if val, ok := actionData["voice_selector"]; ok && val != "" {
+			voiceID = val
+			l.Debug().Str("voice_id", voiceID).Msg("Dialplan'dan gelen ses seçimi kullanılıyor.")
+		}
 	}
+
 	mdCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", callState.TraceID)
 	languageCode := GetLanguageCode(callState.Event)
-	ttsReq := &ttsv1.SynthesizeRequest{Text: textToPlay, LanguageCode: languageCode}
-	if useCloning && speakerURL != "" {
-		if !isAllowedSpeakerURL(speakerURL, a.cfg.AgentAllowedSpeakerDomains) {
-			err := fmt.Errorf("güvenlik uyarisi: İzin verilmeyen bir speaker_wav_url engellendi: %s", speakerURL)
-			l.Error().Err(err).Send()
-			return "", err
-		}
-		ttsReq.SpeakerWavUrl = &speakerURL
-	} else if voiceSelector != "" {
-		l.Debug().Str("voice_selector", voiceSelector).Msg("Dinamik ses seçici kullanılıyor.")
-		ttsReq.VoiceSelector = &voiceSelector
+	
+	// --- GÜNCEL KONTRAK YAPISI ---
+	// TtsGatewayService.Synthesize çağrısı
+	ttsReq := &ttsv1.SynthesizeRequest{
+		Text:     textToPlay,
+		TextType: ttsv1.TextType_TEXT_TYPE_TEXT, // Düz metin
+		VoiceId:  voiceID,
+		AudioConfig: &ttsv1.AudioConfig{
+			AudioFormat:      ttsv1.AudioFormat_AUDIO_FORMAT_WAV,
+			SampleRateHertz: 8000, // Telekom standardı
+			VolumeGainDb:    0.0,
+		},
+		Prosody: &ttsv1.ProsodyConfig{
+			Rate:    1.0,
+			Pitch:   1.0,
+			Emotion: "neutral",
+		},
+		// PreferredProvider boş bırakılırsa Gateway en uygun olanı seçer (Coqui, Edge, MMS vb.)
+		PreferredProvider: "", 
 	}
+
 	ttsCtx, ttsCancel := context.WithTimeout(mdCtx, 20*time.Second)
 	defer ttsCancel()
+	
 	ttsResp, err := a.ttsClient.Synthesize(ttsCtx, ttsReq)
 	if err != nil {
-		l.Error().Err(err).Msg("TTS Gateway'den yanıt alınamadı (muhtemelen zaman aşımı).")
+		l.Error().Err(err).Msg("TTS Gateway'den yanıt alınamadı veya hata döndü.")
 		return "", err
 	}
-	if ttsResp == nil {
-		err := fmt.Errorf("TTS Gateway'den hata dönmedi ancak yanıt boş (nil)")
-		l.Error().Err(err).Msg("Bu beklenmedik bir durum.")
-		return "", err
-	}
+	
 	audioBytes := ttsResp.GetAudioContent()
+	if len(audioBytes) == 0 {
+		return "", fmt.Errorf("TTS Gateway boş ses verisi döndürdü")
+	}
+
 	audioURI := fmt.Sprintf("data:audio/wav;base64,%s", base64.StdEncoding.EncodeToString(audioBytes))
 	return audioURI, nil
 }
@@ -147,13 +164,10 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 	l := ctxlogger.FromContext(ctx)
 	var result TranscriptionResult
 
-	// ==================== DÜZELTME VE İYİLEŞTİRME ====================
-	// 1. Media Service'ten canlı ses akışını başlat
 	if callState.Event == nil || callState.Event.Media == nil {
 		return result, fmt.Errorf("kritik hata: StreamAndTranscribe için medya bilgisi (MediaInfo) bulunamadı")
 	}
 	serverRtpPort := callState.Event.Media.ServerRtpPort
-	// ==================== DÜZELTME SONU ====================
 
 	grpcCtx := metadata.AppendToOutgoingContext(ctx, "x-trace-id", callState.TraceID)
 	mediaStream, err := a.mediaClient.RecordAudio(grpcCtx, &mediav1.RecordAudioRequest{
@@ -165,7 +179,6 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 	}
 	l.Debug().Msg("Media-Service'ten ses akışı başlatıldı.")
 
-	// 2. STT Service'e WebSocket bağlantısını kur
 	sttURL, err := a.buildSttUrl(ctx, callState)
 	if err != nil {
 		return result, err
@@ -194,15 +207,12 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 	defer wsConn.Close()
 	l.Info().Msg("STT-Service'e WebSocket bağlantısı başarılı.")
 
-	// 3. Kanalları ve context'i hazırla
 	resultChan := make(chan TranscriptionResult, 1)
 	streamCtx, cancelStream := context.WithCancel(ctx)
 	defer cancelStream()
 
-	// 4. STT'den sonuçları dinleyecek goroutine'i başlat
 	go a.listenToStt(streamCtx, wsConn, resultChan)
 
-	// 5. Ana döngü: Media'dan oku, STT'ye yaz
 	for {
 		chunk, err := mediaStream.Recv()
 		if err == io.EOF || status.Code(err) == codes.Canceled {
@@ -222,7 +232,6 @@ func (a *AIOrchestrator) StreamAndTranscribe(ctx context.Context, callState *sta
 		}
 	}
 
-	// 6. Sonucu bekle ve zaman aşımını yönet
 	select {
 	case res, ok := <-resultChan:
 		if !ok {
@@ -242,7 +251,7 @@ func (a *AIOrchestrator) buildSttUrl(ctx context.Context, callState *state.CallS
 	baseURL := a.sttClient.BaseURL()
 	u, err := url.Parse(baseURL)
 	if err != nil {
-		l.Error().Err(err).Str("invalid_base_url", baseURL).Msg("STT Service base URL'i parse edilemedi. Lütfen STT_SERVICE_TARGET_HTTP_URL yapılandırmasını kontrol edin.")
+		l.Error().Err(err).Str("invalid_base_url", baseURL).Msg("STT Service base URL'i parse edilemedi.")
 		return nil, fmt.Errorf("stt service url parse edilemedi: %w", err)
 	}
 	scheme := "wss"

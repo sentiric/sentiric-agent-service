@@ -169,7 +169,15 @@ func (a *App) buildDependencies(ctx context.Context, db *sql.DB, redisClient *re
 	publisher := queue.NewPublisher(rabbitCh, a.Log)
 	templateProvider := service.NewTemplateProvider(db)
 	mediaManager := service.NewMediaManager(db, mediaClient.(mediav1.MediaServiceClient), metrics.EventsFailed, a.Cfg.BucketName)
-	aiOrchestrator := service.NewAIOrchestrator(a.Cfg, llmClient, sttClient, ttsClient.(ttsv1.TextToSpeechServiceClient), mediaClient.(mediav1.MediaServiceClient), knowledgeClient)
+		aiOrchestrator := service.NewAIOrchestrator(
+        a.Cfg, 
+        llmClient, 
+        sttClient, 
+        // DÜZELTME: interface tipi değiştiği için assertion da değişmeli
+        ttsClient.(ttsv1.TtsGatewayServiceClient), 
+        mediaClient.(mediav1.MediaServiceClient), 
+        knowledgeClient
+    )
 	dialogManager := service.NewDialogManager(a.Cfg, stateManager, aiOrchestrator, mediaManager, templateProvider, publisher, sipSignalingClient.(sipv1.SipSignalingServiceClient))
 	userManager := service.NewUserManager(userClient.(userv1.UserServiceClient))
 	callHandler := handler.NewCallHandler(userManager, dialogManager, stateManager)

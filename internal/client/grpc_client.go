@@ -44,13 +44,16 @@ func NewUserServiceClient(cfg *config.Config) (userv1.UserServiceClient, error) 
 	return userv1.NewUserServiceClient(conn), nil
 }
 
-func NewTTSServiceClient(cfg *config.Config) (ttsv1.TextToSpeechServiceClient, error) {
+// --- DÜZELTME BURADA ---
+// İsim TextToSpeechServiceClient'tan TtsGatewayServiceClient'a çevrildi.
+func NewTTSServiceClient(cfg *config.Config) (ttsv1.TtsGatewayServiceClient, error) {
 	conn, err := createSecureGrpcClient(cfg, cfg.TtsServiceGrpcURL)
 	if err != nil {
 		return nil, fmt.Errorf("tts gateway istemcisi için bağlantı oluşturulamadı: %w", err)
 	}
-	return ttsv1.NewTextToSpeechServiceClient(conn), nil
+	return ttsv1.NewTtsGatewayServiceClient(conn), nil
 }
+// --- DÜZELTME SONU ---
 
 func NewKnowledgeServiceClient(cfg *config.Config) (knowledgev1.KnowledgeServiceClient, error) {
 	if cfg.KnowledgeServiceGrpcURL == "" {
