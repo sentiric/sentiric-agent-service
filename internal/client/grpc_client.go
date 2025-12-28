@@ -44,8 +44,6 @@ func NewUserServiceClient(cfg *config.Config) (userv1.UserServiceClient, error) 
 	return userv1.NewUserServiceClient(conn), nil
 }
 
-// --- DÜZELTME BURADA ---
-// İsim TextToSpeechServiceClient'tan TtsGatewayServiceClient'a çevrildi.
 func NewTTSServiceClient(cfg *config.Config) (ttsv1.TtsGatewayServiceClient, error) {
 	conn, err := createSecureGrpcClient(cfg, cfg.TtsServiceGrpcURL)
 	if err != nil {
@@ -53,9 +51,10 @@ func NewTTSServiceClient(cfg *config.Config) (ttsv1.TtsGatewayServiceClient, err
 	}
 	return ttsv1.NewTtsGatewayServiceClient(conn), nil
 }
-// --- DÜZELTME SONU ---
 
-func NewKnowledgeServiceClient(cfg *config.Config) (knowledgev1.KnowledgeServiceClient, error) {
+// --- DÜZELTME BURADA ---
+// Dönüş tipi KnowledgeServiceClient -> KnowledgeQueryServiceClient olarak güncellendi.
+func NewKnowledgeServiceClient(cfg *config.Config) (knowledgev1.KnowledgeQueryServiceClient, error) {
 	if cfg.KnowledgeServiceGrpcURL == "" {
 		return nil, nil
 	}
@@ -63,8 +62,10 @@ func NewKnowledgeServiceClient(cfg *config.Config) (knowledgev1.KnowledgeService
 	if err != nil {
 		return nil, fmt.Errorf("knowledge service istemcisi için bağlantı oluşturulamadı: %w", err)
 	}
-	return knowledgev1.NewKnowledgeServiceClient(conn), nil
+	// Constructor adı NewKnowledgeQueryServiceClient olarak güncellendi.
+	return knowledgev1.NewKnowledgeQueryServiceClient(conn), nil
 }
+// --- DÜZELTME SONU ---
 
 func createSecureGrpcClient(cfg *config.Config, addr string) (*grpc.ClientConn, error) {
 	clientCert, err := tls.LoadX509KeyPair(cfg.AgentServiceCertPath, cfg.AgentServiceKeyPath)
