@@ -1,0 +1,456 @@
+name: sentiric
+
+# =============================================================
+# ORTAK AYARLAR (DRY Principle)
+# =============================================================
+x-common-settings: &common-settings
+  dns:
+    - 10.88.5.1
+    - 8.8.8.8
+  dns_search:
+    - service.sentiric.cloud
+  restart: always
+  # Sertifikaları tüm servislere standart yoldan veriyoruz
+  volumes:
+    - ../sentiric-certificates:/sentiric-certificates:ro
+
+# EKSİK OLAN ŞABLON EKLENDİ
+x-ai-service-template: &ai-service-template
+  <<: *common-settings
+  deploy:
+    resources:
+      limits:
+        memory: 8G # AI Modelleri için yüksek bellek limiti
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+
+networks:
+  sentiric-net:
+    driver: bridge
+    name: sentiric-net
+    ipam:
+      config:
+        - subnet: 10.88.0.0/16
+          gateway: 10.88.0.1
+
+volumes:
+  infra-postgres-data:
+  infra-redis-data:
+  infra-rabbitmq-data:
+  infra-minio-data:
+  # AI Modelleri (Kalıcı depolama)
+  stt-whisper-models:
+  llm-llama-models:
+  tts-coqui-models:
+
+services:
+  # =============================================================
+  # KATMAN 1: ALTYAPI (INFRASTRUCTURE)
+  # =============================================================
+  rabbitmq:
+    <<: *common-settings
+    image: ghcr.io/sentiric/sentiric-rabbitmq:latest
+    container_name: rabbitmq
+    environment:
+      - RABBITMQ_DEFAULT_USER=sentiric
+      - RABBITMQ_DEFAULT_PASS=sentiric_pass
+    volumes:
+      - infra-rabbitmq-data:/var/lib/rabbitmq
+      - ../sentiric-certificates:/sentiric-certificates:ro
+    networks:
+      sentiric-net:
+        ipv4_address: 10.88.10.2
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  redis:
+    <<: *common-settings
+    image: ghcr.io/sentiric/sentiric-redis:latest
+    container_name: redis
+    volumes:
+      - infra-redis-data:/data
+      - ../sentiric-certificates:/sentiric-certificates:ro
+    networks:
+      sentiric-net:
+        ipv4_address: 10.88.10.3
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 5
+
+  postgres:
+    <<: *common-settings
+    image: ghcr.io/sentiric/sentiric-postgres:latest
+    container_name: postgres
+    environment:
+      - POSTGRES_USER=sentiric
+      - POSTGRES_PASSWORD=sentiric_pass
+      - POSTGRES_DB=sentiric_db
+    volumes:
+      - infra-postgres-data:/var/lib/postgresql/data
+      - ../sentiric-database/sql/postgres:/docker-entrypoint-initdb.d:ro
+      - ../sentiric-certificates:/sentiric-certificates:ro
+    networks:
+      sentiric-net:
+        ipv4_address: 10.88.10.1
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sentiric -d sentiric_db"]
+      interval: 5s
+      retries: 5
+
+  minio:
+    <<: *common-settings
+    image: ghcr.io/sentiric/sentiric-minio:latest
+    container_name: minio
+    environment:
+      - MINIO_ROOT_USER=sentiric
+      - MINIO_ROOT_PASSWORD=sentiric-secret-key
+    volumes:
+      - infra-minio-data:/data
+      - ../sentiric-certificates:/sentiric-certificates:ro
+    networks:
+      sentiric-net:
+        ipv4_address: 10.88.10.5
+    ports:
+      - "9000:9000"
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 90s
+
+  # =============================================================
+  # KATMAN 2: MANTIK VE ORKESTRASYON (LOGIC LAYER)
+  # =============================================================
+  
+  # 🧠 AGENT SERVICE (TEST HEDEFİ)
+  agent-service:
+    <<: *common-settings
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/sentiric/sentiric-agent-service:latest
+    container_name: agent-service
+    volumes:
+      - ../sentiric-certificates:/sentiric-certificates:ro
+    environment:
+      - ENV=development
+      - LOG_LEVEL=debug
+      - RUST_LOG=debug
+      - AGENT_SERVICE_METRICS_PORT=12032
+      # Connections
+      - POSTGRES_URL=postgres://sentiric:sentiric_pass@postgres:5432/sentiric_db?sslmode=disable
+      - RABBITMQ_URL=amqp://sentiric:sentiric_pass@rabbitmq:5672/%2f
+      - REDIS_URL=redis://redis:6379/0
+      # Targets
+      - USER_SERVICE_TARGET_GRPC_URL=user-service:12011
+      - TELEPHONY_ACTION_TARGET_GRPC_URL=telephony-action-service:13111
+      # Security
+      - GRPC_TLS_CA_PATH=/sentiric-certificates/certs/ca.crt
+      - AGENT_SERVICE_CERT_PATH=/sentiric-certificates/certs/agent-service.crt
+      - AGENT_SERVICE_KEY_PATH=/sentiric-certificates/certs/agent-service.key
+    networks:
+      sentiric-net:
+        ipv4_address: 10.88.30.5
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      telephony-action-service:
+        condition: service_started
+
+  # 📞 TELEPHONY ACTION SERVICE
+  telephony-action-service:
+    <<: *common-settings
+    build:
+      context: ../sentiric-telephony-action-service
+      dockerfile: Dockerfile
+    image: ghcr.io/sentiric/sentiric-telephony-action-service:latest
+    container_name: telephony-action-service
+    volumes:
+      - ../sentiric-certificates:/sentiric-certificates:ro
+    environment:
+      - ENV=development
+      - LOG_LEVEL=debug
+      - RUST_LOG=debug
+      - TELEPHONY_ACTION_SERVICE_GRPC_PORT=13111
+      - TELEPHONY_ACTION_SERVICE_HTTP_PORT=13110
+      # Targets
+      - MEDIA_SERVICE_TARGET_GRPC_URL=media-service:13031
+      - STT_GATEWAY_TARGET_GRPC_URL=stt-gateway-service:15021
+      - DIALOG_SERVICE_TARGET_GRPC_URL=dialog-service:12061
+      - TTS_GATEWAY_TARGET_GRPC_URL=tts-gateway-service:14011
+      # Security
+      - GRPC_TLS_CA_PATH=/sentiric-certificates/certs/ca.crt
+      - TELEPHONY_ACTION_SERVICE_CERT_PATH=/sentiric-certificates/certs/telephony-action-service.crt
+      - TELEPHONY_ACTION_SERVICE_KEY_PATH=/sentiric-certificates/certs/telephony-action-service.key
+    ports:
+      - "13111:13111"
+    networks:
+      sentiric-net:
+        ipv4_address: 10.88.30.10
+    depends_on:
+      media-service:
+        condition: service_started
+      stt-gateway-service:
+        condition: service_started
+
+  # 👤 USER SERVICE
+  user-service:
+    <<: *common-settings
+    build:
+      context: ../sentiric-user-service
+      dockerfile: Dockerfile
+    image: ghcr.io/sentiric/sentiric-user-service:latest
+    container_name: user-service
+    volumes:
+      - ../sentiric-certificates:/sentiric-certificates:ro
+    environment:
+      - USER_SERVICE_GRPC_PORT=12011
+      - POSTGRES_URL=postgres://sentiric:sentiric_pass@postgres:5432/sentiric_db?sslmode=disable
+      - SIP_SIGNALING_SERVICE_REALM=sentiric_demo
+      - GRPC_TLS_CA_PATH=/sentiric-certificates/certs/ca.crt
+      - USER_SERVICE_CERT_PATH=/sentiric-certificates/certs/user-service.crt
+      - USER_SERVICE_KEY_PATH=/sentiric-certificates/certs/user-service.key
+    networks:
+      sentiric-net:
+        ipv4_address: 10.88.20.5
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # 💬 DIALOG SERVICE
+  dialog-service:
+    <<: *common-settings
+    image: ghcr.io/sentiric/sentiric-dialog-service:latest
+    container_name: dialog-service
+    volumes:
+      - ../sentiric-certificates:/sentiric-certificates:ro
+    environment:
+      - LOG_LEVEL=debug
+      - DIALOG_SERVICE_GRPC_PORT=12061
+      - REDIS_URL=redis:6379
+      - LLM_GATEWAY_SERVICE_TARGET=llm-gateway-service:16021
+      # Security
+      - GRPC_TLS_CA_PATH=/sentiric-certificates/certs/ca.crt
+      - DIALOG_SERVICE_CERT_PATH=/sentiric-certificates/certs/dialog-service.crt
+      - DIALOG_SERVICE_KEY_PATH=/sentiric-certificates/certs/dialog-service.key
+    networks:
+      sentiric-net:
+        ipv4_address: 10.88.20.6
+    depends_on:
+      redis:
+        condition: service_healthy
+      llm-gateway-service:
+        condition: service_started
+
+  # =============================================================
+  # KATMAN 3: GATEWAYS & MEDIA
+  # =============================================================
+  
+  # 🎙️ MEDIA SERVICE
+  media-service:
+    <<: *common-settings
+    build:
+      context: ../sentiric-media-service
+      dockerfile: Dockerfile
+    image: ghcr.io/sentiric/sentiric-media-service:latest
+    container_name: media-service
+    volumes:
+      - ../sentiric-certificates:/sentiric-certificates:ro
+      - ../sentiric-assets:/sentiric-assets:ro
+    environment:
+      - RUST_LOG=info,sentiric_media_service=debug
+      - MEDIA_SERVICE_GRPC_PORT=13031
+      - RTP_SERVICE_LISTEN_ADDRESS=0.0.0.0
+      - RTP_SERVICE_PORT_MIN=10000
+      - RTP_SERVICE_PORT_MAX=10100
+      - ASSETS_BASE_PATH=/sentiric-assets
+      # Security
+      - GRPC_TLS_CA_PATH=/sentiric-certificates/certs/ca.crt
+      - MEDIA_SERVICE_CERT_PATH=/sentiric-certificates/certs/media-service-chain.crt
+      - MEDIA_SERVICE_KEY_PATH=/sentiric-certificates/certs/media-service.key
+      # S3
+      - BUCKET_ENDPOINT_URL=http://minio:9000
+      - BUCKET_REGION=auto
+      - BUCKET_NAME=sentiric
+      - BUCKET_ACCESS_KEY_ID=sentiric
+      - BUCKET_SECRET_ACCESS_KEY=sentiric-secret-key
+    networks:
+      sentiric-net:
+        ipv4_address: 10.88.30.3
+    depends_on:
+      minio:
+        condition: service_healthy
+
+  # 👂 STT GATEWAY
+  stt-gateway-service:
+    <<: *common-settings
+    image: ghcr.io/sentiric/sentiric-stt-gateway-service:latest
+    container_name: stt-gateway-service
+    volumes:
+      - ../sentiric-certificates:/sentiric-certificates:ro
+    environment:
+      - RUST_LOG=info
+      - STT_GATEWAY_SERVICE_GRPC_PORT=15021
+      - STT_WHISPER_SERVICE_GRPC_URL=https://stt-whisper-service:15031
+      - GRPC_TLS_CA_PATH=/sentiric-certificates/certs/ca.crt
+      - STT_GATEWAY_SERVICE_CERT_PATH=/sentiric-certificates/certs/stt-gateway-service.crt
+      - STT_GATEWAY_SERVICE_KEY_PATH=/sentiric-certificates/certs/stt-gateway-service.key
+    networks:
+      sentiric-net:
+        ipv4_address: 10.88.50.2
+    depends_on:
+      stt-whisper-service:
+        condition: service_started
+
+  # 🗣️ TTS GATEWAY
+  tts-gateway-service:
+    <<: *common-settings
+    image: ghcr.io/sentiric/sentiric-tts-gateway-service:latest
+    container_name: tts-gateway-service
+    volumes:
+      - ../sentiric-certificates:/sentiric-certificates:ro
+    environment:
+      - RUST_LOG=info
+      - TTS_GATEWAY_SERVICE_GRPC_PORT=14011
+      - TTS_COQUI_SERVICE_URL=https://tts-coqui-service:14031
+      - TTS_MMS_SERVICE_URL=https://tts-mms-service:14061
+      - GRPC_TLS_CA_PATH=/sentiric-certificates/certs/ca.crt
+      - TTS_GATEWAY_SERVICE_CERT_PATH=/sentiric-certificates/certs/tts-gateway-service.crt
+      - TTS_GATEWAY_SERVICE_KEY_PATH=/sentiric-certificates/certs/tts-gateway-service.key
+    networks:
+      sentiric-net:
+        ipv4_address: 10.88.40.1
+    depends_on:
+      tts-coqui-service:
+        condition: service_started
+
+  # 🧠 LLM GATEWAY
+  llm-gateway-service:
+    <<: *common-settings
+    image: ghcr.io/sentiric/sentiric-llm-gateway-service:latest
+    container_name: llm-gateway-service
+    volumes:
+      - ../sentiric-certificates:/sentiric-certificates:ro
+    environment:
+      - RUST_LOG=info
+      - LLM_GATEWAY_SERVICE_GRPC_PORT=16021
+      - LLM_LLAMA_SERVICE_GRPC_URL=https://llm-llama-service:16071
+      - GRPC_TLS_CA_PATH=/sentiric-certificates/certs/ca.crt
+      - LLM_GATEWAY_SERVICE_CERT_PATH=/sentiric-certificates/certs/llm-gateway-service.crt
+      - LLM_GATEWAY_SERVICE_KEY_PATH=/sentiric-certificates/certs/llm-gateway-service.key
+    networks:
+      sentiric-net:
+        ipv4_address: 10.88.60.2
+    depends_on:
+      llm-llama-service:
+        condition: service_started
+
+  # =============================================================
+  # 5. AI ENGINES
+  # =============================================================
+  stt-whisper-service:
+    <<: *ai-service-template
+    image: ghcr.io/sentiric/sentiric-stt-whisper-service:latest-gpu
+    container_name: stt-whisper-service    
+    volumes:
+      - stt-whisper-models:/models
+      - ../sentiric-certificates:/sentiric-certificates:ro
+    environment:
+      - ENV=development
+      - STT_WHISPER_SERVICE_LOG_LEVEL=info
+      - STT_WHISPER_SERVICE_HOST=stt-whisper-service
+      - STT_WHISPER_SERVICE_HTTP_PORT=15030
+      - STT_WHISPER_SERVICE_GRPC_PORT=15031
+      # GPU Settings
+      - STT_WHISPER_SERVICE_DEVICE=cuda
+      - STT_WHISPER_SERVICE_MODEL_FILENAME=ggml-large-v3-turbo-q5_0.bin
+      # Logic Settings
+      - STT_WHISPER_SERVICE_LANGUAGE=tr
+      - STT_WHISPER_SERVICE_VAD_THRESHOLD=0.75
+      - STT_WHISPER_SERVICE_VAD_MS_MIN_DURATION=500
+      - STT_WHISPER_SERVICE_PARALLEL_REQUESTS=1
+      
+      # [SECURITY - mTLS ENABLED]
+      # Server tarafında bu 3 değişken doluysa Secure Mode başlar.
+      - GRPC_TLS_CA_PATH=/sentiric-certificates/certs/ca.crt
+      - STT_WHISPER_SERVICE_CERT_PATH=/sentiric-certificates/certs/stt-whisper-service-chain.crt
+      - STT_WHISPER_SERVICE_KEY_PATH=/sentiric-certificates/certs/stt-whisper-service.key
+    networks:
+      sentiric-net:
+        ipv4_address: 10.88.50.3
+
+
+  llm-llama-service:
+    <<: *ai-service-template
+    image: ghcr.io/sentiric/sentiric-llm-llama-service:latest-gpu
+    container_name: llm-llama-service    
+    volumes:
+      - llm-llama-models:/models
+      - ../sentiric-certificates:/sentiric-certificates:ro
+    environment:
+      - ENV=development
+      - LLM_LLAMA_SERVICE_LOG_LEVEL=info
+      - LLM_LLAMA_SERVICE_HOST=llm-llama-service
+      - LLM_LLAMA_SERVICE_HTTP_PORT=16070
+      - LLM_LLAMA_SERVICE_GRPC_PORT=16071
+      # Performance
+      - LLM_LLAMA_SERVICE_GPU_LAYERS=0
+      - LLM_LLAMA_SERVICE_CONTEXT_SIZE=1024
+      - LLM_LLAMA_SERVICE_KV_OFFLOAD=false
+      - LLM_LLAMA_SERVICE_USE_MMAP=false
+      - LLM_LLAMA_SERVICE_ENABLE_BATCHING=false
+      
+      # [SECURITY - mTLS ENABLED]
+      - GRPC_TLS_CA_PATH=/sentiric-certificates/certs/ca.crt
+      - LLM_LLAMA_SERVICE_CERT_PATH=/sentiric-certificates/certs/llm-llama-service-chain.crt
+      - LLM_LLAMA_SERVICE_KEY_PATH=/sentiric-certificates/certs/llm-llama-service.key
+    networks:
+      sentiric-net:
+        ipv4_address: 10.88.60.7
+
+  tts-coqui-service:
+    <<: *ai-service-template
+    image: ghcr.io/sentiric/sentiric-tts-coqui-service:latest-gpu
+    container_name: tts-coqui-service    
+    volumes:
+      - "${CERTIFICATES_REPO_PATH:-../sentiric-certificates}:/sentiric-certificates:ro"
+      - "${ASSETS_REPO_PATH:-../sentiric-assets}/docs/audio/speakers:/app/speakers"
+      - tts-coqui-models:/root/.local/share/tts
+    environment:
+      # --- GLOBAL --
+      - ENV=development
+      - TTS_COQUI_SERVICE_DEBUG=false
+
+      # -- NETWORK ---
+      - TTS_COQUI_SERVICE_HTTP_PORT=14030
+      - TTS_COQUI_SERVICE_GRPC_PORT=14031
+
+      # --- ---
+      - TTS_COQUI_SERVICE_DEVICE=cuda
+
+      # ---
+      - TTS_COQUI_SERVICE_DEFAULT_SPEAKER=F_TR_Parlak_Zeynep/neutral
+
+      # [SECURITY - mTLS ENABLED]
+      - GRPC_TLS_CA_PATH=/sentiric-certificates/certs/ca.crt
+      - TTS_COQUI_SERVICE_CERT_PATH=/sentiric-certificates/certs/tts-coqui-service-chain.crt
+      - TTS_COQUI_SERVICE_KEY_PATH=/sentiric-certificates/certs/tts-coqui-service.key
+
+    networks:
+      sentiric-net:
+        ipv4_address: 10.88.40.3

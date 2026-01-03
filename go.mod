@@ -4,13 +4,13 @@ go 1.24.5
 
 require (
 	github.com/go-redis/redis/v8 v8.11.5
-	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.7.6
 	github.com/joho/godotenv v1.5.1
 	github.com/prometheus/client_golang v1.23.2
 	github.com/rabbitmq/amqp091-go v1.10.0
 	github.com/rs/zerolog v1.34.0
-	github.com/sentiric/sentiric-contracts v1.12.3
+	// GÜNCELLEME: v1.13.3
+	github.com/sentiric/sentiric-contracts v1.13.3
 	google.golang.org/grpc v1.75.1
 )
 

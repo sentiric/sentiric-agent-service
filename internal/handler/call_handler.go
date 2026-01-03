@@ -2,118 +2,99 @@ package handler
 
 import (
 	"context"
-	"sync"
-	"time"
+	"io"
+    // "time" importu kaldırıldı
 
-	"github.com/sentiric/sentiric-agent-service/internal/ctxlogger"
-	"github.com/sentiric/sentiric-agent-service/internal/service"
+	"github.com/rs/zerolog"
+	eventv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/event/v1"
+	telephonyv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/telephony/v1"
+	"github.com/sentiric/sentiric-agent-service/internal/client"
 	"github.com/sentiric/sentiric-agent-service/internal/state"
 )
 
 type CallHandler struct {
-	UserManager   *service.UserManager
-	DialogManager *service.DialogManager
-	StateManager  *state.Manager
-	dialogWg      sync.WaitGroup
+	clients      *client.Clients
+	stateManager *state.Manager
+	log          zerolog.Logger
 }
 
-func NewCallHandler(um *service.UserManager, dm *service.DialogManager, sm *state.Manager) *CallHandler {
+func NewCallHandler(clients *client.Clients, sm *state.Manager, log zerolog.Logger) *CallHandler {
 	return &CallHandler{
-		UserManager:   um,
-		DialogManager: dm,
-		StateManager:  sm,
+		clients:      clients,
+		stateManager: sm,
+		log:          log,
 	}
 }
 
-func (h *CallHandler) WaitOnDialogs() {
-	h.dialogWg.Wait()
-}
-
+// HandleCallStarted: Düzeltildi - Artık *state.CallEvent alıyor ([]byte değil)
 func (h *CallHandler) HandleCallStarted(ctx context.Context, event *state.CallEvent) {
-	h.dialogWg.Add(1)
-	defer h.dialogWg.Done()
+	log := h.log.With().Str("call_id", event.CallID).Logger()
+	log.Info().Msg("📞 Yeni çağrı yakalandı. Orkestrasyon başlıyor.")
 
-	l := ctxlogger.FromContext(ctx)
-
-	lockKey := "active_agent_lock:" + event.CallID
-	wasSet, err := h.StateManager.RedisClient().SetNX(context.Background(), lockKey, event.TraceID, 5*time.Minute).Result()
-	if err != nil {
-		l.Error().Err(err).Msg("Redis'e lock anahtarı yazılamadı.")
+	// 1. Media Info Kontrolü
+	if event.Media == nil {
+		log.Error().Msg("Media bilgisi eksik, çağrı yönetilemez.")
 		return
 	}
 
-	if !wasSet {
-		l.Warn().Msg("Bu çağrı için zaten aktif bir agent süreci var. Yinelenen 'call.started' olayı görmezden geliniyor.")
-		return
-	}
-
-	if event.Dialplan == nil || event.Dialplan.Action == nil {
-		l.Error().Msg("Dialplan veya action bilgisi eksik, çağrı işlenemiyor.")
-		return
-	}
-
-	actionName := event.Dialplan.Action.Action
-	l = l.With().Str("action", actionName).Logger()
-	ctx = ctxlogger.ToContext(ctx, l)
-	l.Info().Msg("Dialplan eylemine göre çağrı yönlendiriliyor.")
-
-	switch actionName {
-	case "PROCESS_GUEST_CALL":
-		h.handleProcessGuestCall(ctx, event)
-	case "START_AI_CONVERSATION":
-		h.handleStartAIConversation(ctx, event)
-	default:
-		l.Error().Msg("Bilinmeyen veya desteklenmeyen dialplan eylemi.")
-	}
+	// 2. Telephony Action Service'i Tetikle
+	go h.triggerPipeline(context.Background(), event.CallID, event.TraceID, event.Media)
 }
 
+// HandleCallEnded: Eksik metod eklendi
 func (h *CallHandler) HandleCallEnded(ctx context.Context, event *state.CallEvent) {
-	l := ctxlogger.FromContext(ctx)
-	l.Info().Msg("Çağrı sonlandırma olayı işleniyor.")
-
-	lockKey := "active_agent_lock:" + event.CallID
-	if err := h.StateManager.RedisClient().Del(ctx, lockKey).Err(); err != nil {
-		l.Error().Err(err).Msg("Redis'ten lock anahtarı silinemedi.")
-	} else {
-		l.Info().Msg("Aktif agent lock'ı başarıyla temizlendi.")
-	}
-
-	stateKey := "callstate:" + event.CallID
-	if err := h.StateManager.RedisClient().Del(ctx, stateKey).Err(); err != nil {
-		l.Error().Err(err).Msg("Redis'ten 'callstate' anahtarı silinemedi.")
-	} else {
-		l.Info().Msg("Çağrı durumu 'callstate' kaydı Redis'ten başarıyla silindi.")
-	}
+	log := h.log.With().Str("call_id", event.CallID).Logger()
+	log.Info().Msg("📴 Çağrı sonlandı.")
+	
+	// Gelecekte: Redis temizliği veya raporlama burada yapılabilir.
+	// Şimdilik sadece logluyoruz.
 }
 
-func (h *CallHandler) handleProcessGuestCall(ctx context.Context, event *state.CallEvent) {
-	l := ctxlogger.FromContext(ctx)
-	l.Info().Msg("Misafir kullanıcı akışı başlatıldı: Önce bul, yoksa oluştur.")
+func (h *CallHandler) triggerPipeline(ctx context.Context, callID, traceID string, media *state.MediaInfoPayload) {
+	log := h.log.With().Str("call_id", callID).Logger()
 
-	user, contact, err := h.UserManager.FindOrCreateGuest(ctx, event)
+	// MediaInfo dönüşümü (JSON -> Protobuf)
+	mediaInfoProto := &eventv1.MediaInfo{
+		CallerRtpAddr: media.CallerRtpAddr,
+		ServerRtpPort: uint32(media.ServerRtpPort),
+	}
+
+	req := &telephonyv1.RunPipelineRequest{
+		CallId:    callID,
+		SessionId: traceID,
+		MediaInfo: mediaInfoProto,
+	}
+
+	// gRPC Stream Başlat
+	stream, err := h.clients.TelephonyAction.RunPipeline(ctx, req)
 	if err != nil {
-		l.Error().Err(err).Msg("Misafir kullanıcı bulunamadı veya oluşturulamadı.")
+		log.Error().Err(err).Msg("Pipeline başlatılamadı")
 		return
 	}
 
-	event.Dialplan.MatchedUser = service.ConvertUserToPayload(user)
-	event.Dialplan.MatchedContact = service.ConvertContactToPayload(contact)
+	log.Info().Msg("🚀 Pipeline isteği gönderildi, durum izleniyor...")
 
-	h.handleStartAIConversation(ctx, event)
-}
+	// Durum güncellemelerini dinle (Blocking Loop)
+	for {
+		resp, err := stream.Recv()
+		if err == io.EOF {
+			log.Info().Msg("Pipeline tamamlandı (Stream kapandı).")
+			break
+		}
+		if err != nil {
+			log.Error().Err(err).Msg("Pipeline bağlantısı koptu")
+			break
+		}
 
-func (h *CallHandler) handleStartAIConversation(ctx context.Context, event *state.CallEvent) {
-	l := ctxlogger.FromContext(ctx)
-
-	st, err := h.StateManager.Get(ctx, event.CallID)
-	if err != nil {
-		l.Error().Err(err).Msg("Redis'ten durum alınamadı.")
-		return
+		switch resp.State {
+		case telephonyv1.RunPipelineResponse_STATE_RUNNING:
+			log.Info().Str("msg", resp.Message).Msg("🟢 Pipeline çalışıyor")
+		case telephonyv1.RunPipelineResponse_STATE_ERROR:
+			log.Error().Str("msg", resp.Message).Msg("🔴 Pipeline hatası")
+			return // Döngüden çık
+		case telephonyv1.RunPipelineResponse_STATE_STOPPED:
+			log.Info().Msg("🏁 Pipeline durduruldu")
+			return
+		}
 	}
-	if st != nil {
-		l.Warn().Msg("Bu çağrı için zaten aktif bir Redis durumu var, yeni bir tane başlatılmıyor.")
-		return
-	}
-
-	h.DialogManager.Start(ctx, event)
 }

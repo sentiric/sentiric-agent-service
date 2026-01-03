@@ -1,4 +1,3 @@
-// sentiric-agent-service/internal/app/app.go
 package app
 
 import (
@@ -8,7 +7,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
-	"time"
+    // "time" importu kaldırıldı
 
 	"github.com/go-redis/redis/v8"
 	"github.com/rabbitmq/amqp091-go"
@@ -19,210 +18,86 @@ import (
 	"github.com/sentiric/sentiric-agent-service/internal/handler"
 	"github.com/sentiric/sentiric-agent-service/internal/metrics"
 	"github.com/sentiric/sentiric-agent-service/internal/queue"
-	"github.com/sentiric/sentiric-agent-service/internal/service"
 	"github.com/sentiric/sentiric-agent-service/internal/state"
-	knowledgev1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/knowledge/v1"
-	mediav1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/media/v1"
-	sipv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/sip/v1"
-	ttsv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/tts/v1"
-	userv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/user/v1"
 )
 
-type Dependencies struct {
-	CallHandler  *handler.CallHandler
-	EventHandler *handler.EventHandler
-}
-
 type App struct {
-	Cfg    *config.Config
-	Log    zerolog.Logger
-	wg     sync.WaitGroup
-	cancel context.CancelFunc
+	Cfg *config.Config
+	Log zerolog.Logger
 }
 
 func NewApp(cfg *config.Config, log zerolog.Logger) *App {
-	return &App{
-		Cfg: cfg,
-		Log: log,
-	}
+	return &App{Cfg: cfg, Log: log}
 }
 
 func (a *App) Run() {
 	ctx, cancel := context.WithCancel(context.Background())
-	a.cancel = cancel
+	defer cancel()
 
+	// 1. Metrik Sunucusu
 	go metrics.StartServer(a.Cfg.MetricsPort, a.Log)
 
-	a.wg.Add(1)
-	go func() {
-		defer a.wg.Done()
-		db, redisClient, rabbitCh, rabbitCloseChan := a.setupInfrastructure(ctx)
-		if ctx.Err() != nil {
-			return
-		}
-		if db != nil {
-			defer db.Close()
-		}
-		if redisClient != nil {
-			defer redisClient.Close()
-		}
-		if rabbitCh != nil {
-			defer rabbitCh.Close()
-		}
+	// 2. Altyapı Bağlantıları
+	db, redisClient, rabbitCh, closeChan := a.setupInfrastructure(ctx)
+	if db != nil { defer db.Close() }
+	if redisClient != nil { defer redisClient.Close() }
+	if rabbitCh != nil { defer rabbitCh.Close() }
 
-		deps := a.buildDependencies(ctx, db, redisClient, rabbitCh)
-		if deps == nil {
-			return
-		}
+	// 3. gRPC İstemcileri
+	clients, err := client.NewClients(a.Cfg)
+	if err != nil {
+		a.Log.Fatal().Err(err).Msg("gRPC istemcileri başlatılamadı")
+	}
 
-		var consumerWg sync.WaitGroup
-		go queue.StartConsumer(ctx, rabbitCh, deps.EventHandler.HandleRabbitMQMessage, a.Log, &consumerWg)
+	// 4. Handler ve State Manager
+	stateManager := state.NewManager(redisClient)
+	callHandler := handler.NewCallHandler(clients, stateManager, a.Log)
 
-		select {
-		case <-ctx.Done():
-		case err := <-rabbitCloseChan:
-			if err != nil {
-				a.Log.Error().Err(err).Msg("RabbitMQ bağlantısı koptu, servis durduruluyor.")
-			}
-			a.cancel()
-		}
+	// EventHandler Başlatma
+	eventHandler := handler.NewEventHandler(
+		a.Log,
+		metrics.EventsProcessed,
+		metrics.EventsFailed,
+		callHandler,
+	)
+	
+	var consumerWg sync.WaitGroup
+	
+	// RabbitMQ Consumer Başlat
+	go queue.StartConsumer(ctx, rabbitCh, eventHandler.HandleRabbitMQMessage, a.Log, &consumerWg)
 
-		a.Log.Info().Msg("RabbitMQ tüketicisinin bitmesi bekleniyor...")
-		consumerWg.Wait()
-		a.Log.Info().Msg("Aktif diyalogların bitmesi bekleniyor...")
-		deps.CallHandler.WaitOnDialogs()
-	}()
-
+	// 5. Graceful Shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+	
+	select {
+	case <-quit:
+		a.Log.Info().Msg("Kapatma sinyali alındı...")
+	case err := <-closeChan:
+		a.Log.Error().Err(err).Msg("RabbitMQ bağlantısı koptu!")
+	}
 
-	a.Log.Info().Msg("Kapatma sinyali alındı, servis durduruluyor...")
-	a.cancel()
-
-	a.wg.Wait()
-	a.Log.Info().Msg("Tüm servisler başarıyla durduruldu. Çıkış yapılıyor.")
+	cancel() // Context'i iptal et
+	a.Log.Info().Msg("Consumer işlemlerinin bitmesi bekleniyor...")
+	consumerWg.Wait() // Consumer'ın bitmesini bekle
+	a.Log.Info().Msg("Servis durduruldu.")
 }
 
-func (a *App) buildDependencies(ctx context.Context, db *sql.DB, redisClient *redis.Client, rabbitCh *amqp091.Channel) *Dependencies {
-
-	connectWithRetry := func(serviceName string, connectFunc func() (interface{}, error)) interface{} {
-		for {
-			select {
-			case <-ctx.Done():
-				a.Log.Warn().Str("service", serviceName).Msg("Servis kapatıldığı için bağlantı denemeleri iptal edildi.")
-				return nil
-			default:
-				client, err := connectFunc()
-				if err == nil {
-					a.Log.Info().Str("service", serviceName).Msg("gRPC istemci bağlantısı başarılı.")
-					return client
-				}
-				a.Log.Warn().Err(err).Str("service", serviceName).Msg("gRPC istemcisine bağlanılamadı, 5 saniye sonra tekrar denenecek...")
-				time.Sleep(5 * time.Second)
-			}
-		}
+func (a *App) setupInfrastructure(ctx context.Context) (*sql.DB, *redis.Client, *amqp091.Channel, <-chan *amqp091.Error) {
+	db, err := database.Connect(ctx, a.Cfg.PostgresURL, a.Log)
+	if err != nil {
+		a.Log.Fatal().Err(err).Msg("Postgres bağlantı hatası")
 	}
 
-	mediaConnect := func() (interface{}, error) { return client.NewMediaServiceClient(a.Cfg) }
-	userConnect := func() (interface{}, error) { return client.NewUserServiceClient(a.Cfg) }
-	ttsConnect := func() (interface{}, error) { return client.NewTTSServiceClient(a.Cfg) }
-	sipSignalingConnect := func() (interface{}, error) { return client.NewSipSignalingServiceClient(a.Cfg) }
-	knowledgeConnect := func() (interface{}, error) { return client.NewKnowledgeServiceClient(a.Cfg) }
-
-	mediaClient := connectWithRetry("media-service", mediaConnect)
-	if mediaClient == nil {
-		return nil
-	}
-	userClient := connectWithRetry("user-service", userConnect)
-	if userClient == nil {
-		return nil
-	}
-	ttsClient := connectWithRetry("tts-gateway", ttsConnect)
-	if ttsClient == nil {
-		return nil
-	}
-	sipSignalingClient := connectWithRetry("sip-signaling-service", sipSignalingConnect)
-	if sipSignalingClient == nil {
-		return nil
+	rdb, err := database.ConnectRedis(ctx, a.Cfg.RedisURL, a.Log)
+	if err != nil {
+		a.Log.Fatal().Err(err).Msg("Redis bağlantı hatası")
 	}
 
-	llmClient := client.NewLlmClient(a.Cfg.LlmServiceURL, a.Log)
-	sttClient := client.NewSttClient(a.Cfg.SttServiceURL, a.Log)
-
-	var knowledgeClient service.KnowledgeClientInterface
-	if a.Cfg.KnowledgeServiceGrpcURL != "" {
-		grpcClientResult := connectWithRetry("knowledge-service-grpc", knowledgeConnect)
-		if grpcClientResult != nil {
-			// DÜZELTME: Type assertion KnowledgeQueryServiceClient olarak güncellendi.
-			knowledgeClient = client.NewGrpcKnowledgeClientAdapter(grpcClientResult.(knowledgev1.KnowledgeQueryServiceClient))
-		} else {
-			return nil
-		}
-	} else if a.Cfg.KnowledgeServiceURL != "" {
-		a.Log.Debug().Str("url", a.Cfg.KnowledgeServiceURL).Msg("HTTP Knowledge Service istemcisi (fallback) kullanılıyor.")
-		knowledgeClient = client.NewKnowledgeClient(a.Cfg.KnowledgeServiceURL, a.Log)
-	} else {
-		a.Log.Warn().Msg("Knowledge service için ne gRPC ne de HTTP URL'si tanımlanmamış. RAG devre dışı.")
+	ch, closeCh, err := queue.Connect(ctx, a.Cfg.RabbitMQURL, a.Log)
+	if err != nil {
+		a.Log.Fatal().Err(err).Msg("RabbitMQ bağlantı hatası")
 	}
 
-	stateManager := state.NewManager(redisClient)
-	publisher := queue.NewPublisher(rabbitCh, a.Log)
-	templateProvider := service.NewTemplateProvider(db)
-	mediaManager := service.NewMediaManager(db, mediaClient.(mediav1.MediaServiceClient), metrics.EventsFailed, a.Cfg.BucketName)
-	aiOrchestrator := service.NewAIOrchestrator(a.Cfg, llmClient, sttClient, ttsClient.(ttsv1.TtsGatewayServiceClient), mediaClient.(mediav1.MediaServiceClient), knowledgeClient)
-	dialogManager := service.NewDialogManager(a.Cfg, stateManager, aiOrchestrator, mediaManager, templateProvider, publisher, sipSignalingClient.(sipv1.SipSignalingServiceClient))
-	userManager := service.NewUserManager(userClient.(userv1.UserServiceClient))
-	callHandler := handler.NewCallHandler(userManager, dialogManager, stateManager)
-	eventHandler := handler.NewEventHandler(a.Log, metrics.EventsProcessed, metrics.EventsFailed, callHandler)
-
-	return &Dependencies{
-		CallHandler:  callHandler,
-		EventHandler: eventHandler,
-	}
-}
-
-func (a *App) setupInfrastructure(ctx context.Context) (
-	db *sql.DB,
-	redisClient *redis.Client,
-	rabbitCh *amqp091.Channel,
-	closeChan <-chan *amqp091.Error,
-) {
-	var infraWg sync.WaitGroup
-	infraWg.Add(3)
-
-	go func() {
-		defer infraWg.Done()
-		var err error
-		db, err = database.Connect(ctx, a.Cfg.PostgresURL, a.Log)
-		if err != nil && ctx.Err() == nil {
-			a.Log.Error().Err(err).Msg("Veritabanı bağlantı denemeleri başarısız oldu, servis sonlandırılıyor.")
-		}
-	}()
-
-	go func() {
-		defer infraWg.Done()
-		var err error
-		redisClient, err = database.ConnectRedis(ctx, a.Cfg.RedisURL, a.Log)
-		if err != nil && ctx.Err() == nil {
-			a.Log.Error().Err(err).Msg("Redis bağlantı denemeleri başarısız oldu, servis sonlandırılıyor.")
-		}
-	}()
-
-	go func() {
-		defer infraWg.Done()
-		var err error
-		rabbitCh, closeChan, err = queue.Connect(ctx, a.Cfg.RabbitMQURL, a.Log)
-		if err != nil && ctx.Err() == nil {
-			a.Log.Error().Err(err).Msg("RabbitMQ bağlantı denemeleri başarısız oldu, servis sonlandırılıyor.")
-		}
-	}()
-
-	infraWg.Wait()
-	if ctx.Err() != nil {
-		a.Log.Info().Msg("Altyapı kurulumu, servis kapatıldığı için iptal edildi.")
-		return
-	}
-	a.Log.Info().Msg("Tüm altyapı bağlantıları başarıyla kuruldu.")
-	return
+	return db, rdb, ch, closeCh
 }

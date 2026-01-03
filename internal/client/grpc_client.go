@@ -1,103 +1,105 @@
-// sentiric-agent-service/internal/client/grpc_client.go
 package client
 
 import (
-	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
-	"github.com/sentiric/sentiric-agent-service/internal/config"
-	knowledgev1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/knowledge/v1"
+	"github.com/rs/zerolog/log"
+	
+	// --- CONTRACT IMPORTS (EKSİKSİZ) ---
+	dialogv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/dialog/v1"
 	mediav1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/media/v1"
 	sipv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/sip/v1"
+	sttv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/stt/v1"
+	telephonyv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/telephony/v1" // EKLENDİ
 	ttsv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/tts/v1"
-	userv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/user/v1"
+	userv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/user/v1"           // EKLENDİ
+	
+	"github.com/sentiric/sentiric-agent-service/internal/config"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
-func NewSipSignalingServiceClient(cfg *config.Config) (sipv1.SipSignalingServiceClient, error) {
-	conn, err := createSecureGrpcClient(cfg, cfg.SipSignalingGrpcURL)
-	if err != nil {
-		return nil, fmt.Errorf("sip signaling service istemcisi için bağlantı oluşturulamadı: %w", err)
-	}
-	return sipv1.NewSipSignalingServiceClient(conn), nil
+type Clients struct {
+	User            userv1.UserServiceClient
+	TelephonyAction telephonyv1.TelephonyActionServiceClient
+	Media           mediav1.MediaServiceClient
+	STT             sttv1.SttGatewayServiceClient
+	TTS             ttsv1.TtsGatewayServiceClient
+	Dialog          dialogv1.DialogServiceClient
+	Signaling       sipv1.SipSignalingServiceClient
 }
 
-func NewMediaServiceClient(cfg *config.Config) (mediav1.MediaServiceClient, error) {
-	conn, err := createSecureGrpcClient(cfg, cfg.MediaServiceGrpcURL)
-	if err != nil {
-		return nil, fmt.Errorf("media service istemcisi için bağlantı oluşturulamadı: %w", err)
-	}
-	return mediav1.NewMediaServiceClient(conn), nil
+func NewClients(cfg *config.Config) (*Clients, error) {
+	log.Info().Msg("🔌 Servis bağlantıları kuruluyor...")
+
+	// 1. User Service
+	userConn, err := createConnection(cfg, cfg.UserServiceURL)
+	if err != nil { return nil, err }
+
+	// 2. Telephony Action Service
+	telephonyConn, err := createConnection(cfg, cfg.TelephonyActionURL)
+	if err != nil { return nil, err }
+
+	// Not: Diğer servisler (Media, STT vb.) şu an Agent tarafından doğrudan kullanılmıyor
+	// (Telephony Action üzerinden yönetiliyor). Ancak struct bütünlüğü için nil bırakabiliriz
+	// veya ileride lazım olursa buraya ekleyebiliriz.
+
+	log.Info().Msg("✅ İstemciler hazır.")
+
+	return &Clients{
+		User:            userv1.NewUserServiceClient(userConn),
+		TelephonyAction: telephonyv1.NewTelephonyActionServiceClient(telephonyConn),
+		// Diğer alanlar opsiyonel/ileriye dönük:
+		Media:     nil,
+		STT:       nil,
+		TTS:       nil,
+		Dialog:    nil,
+		Signaling: nil,
+	}, nil
 }
 
-func NewUserServiceClient(cfg *config.Config) (userv1.UserServiceClient, error) {
-	conn, err := createSecureGrpcClient(cfg, cfg.UserServiceGrpcURL)
-	if err != nil {
-		return nil, fmt.Errorf("user service istemcisi için bağlantı oluşturulamadı: %w", err)
-	}
-	return userv1.NewUserServiceClient(conn), nil
-}
+func createConnection(cfg *config.Config, targetURL string) (*grpc.ClientConn, error) {
+	var opts []grpc.DialOption
 
-func NewTTSServiceClient(cfg *config.Config) (ttsv1.TtsGatewayServiceClient, error) {
-	conn, err := createSecureGrpcClient(cfg, cfg.TtsServiceGrpcURL)
-	if err != nil {
-		return nil, fmt.Errorf("tts gateway istemcisi için bağlantı oluşturulamadı: %w", err)
-	}
-	return ttsv1.NewTtsGatewayServiceClient(conn), nil
-}
+	// mTLS Kontrolü
+	if cfg.CertPath != "" && cfg.KeyPath != "" && cfg.CaPath != "" {
+		// Dosyaların varlığını kontrol et
+		if _, err := os.Stat(cfg.CertPath); os.IsNotExist(err) {
+			log.Warn().Str("path", cfg.CertPath).Msg("Sertifika dosyası bulunamadı, INSECURE moduna geçiliyor.")
+			opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		} else {
+			clientCert, err := tls.LoadX509KeyPair(cfg.CertPath, cfg.KeyPath)
+			if err != nil {
+				return nil, fmt.Errorf("cert load error: %w", err)
+			}
+			caCert, err := os.ReadFile(cfg.CaPath)
+			if err != nil {
+				return nil, fmt.Errorf("ca load error: %w", err)
+			}
+			caPool := x509.NewCertPool()
+			if !caPool.AppendCertsFromPEM(caCert) {
+				return nil, fmt.Errorf("failed to append CA")
+			}
 
-// --- DÜZELTME BURADA ---
-// Dönüş tipi KnowledgeServiceClient -> KnowledgeQueryServiceClient olarak güncellendi.
-func NewKnowledgeServiceClient(cfg *config.Config) (knowledgev1.KnowledgeQueryServiceClient, error) {
-	if cfg.KnowledgeServiceGrpcURL == "" {
-		return nil, nil
-	}
-	conn, err := createSecureGrpcClient(cfg, cfg.KnowledgeServiceGrpcURL)
-	if err != nil {
-		return nil, fmt.Errorf("knowledge service istemcisi için bağlantı oluşturulamadı: %w", err)
-	}
-	// Constructor adı NewKnowledgeQueryServiceClient olarak güncellendi.
-	return knowledgev1.NewKnowledgeQueryServiceClient(conn), nil
-}
-// --- DÜZELTME SONU ---
-
-func createSecureGrpcClient(cfg *config.Config, addr string) (*grpc.ClientConn, error) {
-	clientCert, err := tls.LoadX509KeyPair(cfg.AgentServiceCertPath, cfg.AgentServiceKeyPath)
-	if err != nil {
-		return nil, fmt.Errorf("istemci sertifikası yüklenemedi: %w", err)
-	}
-
-	caCert, err := os.ReadFile(cfg.GrpcTlsCaPath)
-	if err != nil {
-		return nil, fmt.Errorf("CA sertifikası okunamadı: %w", err)
-	}
-	caCertPool := x509.NewCertPool()
-	if !caCertPool.AppendCertsFromPEM(caCert) {
-		return nil, fmt.Errorf("CA sertifikası havuza eklenemedi")
+			serverName := strings.Split(targetURL, ":")[0]
+			creds := credentials.NewTLS(&tls.Config{
+				Certificates: []tls.Certificate{clientCert},
+				RootCAs:      caPool,
+				ServerName:   serverName,
+			})
+			opts = append(opts, grpc.WithTransportCredentials(creds))
+			log.Debug().Str("target", targetURL).Msg("🔒 mTLS bağlantısı hazırlanıyor")
+		}
+	} else {
+		log.Warn().Str("target", targetURL).Msg("⚠️ mTLS config eksik, INSECURE bağlanılıyor.")
+		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 
-	serverName := strings.Split(addr, ":")[0]
-	creds := credentials.NewTLS(&tls.Config{
-		Certificates: []tls.Certificate{clientCert},
-		RootCAs:      caCertPool,
-		ServerName:   serverName,
-		MinVersion:   tls.VersionTLS12,
-	})
-
-	target := fmt.Sprintf("passthrough:///%s", addr)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	conn, err := grpc.DialContext(ctx, target, grpc.WithTransportCredentials(creds), grpc.WithBlock())
-	if err != nil {
-		return nil, fmt.Errorf("gRPC sunucusuna (%s) bağlanılamadı: %w", addr, err)
-	}
-
-	return conn, nil
+	// Lazy Connection
+	return grpc.NewClient(targetURL, opts...)
 }

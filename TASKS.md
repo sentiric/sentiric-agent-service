@@ -6,3 +6,5 @@ Bu servisin mevcut ve gelecekteki tüm geliştirme görevleri, platformun merkez
 
 ---
 Bu belge, servise özel, çok küçük ve acil görevler için geçici bir not defteri olarak kullanılabilir.
+
+---
