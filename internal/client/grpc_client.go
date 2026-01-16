@@ -34,7 +34,7 @@ type Clients struct {
 }
 
 func NewClients(cfg *config.Config) (*Clients, error) {
-	log.Info().Msg("🔌 Servis bağlantıları kuruluyor...")
+	log.Info().Msg("🔌 Servis bağlantıları kuruluyor (v1.0.1 - URL Fix Applied)...")
 
 	// 1. User Service
 	userConn, err := createConnection(cfg, cfg.UserServiceURL)
@@ -44,16 +44,11 @@ func NewClients(cfg *config.Config) (*Clients, error) {
 	telephonyConn, err := createConnection(cfg, cfg.TelephonyActionURL)
 	if err != nil { return nil, err }
 
-	// Not: Diğer servisler (Media, STT vb.) şu an Agent tarafından doğrudan kullanılmıyor
-	// (Telephony Action üzerinden yönetiliyor). Ancak struct bütünlüğü için nil bırakabiliriz
-	// veya ileride lazım olursa buraya ekleyebiliriz.
-
 	log.Info().Msg("✅ İstemciler hazır.")
 
 	return &Clients{
 		User:            userv1.NewUserServiceClient(userConn),
 		TelephonyAction: telephonyv1.NewTelephonyActionServiceClient(telephonyConn),
-		// Diğer alanlar opsiyonel/ileriye dönük:
 		Media:     nil,
 		STT:       nil,
 		TTS:       nil,
@@ -65,24 +60,26 @@ func NewClients(cfg *config.Config) (*Clients, error) {
 func createConnection(cfg *config.Config, targetURL string) (*grpc.ClientConn, error) {
 	var opts []grpc.DialOption
 	
-	// [FIX] URL Parsing & Sanitization
-	// gRPC target olarak şema (https://) kabul etmez, sadece host:port ister.
-	// Ancak TLS konfigürasyonu için https olup olmadığını bilmemiz gerekebilir (burada mTLS zorunlu olduğu için varsayıyoruz).
-	
+	// [FIX] URL Sanitization: "https://" veya "http://" ön eklerini kesinlikle kaldır.
 	cleanTarget := targetURL
-	if strings.Contains(targetURL, "://") {
-		parts := strings.Split(targetURL, "://")
-		if len(parts) > 1 {
-			cleanTarget = parts[1]
-		}
+	if strings.HasPrefix(cleanTarget, "https://") {
+		cleanTarget = strings.TrimPrefix(cleanTarget, "https://")
+	} else if strings.HasPrefix(cleanTarget, "http://") {
+		cleanTarget = strings.TrimPrefix(cleanTarget, "http://")
 	}
-	
-	// ServerName (SNI) için portu ayır
+
+	// ServerName (SNI) için portu ayır (örn: "user-service:12011" -> "user-service")
 	serverName := strings.Split(cleanTarget, ":")[0]
+
+	// Log: Hedef adresi kontrol et (Genişletilmiş Debug)
+	log.Debug().
+		Str("original_url", targetURL).
+		Str("cleaned_target", cleanTarget).
+		Str("sni_server_name", serverName).
+		Msg("gRPC bağlantı girişimi")
 
 	// mTLS Kontrolü
 	if cfg.CertPath != "" && cfg.KeyPath != "" && cfg.CaPath != "" {
-		// Dosyaların varlığını kontrol et
 		if _, err := os.Stat(cfg.CertPath); os.IsNotExist(err) {
 			log.Warn().Str("path", cfg.CertPath).Msg("Sertifika dosyası bulunamadı, INSECURE moduna geçiliyor.")
 			opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -103,16 +100,16 @@ func createConnection(cfg *config.Config, targetURL string) (*grpc.ClientConn, e
 			creds := credentials.NewTLS(&tls.Config{
 				Certificates: []tls.Certificate{clientCert},
 				RootCAs:      caPool,
-				ServerName:   serverName,
+				ServerName:   serverName, // Kritik: IP değil Hostname olmalı
 			})
 			opts = append(opts, grpc.WithTransportCredentials(creds))
-			log.Debug().Str("target", cleanTarget).Str("sni", serverName).Msg("🔒 mTLS bağlantısı hazırlanıyor")
+			log.Debug().Str("target", cleanTarget).Msg("🔒 mTLS bağlantısı aktif")
 		}
 	} else {
 		log.Warn().Str("target", cleanTarget).Msg("⚠️ mTLS config eksik, INSECURE bağlanılıyor.")
 		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 
-	// Lazy Connection
+	// [FIX] cleanTarget kullanarak bağlan
 	return grpc.NewClient(cleanTarget, opts...)
 }
