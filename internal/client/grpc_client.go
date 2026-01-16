@@ -9,14 +9,13 @@ import (
 
 	"github.com/rs/zerolog/log"
 	
-	// --- CONTRACT IMPORTS (EKSİKSİZ) ---
 	dialogv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/dialog/v1"
 	mediav1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/media/v1"
 	sipv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/sip/v1"
 	sttv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/stt/v1"
-	telephonyv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/telephony/v1" // EKLENDİ
+	telephonyv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/telephony/v1"
 	ttsv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/tts/v1"
-	userv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/user/v1"           // EKLENDİ
+	userv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/user/v1"
 	
 	"github.com/sentiric/sentiric-agent-service/internal/config"
 	"google.golang.org/grpc"
@@ -65,6 +64,21 @@ func NewClients(cfg *config.Config) (*Clients, error) {
 
 func createConnection(cfg *config.Config, targetURL string) (*grpc.ClientConn, error) {
 	var opts []grpc.DialOption
+	
+	// [FIX] URL Parsing & Sanitization
+	// gRPC target olarak şema (https://) kabul etmez, sadece host:port ister.
+	// Ancak TLS konfigürasyonu için https olup olmadığını bilmemiz gerekebilir (burada mTLS zorunlu olduğu için varsayıyoruz).
+	
+	cleanTarget := targetURL
+	if strings.Contains(targetURL, "://") {
+		parts := strings.Split(targetURL, "://")
+		if len(parts) > 1 {
+			cleanTarget = parts[1]
+		}
+	}
+	
+	// ServerName (SNI) için portu ayır
+	serverName := strings.Split(cleanTarget, ":")[0]
 
 	// mTLS Kontrolü
 	if cfg.CertPath != "" && cfg.KeyPath != "" && cfg.CaPath != "" {
@@ -86,20 +100,19 @@ func createConnection(cfg *config.Config, targetURL string) (*grpc.ClientConn, e
 				return nil, fmt.Errorf("failed to append CA")
 			}
 
-			serverName := strings.Split(targetURL, ":")[0]
 			creds := credentials.NewTLS(&tls.Config{
 				Certificates: []tls.Certificate{clientCert},
 				RootCAs:      caPool,
 				ServerName:   serverName,
 			})
 			opts = append(opts, grpc.WithTransportCredentials(creds))
-			log.Debug().Str("target", targetURL).Msg("🔒 mTLS bağlantısı hazırlanıyor")
+			log.Debug().Str("target", cleanTarget).Str("sni", serverName).Msg("🔒 mTLS bağlantısı hazırlanıyor")
 		}
 	} else {
-		log.Warn().Str("target", targetURL).Msg("⚠️ mTLS config eksik, INSECURE bağlanılıyor.")
+		log.Warn().Str("target", cleanTarget).Msg("⚠️ mTLS config eksik, INSECURE bağlanılıyor.")
 		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 
 	// Lazy Connection
-	return grpc.NewClient(targetURL, opts...)
+	return grpc.NewClient(cleanTarget, opts...)
 }
