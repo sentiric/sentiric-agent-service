@@ -7,6 +7,7 @@ import (
 
 	"github.com/rs/zerolog"
 	eventv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/event/v1"
+	mediav1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/media/v1"
 	telephonyv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/telephony/v1"
 	"github.com/sentiric/sentiric-agent-service/internal/client"
 	"github.com/sentiric/sentiric-agent-service/internal/state"
@@ -41,13 +42,29 @@ func (h *CallHandler) HandleCallStarted(ctx context.Context, event *state.CallEv
 	go h.triggerPipeline(context.Background(), event.CallID, event.TraceID, event.Media)
 }
 
-// HandleCallEnded: Eksik metod eklendi
+// HandleCallEnded: Çağrı bittiğinde çalışır ve kaynakları temizler
 func (h *CallHandler) HandleCallEnded(ctx context.Context, event *state.CallEvent) {
 	log := h.log.With().Str("call_id", event.CallID).Logger()
-	log.Info().Msg("📴 Çağrı sonlandı.")
+	log.Info().Msg("📴 Çağrı sonlandı. Temizlik işlemleri başlatılıyor.")
 	
-	// Gelecekte: Redis temizliği veya raporlama burada yapılabilir.
-	// Şimdilik sadece logluyoruz.
+    // DÜZELTME: Medya kaynaklarını serbest bırak
+    if event.Media != nil && event.Media.ServerRtpPort > 0 {
+        // float64 -> uint32 dönüşümü (JSON unmarshal float döner)
+        port := uint32(event.Media.ServerRtpPort)
+        
+        log.Info().Uint32("port", port).Msg("Media Service'e ReleasePort komutu gönderiliyor...")
+        
+        req := &mediav1.ReleasePortRequest{RtpPort: port}
+        _, err := h.clients.Media.ReleasePort(context.Background(), req)
+        if err != nil {
+            // Hata olsa bile kritik değil, media-service zaten inactivity timeout ile temizler
+            log.Warn().Err(err).Msg("Port serbest bırakılırken hata oluştu (Inactivity timeout devreye girecek).")
+        } else {
+            log.Info().Msg("Port başarıyla serbest bırakıldı.")
+        }
+    } else {
+        log.Warn().Msg("Etkinlikte medya bilgisi yok, port temizlenemedi.")
+    }
 }
 
 func (h *CallHandler) triggerPipeline(ctx context.Context, callID, traceID string, media *state.MediaInfoPayload) {
