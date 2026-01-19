@@ -42,16 +42,19 @@ func (h *CallHandler) HandleCallStarted(ctx context.Context, event *state.CallEv
 	go h.triggerPipeline(context.Background(), event.CallID, event.TraceID, event.Media)
 }
 
-// HandleCallEnded: Çağrı bittiğinde çalışır ve kaynakları temizler (ZOMBIE STREAM FIX)
+// HandleCallEnded: Çağrı bittiğinde çalışır ve kaynakları temizler (CRASH FIX)
 func (h *CallHandler) HandleCallEnded(ctx context.Context, event *state.CallEvent) {
 	log := h.log.With().Str("call_id", event.CallID).Logger()
 	log.Info().Msg("📴 Çağrı sonlandı. Temizlik işlemleri başlatılıyor.")
 	
-    // DÜZELTME: Medya kaynaklarını serbest bırak
-    // Olay payload'ında MediaInfo olmayabilir, bu durumda session'dan (Redis) bakılmalı.
-    // Ancak basitlik için şimdilik gelen event'te varsa kullanıyoruz.
-    if event.Media != nil && event.Media.ServerRtpPort > 0 {
-        // float64 -> uint32 dönüşümü (JSON unmarshal float döner)
+    // DÜZELTME: Nil Pointer Koruması
+    if event.Media == nil {
+        log.Warn().Msg("Etkinlikte medya bilgisi yok, port temizlenemedi (Timeout'a güveniliyor).")
+        return
+    }
+
+    if event.Media.ServerRtpPort > 0 {
+        // float64 -> uint32 dönüşümü
         port := uint32(event.Media.ServerRtpPort)
         
         log.Info().Uint32("port", port).Msg("Media Service'e ReleasePort komutu gönderiliyor...")
@@ -59,14 +62,10 @@ func (h *CallHandler) HandleCallEnded(ctx context.Context, event *state.CallEven
         req := &mediav1.ReleasePortRequest{RtpPort: port}
         _, err := h.clients.Media.ReleasePort(context.Background(), req)
         if err != nil {
-            // Hata olsa bile kritik değil, media-service zaten inactivity timeout ile temizler
-            log.Warn().Err(err).Msg("Port serbest bırakılırken hata oluştu (Inactivity timeout devreye girecek).")
+            log.Warn().Err(err).Msg("Port serbest bırakılırken hata oluştu.")
         } else {
             log.Info().Msg("Port başarıyla serbest bırakıldı.")
         }
-    } else {
-        // Redis'ten durumu çekip portu bulabilirdik ama bu MVP için yeterli.
-        log.Warn().Msg("Etkinlikte medya bilgisi yok, port temizlenemedi (Timeout'a güveniliyor).")
     }
 }
 
