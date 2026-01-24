@@ -1,12 +1,15 @@
-// ========== DOSYA: sentiric-agent-service/internal/handler/event_handler.go (TAM VE NİHAİ İÇERİK) ==========
 package handler
 
 import (
 	"context"
-	"encoding/json"
-
+	
+	"google.golang.org/protobuf/proto"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
+	
+	eventv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/event/v1"
+	
+	// constants paketini kullanmazsak silmeliyiz. Ancak Event Type kontrolü için kullanmak daha iyidir.
 	"github.com/sentiric/sentiric-agent-service/internal/constants"
 	"github.com/sentiric/sentiric-agent-service/internal/ctxlogger"
 	"github.com/sentiric/sentiric-agent-service/internal/state"
@@ -33,55 +36,46 @@ func NewEventHandler(
 }
 
 func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
-	var genericEvent struct {
-		EventType string `json:"eventType"`
-		CallID    string `json:"callId"`
-		TraceID   string `json:"traceId"`
-	}
-
-	h.log.Debug().Bytes("raw_message", body).Msg("RabbitMQ'dan ham mesaj alındı")
-
-	if err := json.Unmarshal(body, &genericEvent); err != nil {
-		h.log.Error().Err(err).Bytes("raw_message", body).Msg("Hata: Mesaj JSON formatında değil")
-		h.eventsFailed.WithLabelValues("unknown", "json_unmarshal").Inc()
+	var protoEvent eventv1.CallStartedEvent
+	
+	// constants.EventTypeCallStarted string değerini kullanıyoruz
+	if err := proto.Unmarshal(body, &protoEvent); err == nil && protoEvent.EventType == string(constants.EventTypeCallStarted) {
+		h.handleCallStartedProto(&protoEvent)
 		return
 	}
+	
+	h.log.Warn().Msg("Protobuf decode edilemedi veya bilinmeyen olay tipi.")
+	h.eventsFailed.WithLabelValues("unknown", "proto_unmarshal").Inc()
+}
 
-	h.eventsProcessed.WithLabelValues(genericEvent.EventType).Inc()
+func (h *EventHandler) handleCallStartedProto(event *eventv1.CallStartedEvent) {
 	l := h.log.With().
-		Str("call_id", genericEvent.CallID).
-		Str("trace_id", genericEvent.TraceID).
-		Str("event_type", genericEvent.EventType).
+		Str("call_id", event.CallId).
+		Str("trace_id", event.TraceId).
+		Str("event_type", event.EventType).
 		Logger()
+	
+	h.eventsProcessed.WithLabelValues(event.EventType).Inc()
+	l.Info().Msg("🚀 PROTOBUF 'call.started' olayı başarıyla alındı.")
 
 	ctx := ctxlogger.ToContext(context.Background(), l)
-
-	switch constants.EventType(genericEvent.EventType) {
-	case constants.EventTypeCallStarted:
-		l.Info().Msg("Olay alındı ve işlenmeye başlandı.")
-		var event state.CallEvent
-		if err := json.Unmarshal(body, &event); err != nil {
-			l.Error().Err(err).Msg("call.started olayı parse edilemedi. Gelen veri ile Go struct'ı arasında uyumsuzluk var.")
-			h.eventsFailed.WithLabelValues(genericEvent.EventType, "json_unmarshal").Inc()
-			return
+	
+	var mediaInfo *state.MediaInfoPayload
+	if event.MediaInfo != nil {
+		mediaInfo = &state.MediaInfoPayload{
+			CallerRtpAddr: event.MediaInfo.CallerRtpAddr,
+			ServerRtpPort: float64(event.MediaInfo.ServerRtpPort),
 		}
-		go h.callHandler.HandleCallStarted(ctx, &event)
-
-	case constants.EventTypeCallEnded:
-		l.Info().Msg("Olay alındı ve işlenmeye başlandı.")
-		var event state.CallEvent
-		if err := json.Unmarshal(body, &event); err != nil {
-			l.Error().Err(err).Msg("call.ended olayı parse edilemedi.")
-			h.eventsFailed.WithLabelValues(genericEvent.EventType, "json_unmarshal").Inc()
-			return
-		}
-		go h.callHandler.HandleCallEnded(ctx, &event)
-
-	default:
-		// --- DEĞİŞTİRİLDİ ---
-		// Olayın ne olduğunu logluyoruz, ancak seviyesini `DEBUG` olarak ayarlıyoruz.
-		// Bu sayede normal çalışmada logları kirletmez, ama hata ayıklama gerektiğinde
-		// hangi olayların göz ardı edildiğini görebiliriz.
-		l.Debug().Msg("Agent-service için tanımlanmamış olay türü, görmezden geliniyor.")
 	}
+
+	internalEvent := &state.CallEvent{
+		EventType: event.EventType,
+		CallID:    event.CallId,
+		TraceID:   event.TraceId,
+		Media:     mediaInfo,
+		From:      event.FromUri,
+		Dialplan:  nil, 
+	}
+
+	go h.callHandler.HandleCallStarted(ctx, internalEvent)
 }

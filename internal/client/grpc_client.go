@@ -9,12 +9,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 	
-	dialogv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/dialog/v1"
-	mediav1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/media/v1"
-	sipv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/sip/v1"
-	sttv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/stt/v1"
 	telephonyv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/telephony/v1"
-	ttsv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/tts/v1"
 	userv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/user/v1"
 	
 	"github.com/sentiric/sentiric-agent-service/internal/config"
@@ -23,18 +18,14 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
+// Clients struct'ını temizledik. Artık sadece kullanılan servisler var.
 type Clients struct {
 	User            userv1.UserServiceClient
 	TelephonyAction telephonyv1.TelephonyActionServiceClient
-	Media           mediav1.MediaServiceClient
-	STT             sttv1.SttGatewayServiceClient
-	TTS             ttsv1.TtsGatewayServiceClient
-	Dialog          dialogv1.DialogServiceClient
-	Signaling       sipv1.SipSignalingServiceClient
 }
 
 func NewClients(cfg *config.Config) (*Clients, error) {
-	log.Info().Msg("🔌 Servis bağlantıları kuruluyor (v1.0.1 - URL Fix Applied)...")
+	log.Info().Msg("🔌 Servis bağlantıları kuruluyor...")
 
 	// 1. User Service
 	userConn, err := createConnection(cfg, cfg.UserServiceURL)
@@ -49,18 +40,12 @@ func NewClients(cfg *config.Config) (*Clients, error) {
 	return &Clients{
 		User:            userv1.NewUserServiceClient(userConn),
 		TelephonyAction: telephonyv1.NewTelephonyActionServiceClient(telephonyConn),
-		Media:     nil,
-		STT:       nil,
-		TTS:       nil,
-		Dialog:    nil,
-		Signaling: nil,
 	}, nil
 }
 
 func createConnection(cfg *config.Config, targetURL string) (*grpc.ClientConn, error) {
 	var opts []grpc.DialOption
 	
-	// [FIX] URL Sanitization: "https://" veya "http://" ön eklerini kesinlikle kaldır.
 	cleanTarget := targetURL
 	if strings.HasPrefix(cleanTarget, "https://") {
 		cleanTarget = strings.TrimPrefix(cleanTarget, "https://")
@@ -68,17 +53,8 @@ func createConnection(cfg *config.Config, targetURL string) (*grpc.ClientConn, e
 		cleanTarget = strings.TrimPrefix(cleanTarget, "http://")
 	}
 
-	// ServerName (SNI) için portu ayır (örn: "user-service:12011" -> "user-service")
 	serverName := strings.Split(cleanTarget, ":")[0]
 
-	// Log: Hedef adresi kontrol et (Genişletilmiş Debug)
-	log.Debug().
-		Str("original_url", targetURL).
-		Str("cleaned_target", cleanTarget).
-		Str("sni_server_name", serverName).
-		Msg("gRPC bağlantı girişimi")
-
-	// mTLS Kontrolü
 	if cfg.CertPath != "" && cfg.KeyPath != "" && cfg.CaPath != "" {
 		if _, err := os.Stat(cfg.CertPath); os.IsNotExist(err) {
 			log.Warn().Str("path", cfg.CertPath).Msg("Sertifika dosyası bulunamadı, INSECURE moduna geçiliyor.")
@@ -100,16 +76,14 @@ func createConnection(cfg *config.Config, targetURL string) (*grpc.ClientConn, e
 			creds := credentials.NewTLS(&tls.Config{
 				Certificates: []tls.Certificate{clientCert},
 				RootCAs:      caPool,
-				ServerName:   serverName, // Kritik: IP değil Hostname olmalı
+				ServerName:   serverName,
 			})
 			opts = append(opts, grpc.WithTransportCredentials(creds))
-			log.Debug().Str("target", cleanTarget).Msg("🔒 mTLS bağlantısı aktif")
 		}
 	} else {
-		log.Warn().Str("target", cleanTarget).Msg("⚠️ mTLS config eksik, INSECURE bağlanılıyor.")
+		log.Warn().Msg("mTLS config eksik, INSECURE bağlanılıyor.")
 		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 
-	// [FIX] cleanTarget kullanarak bağlan
 	return grpc.NewClient(cleanTarget, opts...)
 }

@@ -10,9 +10,11 @@ require (
 	github.com/rabbitmq/amqp091-go v1.10.0
 	github.com/rs/zerolog v1.34.0
 	// GÜNCELLEME: v1.13.3
-	github.com/sentiric/sentiric-contracts v1.13.3
+	github.com/sentiric/sentiric-contracts v1.13.4
 	google.golang.org/grpc v1.75.1
 )
+
+require google.golang.org/protobuf v1.36.10
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
@@ -35,5 +37,4 @@ require (
 	golang.org/x/sys v0.36.0 // indirect
 	golang.org/x/text v0.29.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250908214217-97024824d090 // indirect
-	google.golang.org/protobuf v1.36.10 // indirect
 )
