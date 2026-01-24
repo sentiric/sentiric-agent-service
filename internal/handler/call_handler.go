@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
-	"strings"
+    // "strings" <- SİLİNDİ
 
 	"github.com/rs/zerolog"
 	eventv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/event/v1"
@@ -48,12 +48,11 @@ func (h *CallHandler) HandleCallStarted(ctx context.Context, event *state.CallEv
 		return
 	}
 
-	// --- KRİTİK DEĞİŞİKLİK: FALLBACK MANTIĞI ---
+	// FALLBACK: B2BUA Dialplan bilgisini göndermediği için bu blok çalışacak.
 	if event.Dialplan == nil || event.Dialplan.Action == nil {
 		l.Warn().Msg("⚠️ Dialplan bilgisi eksik (B2BUA Kaynaklı). TEST MODU: Doğrudan ses testi için ANONS çalınıyor.")
 		
-		// AI yerine doğrudan 'Connecting' sesini çalıyoruz.
-		// Bu sayede RTP/NAT testi yapmış olacağız.
+		// "ANNOUNCE_SYSTEM_CONNECTING" veritabanındaki ID'dir.
 		go h.playAnnouncementAndHangup(context.Background(), event.CallID, "ANNOUNCE_SYSTEM_CONNECTING", "system", "tr", event.Media)
 		return
 	}
@@ -99,7 +98,7 @@ func (h *CallHandler) HandleCallEnded(ctx context.Context, event *state.CallEven
 		if _, err := h.clients.Media.ReleasePort(context.Background(), req); err != nil {
 			log.Warn().Err(err).Msg("Port serbest bırakma hatası")
 		} else {
-			log.Info().Msg("Port serbest bırakıldı.")
+			log.Info().Msg("Port başarıyla serbest bırakıldı.")
 		}
 	}
 }
@@ -112,10 +111,9 @@ func (h *CallHandler) playAnnouncementAndHangup(ctx context.Context, callID, ann
 	audioPath, err := database.GetAnnouncementPathFromDB(h.db, announceID, tenantID, lang)
 	if err != nil {
 		l.Error().Err(err).Msg("Anons dosyası DB'de bulunamadı, varsayılan kullanılıyor.")
-		audioPath = "audio/tr/system/connecting.wav" // Garantili dosya
+		audioPath = "audio/tr/system/connecting.wav" 
 	}
 
-	// Media Service "file://" şeması bekler
 	fullURI := fmt.Sprintf("file://%s", audioPath)
 	l.Info().Str("uri", fullURI).Msg("🔊 Medya Servisine Oynatma Emri Gönderiliyor...")
 
