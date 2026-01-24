@@ -107,10 +107,21 @@ func (h *CallHandler) HandleCallEnded(ctx context.Context, event *state.CallEven
 func (h *CallHandler) playAnnouncementAndHangup(ctx context.Context, callID, announceID, tenantID, lang string, media *state.MediaInfoPayload) {
 	l := h.log.With().Str("call_id", callID).Str("announce_id", announceID).Logger()
 
+	// --- DEFANSİF KODLAMA (NIL CHECK) ---
+	if h.db == nil {
+		l.Error().Msg("PANIC ÖNLENDİ: Veritabanı bağlantısı (h.db) nil!")
+		return
+	}
+	if h.clients == nil || h.clients.Media == nil {
+		l.Error().Msg("PANIC ÖNLENDİ: Media Service istemcisi (h.clients.Media) nil!")
+		return
+	}
+	// ------------------------------------
+
 	// 1. Veritabanından Ses Dosyasının Yolunu Bul
 	audioPath, err := database.GetAnnouncementPathFromDB(h.db, announceID, tenantID, lang)
 	if err != nil {
-		l.Error().Err(err).Msg("Anons dosyası DB'de bulunamadı, varsayılan kullanılıyor.")
+		l.Error().Err(err).Msg("Anons dosyası veritabanında bulunamadı, varsayılan kullanılıyor.")
 		audioPath = "audio/tr/system/connecting.wav" 
 	}
 
