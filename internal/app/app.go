@@ -7,7 +7,6 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
-    // "time" importu kaldırıldı
 
 	"github.com/go-redis/redis/v8"
 	"github.com/rabbitmq/amqp091-go"
@@ -51,7 +50,9 @@ func (a *App) Run() {
 
 	// 4. Handler ve State Manager
 	stateManager := state.NewManager(redisClient)
-	callHandler := handler.NewCallHandler(clients, stateManager, a.Log)
+	
+	// DÜZELTME: CallHandler artık DB bağlantısını da alıyor
+	callHandler := handler.NewCallHandler(clients, stateManager, db, a.Log)
 
 	// EventHandler Başlatma
 	eventHandler := handler.NewEventHandler(

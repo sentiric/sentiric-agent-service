@@ -2,8 +2,9 @@ package handler
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"io"
-	"strings"
 
 	"github.com/rs/zerolog"
 	eventv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/event/v1"
@@ -23,13 +24,17 @@ const (
 type CallHandler struct {
 	clients      *client.Clients
 	stateManager *state.Manager
+	// YENİ: Veritabanı bağlantısı eklendi
+	db           *sql.DB
 	log          zerolog.Logger
 }
 
-func NewCallHandler(clients *client.Clients, sm *state.Manager, log zerolog.Logger) *CallHandler {
+// YENİ: Constructor db parametresi alıyor
+func NewCallHandler(clients *client.Clients, sm *state.Manager, db *sql.DB, log zerolog.Logger) *CallHandler {
 	return &CallHandler{
 		clients:      clients,
 		stateManager: sm,
+		db:           db,
 		log:          log,
 	}
 }
@@ -55,11 +60,18 @@ func (h *CallHandler) HandleCallStarted(ctx context.Context, event *state.CallEv
 
 	switch action {
 	case ActionPlayAnnouncement:
-		// --- YENİ EKLENEN KISIM ---
-		// Basit anons çalma mantığı
+		// Dinamik anons çalma mantığı
 		if data := event.Dialplan.Action.ActionData; data != nil {
 			if announceID, ok := data.Data["announcement_id"]; ok {
-				go h.playAnnouncementAndHangup(context.Background(), event.CallID, announceID, event.Media)
+				// TenantID ve LanguageCode bilgisini event'ten çekiyoruz
+				tenantID := event.Dialplan.TenantID
+				lang := event.Dialplan.InboundRoute.DefaultLanguageCode
+				if lang == "" {
+					lang = "tr" // Varsayılan dil
+				}
+				
+				// Veritabanı sorgusu ile gerçek path'i bul
+				go h.playAnnouncementAndHangup(context.Background(), event.CallID, announceID, tenantID, lang, event.Media)
 				return
 			}
 		}
@@ -99,52 +111,38 @@ func (h *CallHandler) HandleCallEnded(ctx context.Context, event *state.CallEven
 }
 
 // playAnnouncementAndHangup: Anons çalar ve sonra telefonu kapatır.
-func (h *CallHandler) playAnnouncementAndHangup(ctx context.Context, callID, announceID string, media *state.MediaInfoPayload) {
+func (h *CallHandler) playAnnouncementAndHangup(ctx context.Context, callID, announceID, tenantID, lang string, media *state.MediaInfoPayload) {
 	l := h.log.With().Str("call_id", callID).Str("announce_id", announceID).Logger()
 
-	// 1. Dosya Yolunu Bul (Veritabanı bağlantısı olmadığı için hardcode veya config kullanabiliriz)
-	// Şimdilik test için statik bir yol üretiyoruz. Gerçekte DB'den gelmeli.
-	// Örn: "ANNOUNCE_SYSTEM_CONNECTING" -> "file://audio/tr/system/connecting.wav"
-	// Basitleştirme: ID'yi doğrudan path'e çeviriyoruz.
-	
-	// NOT: Buradaki path, media-service container'ı içindeki yoldur.
-	// Media service assets klasörünü mount etmiş olmalı.
-	// Örnek ID: "ANNOUNCE_SYSTEM_CONNECTING"
-	// Beklenen Path: "file://audio/tr/system/connecting.wav"
-	
-	// Geçici Mapping (DB yerine)
-	var audioPath string
-	if strings.Contains(announceID, "CONNECTING") {
-		audioPath = "file://audio/tr/system/connecting.wav"
-	} else if strings.Contains(announceID, "ERROR") {
-		audioPath = "file://audio/tr/system/technical_difficulty.wav"
-	} else {
-		// Varsayılan
-		audioPath = "file://audio/tr/system/welcome_anonymous.wav"
+	// 1. Veritabanından Ses Dosyasının Yolunu Bul
+	// database paketindeki hazır fonksiyonu kullanıyoruz.
+	audioPath, err := database.GetAnnouncementPathFromDB(h.db, announceID, tenantID, lang)
+	if err != nil {
+		l.Error().Err(err).Msg("Anons dosyası veritabanında bulunamadı. Fallback uygulanıyor.")
+		// Fallback: Veritabanı hatası durumunda hardcoded bir path dene veya hata dön.
+		audioPath = "audio/tr/system/technical_difficulty.wav"
 	}
 
-	l.Info().Str("path", audioPath).Msg("Anons çalınıyor...")
+	// Media Service "file://" şeması bekler
+	fullURI := fmt.Sprintf("file://%s", audioPath)
+	l.Info().Str("uri", fullURI).Msg("Anons çalınıyor...")
 
 	// 2. PlayAudio Komutu
 	playReq := &mediav1.PlayAudioRequest{
-		AudioUri:       audioPath,
+		AudioUri:       fullURI,
 		ServerRtpPort:  uint32(media.ServerRtpPort),
-		RtpTargetAddr:  media.CallerRtpAddr, // NAT Latching için ilk hedef (tahmini)
+		RtpTargetAddr:  media.CallerRtpAddr,
 	}
 
-	_, err := h.clients.Media.PlayAudio(ctx, playReq)
+	_, err = h.clients.Media.PlayAudio(ctx, playReq)
 	if err != nil {
-		l.Error().Err(err).Msg("Anons çalınamadı.")
+		l.Error().Err(err).Msg("Anons çalınamadı (Media Service hatası).")
 	} else {
 		l.Info().Msg("Anons komutu iletildi.")
 	}
 
-	// Anonsun bitmesi için bekle (Basitçe 5 saniye)
-	// Gerçekte Media Service'ten "PlaybackFinished" olayı beklenmelidir.
-	// Şimdilik hard timeout.
-	// time.Sleep(5 * time.Second) <- Go'da blocking sleep yapmamalıyız, ama goroutine içindeyiz.
-	// Ancak import sorunu olmaması için sleep'i atlıyoruz ve hemen kapatmıyoruz.
-	// Kullanıcı kendisi kapatır veya timeout olur.
+	// Not: Burada 'PlaybackFinished' olayını beklemek daha doğrudur ancak 
+	// şimdilik basit tutmak için asenkron bırakıyoruz.
 }
 
 func (h *CallHandler) triggerPipeline(ctx context.Context, callID, traceID string, media *state.MediaInfoPayload) {
