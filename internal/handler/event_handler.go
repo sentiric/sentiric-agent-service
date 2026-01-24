@@ -9,7 +9,6 @@ import (
 	
 	eventv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/event/v1"
 	
-	// constants paketini kullanmazsak silmeliyiz. Ancak Event Type kontrolü için kullanmak daha iyidir.
 	"github.com/sentiric/sentiric-agent-service/internal/constants"
 	"github.com/sentiric/sentiric-agent-service/internal/ctxlogger"
 	"github.com/sentiric/sentiric-agent-service/internal/state"
@@ -36,6 +35,7 @@ func NewEventHandler(
 }
 
 func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
+	// [MASTER PLAN]: Protobuf Decode
 	var protoEvent eventv1.CallStartedEvent
 	
 	// constants.EventTypeCallStarted string değerini kullanıyoruz
@@ -44,7 +44,7 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 		return
 	}
 	
-	h.log.Warn().Msg("Protobuf decode edilemedi veya bilinmeyen olay tipi.")
+	h.log.Warn().Msg("Protobuf decode edilemedi veya bilinmeyen olay tipi. Eski JSON formatı olabilir.")
 	h.eventsFailed.WithLabelValues("unknown", "proto_unmarshal").Inc()
 }
 
