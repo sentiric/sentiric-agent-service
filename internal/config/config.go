@@ -16,7 +16,7 @@ type Config struct {
 	RedisURL    string
 	MetricsPort string
 
-	// Hedef Servisler
+	// Hedef Servisler (Sadece gerekli olanlar)
 	UserServiceURL      string
 	TelephonyActionURL  string
 
@@ -41,7 +41,6 @@ func Load() (*Config, error) {
 		LogLevel:    getEnvWithDefault("LOG_LEVEL", "info"),
 		PostgresURL: GetEnvOrFail("POSTGRES_URL"),
 		
-		// DÜZELTME: Bu alanlar kritik olduğu için Fail etmeli, tek parametre.
 		RabbitMQURL: GetEnvOrFail("RABBITMQ_URL"),
 		RedisURL:    GetEnvOrFail("REDIS_URL"),
 		
@@ -59,7 +58,6 @@ func Load() (*Config, error) {
 	}, nil
 }
 
-// GetEnvOrFail: Zorunlu değişkenler için
 func GetEnvOrFail(key string) string {
 	value, exists := os.LookupEnv(key)
 	if !exists {
@@ -68,7 +66,6 @@ func GetEnvOrFail(key string) string {
 	return value
 }
 
-// getEnvWithDefault: Opsiyonel değişkenler için
 func getEnvWithDefault(key, fallback string) string {
 	val := os.Getenv(key)
 	if val == "" {

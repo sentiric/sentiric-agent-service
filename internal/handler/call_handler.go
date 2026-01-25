@@ -6,7 +6,8 @@ import (
 	"fmt"
 
 	"github.com/rs/zerolog"
-	// Bu importlar ZORUNLUDUR:
+	
+	// Contracts v1.13.5
 	eventv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/event/v1"
 	telephonyv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/telephony/v1"
 	
@@ -40,11 +41,18 @@ func (h *CallHandler) HandleCallStarted(ctx context.Context, event *state.CallEv
 		return
 	}
 
+	// Dialplan yoksa varsayılan (fallback) akış
 	if event.Dialplan == nil {
 		l.Info().Msg("Dialplan yok, varsayılan karşılama başlatılıyor.")
 		go h.speakWelcomeMessage(context.Background(), event.CallID, "coqui:default", event.Media)
 		return
 	}
+    
+    // Dialplan varsa (Örn: START_AI_CONVERSATION)
+    // Gelecekte buraya SAGA veya Action Handler eklenecek.
+    // Şimdilik test için "Merhaba" diyoruz.
+    l.Info().Msg("Dialplan mevcut, işlem başlatılıyor.")
+    go h.speakWelcomeMessage(context.Background(), event.CallID, "coqui:default", event.Media)
 }
 
 func (h *CallHandler) HandleCallEnded(ctx context.Context, event *state.CallEvent) {
@@ -63,11 +71,12 @@ func (h *CallHandler) speakWelcomeMessage(ctx context.Context, callID, voiceID s
 
 	req := &telephonyv1.SpeakTextRequest{
 		CallId:    callID,
-		Text:      "Merhaba, Sentiric iletişim sistemine hoş geldiniz.",
+		Text:      "Merhaba, Sentiric iletişim sistemine hoş geldiniz. Size nasıl yardımcı olabilirim?",
 		VoiceId:   voiceID,
 		MediaInfo: mediaInfoProto,
 	}
 
+    // TelephonyAction'a gRPC çağrısı
 	_, err := h.clients.TelephonyAction.SpeakText(ctx, req)
 	if err != nil {
 		l.Error().Err(err).Msg("❌ SpeakText başarısız oldu.")
@@ -76,6 +85,7 @@ func (h *CallHandler) speakWelcomeMessage(ctx context.Context, callID, voiceID s
 	}
 }
 
+// Anons çalma (WAV dosyası)
 func (h *CallHandler) playAnnouncementAndHangup(ctx context.Context, callID, announceID, tenantID, lang string, media *state.MediaInfoPayload) {
 	l := h.log.With().Str("call_id", callID).Str("announce_id", announceID).Logger()
 

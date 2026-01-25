@@ -7,6 +7,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 	
+	// Contracts Import
 	eventv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/event/v1"
 	
 	"github.com/sentiric/sentiric-agent-service/internal/constants"
@@ -35,16 +36,19 @@ func NewEventHandler(
 }
 
 func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
-	// [MASTER PLAN]: Protobuf Decode
+	// [YENİ] Sadece Protobuf decode denenir. JSON desteği kaldırıldı.
 	var protoEvent eventv1.CallStartedEvent
 	
-	// constants.EventTypeCallStarted string değerini kullanıyoruz
-	if err := proto.Unmarshal(body, &protoEvent); err == nil && protoEvent.EventType == string(constants.EventTypeCallStarted) {
-		h.handleCallStartedProto(&protoEvent)
-		return
+	// Protobuf unmarshal işlemi
+	if err := proto.Unmarshal(body, &protoEvent); err == nil {
+        // EventType kontrolü (Opsiyonel, B2BUA doğru doldurmalı)
+		if protoEvent.EventType == string(constants.EventTypeCallStarted) || protoEvent.EventType == "" {
+		    h.handleCallStartedProto(&protoEvent)
+		    return
+        }
 	}
 	
-	h.log.Warn().Msg("Protobuf decode edilemedi veya bilinmeyen olay tipi. Eski JSON formatı olabilir.")
+	h.log.Warn().Msg("Mesaj işlenemedi. Protobuf decode hatası veya bilinmeyen format.")
 	h.eventsFailed.WithLabelValues("unknown", "proto_unmarshal").Inc()
 }
 
@@ -56,10 +60,11 @@ func (h *EventHandler) handleCallStartedProto(event *eventv1.CallStartedEvent) {
 		Logger()
 	
 	h.eventsProcessed.WithLabelValues(event.EventType).Inc()
-	l.Info().Msg("🚀 PROTOBUF 'call.started' olayı başarıyla alındı.")
+	l.Info().Msg("🚀 PROTOBUF 'call.started' olayı alındı ve işleniyor.")
 
 	ctx := ctxlogger.ToContext(context.Background(), l)
 	
+	// Protobuf -> Internal State dönüşümü
 	var mediaInfo *state.MediaInfoPayload
 	if event.MediaInfo != nil {
 		mediaInfo = &state.MediaInfoPayload{
@@ -67,6 +72,12 @@ func (h *EventHandler) handleCallStartedProto(event *eventv1.CallStartedEvent) {
 			ServerRtpPort: float64(event.MediaInfo.ServerRtpPort),
 		}
 	}
+    
+    // Dialplan dönüşümü (Basitleştirilmiş)
+    // Şimdilik dialplan bilgisini event'ten tam almıyor olabiliriz,
+    // Agent ileride kendi DB'sinden veya event'in "dialplan_resolution" alanından okuyacak.
+    // Şimdilik nil geçiyoruz, CallHandler bunu "varsayılan akış" olarak ele alacak.
+    // (Gelişmiş implementasyon sonraki adımda yapılabilir)
 
 	internalEvent := &state.CallEvent{
 		EventType: event.EventType,
