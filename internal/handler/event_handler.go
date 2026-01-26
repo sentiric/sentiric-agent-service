@@ -2,14 +2,14 @@ package handler
 
 import (
 	"context"
-	
-	"google.golang.org/protobuf/proto"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
-	
+	"google.golang.org/protobuf/proto"
+
 	// Contracts Import
 	eventv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/event/v1"
-	
+
 	"github.com/sentiric/sentiric-agent-service/internal/constants"
 	"github.com/sentiric/sentiric-agent-service/internal/ctxlogger"
 	"github.com/sentiric/sentiric-agent-service/internal/state"
@@ -36,18 +36,18 @@ func NewEventHandler(
 }
 
 func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
-	// [YENİ] Sadece Protobuf decode denenir. JSON desteği kaldırıldı.
 	var protoEvent eventv1.CallStartedEvent
-	
+
 	// Protobuf unmarshal işlemi
 	if err := proto.Unmarshal(body, &protoEvent); err == nil {
-        // EventType kontrolü (Opsiyonel, B2BUA doğru doldurmalı)
+		// EventType kontrolü
 		if protoEvent.EventType == string(constants.EventTypeCallStarted) || protoEvent.EventType == "" {
-		    h.handleCallStartedProto(&protoEvent)
-		    return
-        }
+			h.handleCallStartedProto(&protoEvent)
+			return
+		}
+		// Diğer event tipleri buraya eklenebilir (switch-case)
 	}
-	
+
 	h.log.Warn().Msg("Mesaj işlenemedi. Protobuf decode hatası veya bilinmeyen format.")
 	h.eventsFailed.WithLabelValues("unknown", "proto_unmarshal").Inc()
 }
@@ -58,13 +58,13 @@ func (h *EventHandler) handleCallStartedProto(event *eventv1.CallStartedEvent) {
 		Str("trace_id", event.TraceId).
 		Str("event_type", event.EventType).
 		Logger()
-	
+
 	h.eventsProcessed.WithLabelValues(event.EventType).Inc()
 	l.Info().Msg("🚀 PROTOBUF 'call.started' olayı alındı ve işleniyor.")
 
 	ctx := ctxlogger.ToContext(context.Background(), l)
-	
-	// Protobuf -> Internal State dönüşümü
+
+	// 1. Media Info Dönüşümü
 	var mediaInfo *state.MediaInfoPayload
 	if event.MediaInfo != nil {
 		mediaInfo = &state.MediaInfoPayload{
@@ -72,12 +72,45 @@ func (h *EventHandler) handleCallStartedProto(event *eventv1.CallStartedEvent) {
 			ServerRtpPort: float64(event.MediaInfo.ServerRtpPort),
 		}
 	}
-    
-    // Dialplan dönüşümü (Basitleştirilmiş)
-    // Şimdilik dialplan bilgisini event'ten tam almıyor olabiliriz,
-    // Agent ileride kendi DB'sinden veya event'in "dialplan_resolution" alanından okuyacak.
-    // Şimdilik nil geçiyoruz, CallHandler bunu "varsayılan akış" olarak ele alacak.
-    // (Gelişmiş implementasyon sonraki adımda yapılabilir)
+
+	// 2. Dialplan Dönüşümü (Mapping)
+	var dialplan *state.DialplanPayload
+	if event.DialplanResolution != nil {
+		dialplan = &state.DialplanPayload{
+			DialplanID: event.DialplanResolution.DialplanId,
+			TenantID:   event.DialplanResolution.TenantId,
+		}
+
+		// Action Mapping
+		if event.DialplanResolution.Action != nil {
+			dialplan.Action = &state.DialplanActionPayload{
+				Action: event.DialplanResolution.Action.Action,
+			}
+			if event.DialplanResolution.Action.ActionData != nil {
+				dialplan.Action.ActionData = &state.ActionDataPayload{
+					Data: event.DialplanResolution.Action.ActionData.Data,
+				}
+			}
+		}
+
+		// Matched User Mapping
+		if event.DialplanResolution.MatchedUser != nil {
+			u := event.DialplanResolution.MatchedUser
+			dialplan.MatchedUser = &state.MatchedUserPayload{
+				ID:       u.Id,
+				TenantID: u.TenantId,
+				UserType: u.UserType,
+			}
+			if u.Name != "" {
+				val := u.Name
+				dialplan.MatchedUser.Name = &val
+			}
+			if u.PreferredLanguageCode != "" {
+				val := u.PreferredLanguageCode
+				dialplan.MatchedUser.PreferredLanguageCode = &val
+			}
+		}
+	}
 
 	internalEvent := &state.CallEvent{
 		EventType: event.EventType,
@@ -85,8 +118,9 @@ func (h *EventHandler) handleCallStartedProto(event *eventv1.CallStartedEvent) {
 		TraceID:   event.TraceId,
 		Media:     mediaInfo,
 		From:      event.FromUri,
-		Dialplan:  nil, 
+		Dialplan:  dialplan,
 	}
 
+	// Asenkron işleme gönder
 	go h.callHandler.HandleCallStarted(ctx, internalEvent)
 }
