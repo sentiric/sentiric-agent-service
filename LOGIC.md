@@ -1,65 +1,46 @@
-# 🧠 Sentiric Agent Service - Mantık ve Akış Mimarisi
+# 🧠 Sentiric Agent Service - Mantık Mimarisi (Final)
 
-**Belge Amacı:** Bu doküman, `agent-service`'in Sentiric platformunun **merkezi asenkron beyni (orkestratörü)** olarak stratejik rolünü, temel çalışma prensiplerini ve diğer servislerle olan etkileşimini açıklar. `TASKS.md` "ne inşa edileceğini", bu doküman ise "neden ve nasıl çalıştığını" anlatır.
+**Rol:** Orkestra Şefi. Asenkron iş mantığı yürütücüsü.
 
----
+## 1. Çalışma Prensibi (Event-Driven SAGA)
 
-## 1. Stratejik Rol: "Asenkron Orkestra Şefi"
+Bu servis HTTP veya SIP dinlemez. Sadece `RabbitMQ` dinler.
 
-`sip-signaling-service` çağrıyı senkron olarak kurduktan sonra, `agent-service` görevi devralır. Temel sorumluluğu, uzun süren ve karmaşık diyalog akışlarını **asenkron** olarak yönetmektir.
+### Senaryo: Çağrı Başlangıcı
 
-**Bu servis sayesinde platform:**
-1.  **Dayanıklı Olur:** Bir AI servisi (LLM/STT/TTS) yavaş yanıt verse bile, bu durum çağrıyı kuran `sip-signaling` servisini meşgul etmez. Her çağrı kendi izole sürecinde (goroutine) yönetilir.
-2.  **Akıllı Olur:** `dialplan`'den gelen "Ne yap?" komutunu (`action`), "Nasıl yap?" adımlarına (`media`, `stt`, `llm`, `tts` servislerini çağırma) dönüştürür.
-3.  **Bağlamsal Zeka Sağlar:** **`knowledge-service` (Kurumsal Hafıza)** ile **`llm-service` (Beyin)** arasında köprü görevi görerek, LLM'in doğru ve güncel bilgilerle yanıt vermesini sağlar.
+1.  **Tetiklenme:** `call.started` olayı gelir.
+2.  **Bağlam (Context) Yükleme:**
+    *   Redis'ten veya olaydan `dialplan` bilgisini al.
+    *   Kullanıcıyı `user-service` üzerinden doğrula (veya misafir olarak işaretle).
+3.  **Karar (Logic):**
+    *   Eğer `START_AI_CONVERSATION` ise:
+        *   `telephony-action-service`'e "Karşılama mesajını çal" (`SpeakText`) emrini gönder.
+        *   `stt-gateway`'i tetikle (Dinlemeye başla).
+    *   Eğer `PLAY_ANNOUNCEMENT` ise:
+        *   `telephony-action-service`'e "Şu dosyayı çal" (`PlayAudio`) emrini gönder.
 
----
-
-## 2. Temel Çalışma Prensibi: Olay Tüketimi ve Durum Makinesi
-
-Servis, `RabbitMQ`'dan gelen olayları dinleyen bir "tüketici" (consumer) olarak çalışır.
-
-*   **Tetiklenme:** `sip-signaling` bir çağrıyı başarıyla kurduğunda, `call.started` olayını `RabbitMQ`'ya yayınlar.
-*   **Devralma:** `agent-service` bu olayı alır, çağrıya ait tüm bilgileri (`dialplan` kararı, kullanıcı bilgileri vb.) okur.
-*   **Yönetim:** Her çağrı için bir "Durum Makinesi" (State Machine) başlatır. Çağrının durumu (`CurrentState`) Redis'te saklanır ve `WELCOMING` -> `LISTENING` -> `THINKING` -> `SPEAKING` gibi adımlar arasında geçiş yaparak diyalog yönetilir.
-
----
-
-## 3. Uçtan Uca Diyalog Akışı: RAG Destekli Bir Konuşma Döngüsü
-
-Bir çağrı başladıktan sonra `agent-service`'in yönettiği, **`knowledge-service`'i de içeren** tipik bir konuşma döngüsü şöyledir:
+## 2. Servis Etkileşim Haritası
 
 ```mermaid
 sequenceDiagram
-    participant User as Kullanıcı
-    participant AgentService as Agent Service (Orkestratör)
-    participant STTService as STT Service
-    participant KnowledgeService as Knowledge Service (gRPC)
-    participant LLMService as LLM Service (HTTP)
-    participant TTSGateway as TTS Gateway (gRPC)
-    participant MediaService as Media Service (gRPC)
+    participant MQ as RabbitMQ
+    participant Agent as Agent Service
+    participant TAS as Telephony Action
+    participant Dialog as Dialog Service
 
-    Note over AgentService: Karşılama ve ilk dinleme adımları tamamlandı...
-
-    User->>+MediaService: (Sesli olarak) "VIP Check-up paketi hakkında bilgi alabilir miyim?"
-    MediaService->>-AgentService: Ses akışı
-
-    AgentService->>STTService: Sesi metne çevir (HTTP Stream)
-    STTService-->>AgentService: "VIP Check-up paketi hakkında bilgi alabilir miyim?"
-
-    Note right of AgentService: Niyetin "bilgi talebi" olduğunu anlar. <br> **RAG akışını başlatır.**
+    MQ->>Agent: call.started
     
-    AgentService->>+KnowledgeService: Sorgu: "VIP Check-up paketi" (gRPC)
-    KnowledgeService-->>-AgentService: İlgili dokümanlar (context)
-
-    Note right of AgentService: LLM için prompt'u zenginleştirir.
-
-    AgentService->>+LLMService: Prompt: (Dokümanlar + Kullanıcı Sorusu) (HTTP)
-    LLMService-->>-AgentService: "VIP Check-up paketimiz kan tahlilleri, EKG..."
+    Note over Agent: İş mantığını yükle...
     
-    AgentService->>+TTSGateway: Metni sese çevir (gRPC)
-    TTSGateway-->>-AgentService: Ses verisi (.wav)
-
-    AgentService->>+MediaService: Sesi kullanıcıya çal (gRPC)
-    MediaService-->>-User: (Sesli olarak) "VIP Check-up paketimiz..."
+    Agent->>TAS: SpeakText("Merhaba, ben Asistan.")
+    TAS-->>Agent: OK (İşlem Başladı)
+    
+    loop Conversation Loop
+        TAS->>Agent: UserSpeech("Fiyatlar nedir?") (via STT)
+        Agent->>Dialog: GetResponse("Fiyatlar nedir?")
+        Dialog-->>Agent: "Paketimiz 100 TL..."
+        Agent->>TAS: SpeakText("Paketimiz 100 TL...")
+    end
 ```
+
+---
