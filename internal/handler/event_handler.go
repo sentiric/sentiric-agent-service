@@ -101,14 +101,9 @@ func (h *EventHandler) handleCallStartedProto(event *eventv1.CallStartedEvent) {
 				TenantID: u.TenantId,
 				UserType: u.UserType,
 			}
-			if u.Name != "" {
-				val := u.Name
-				dialplan.MatchedUser.Name = &val
-			}
-			if u.PreferredLanguageCode != "" {
-				val := u.PreferredLanguageCode
-				dialplan.MatchedUser.PreferredLanguageCode = &val
-			}
+			// DÜZELTME: Pointer ataması (Pointer to Pointer engellendi)
+			dialplan.MatchedUser.Name = u.Name
+			dialplan.MatchedUser.PreferredLanguageCode = u.PreferredLanguageCode
 		}
 	}
 

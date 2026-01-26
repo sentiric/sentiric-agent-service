@@ -169,13 +169,10 @@ func (h *CallHandler) playAnnouncementAndHangup(ctx context.Context, callID, ann
 	fullURI := fmt.Sprintf("file://%s", audioPath)
 	
 	// TelephonyAction'a PlayAudio Gönder
+	// DÜZELTME: MediaInfo kaldırıldı (v1.13.5 contract uyumluluğu için)
 	req := &telephonyv1.PlayAudioRequest{
 		CallId:   callID,
 		AudioUri: fullURI,
-		MediaInfo: &eventv1.MediaInfo{
-			CallerRtpAddr: media.CallerRtpAddr,
-			ServerRtpPort: uint32(media.ServerRtpPort),
-		},
 	}
 
 	_, err = h.clients.TelephonyAction.PlayAudio(ctx, req)
