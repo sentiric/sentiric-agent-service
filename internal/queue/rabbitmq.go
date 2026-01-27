@@ -136,7 +136,8 @@ func StartConsumer(ctx context.Context, ch *amqp091.Channel, handlerFunc func([]
 
 	log.Info().Str("queue", q.Name).Str("exchange", exchangeName).Msg("Kalıcı kuyruk başarıyla exchange'e bağlandı.")
 
-	err = ch.Qos(1, 0, false)
+	// ✅ KRİTİK DÜZELTME: Prefetch 1'den 10'a çıkarıldı
+	err = ch.Qos(10, 0, false) // 10 mesaj prefetch
 	if err != nil {
 		log.Fatal().Err(err).Msg("QoS ayarı yapılamadı.")
 	}
