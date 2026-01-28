@@ -100,18 +100,43 @@ func (h *CallHandler) HandleCallEnded(ctx context.Context, event *state.CallEven
 }
 
 // --- ALT MANTIKLAR (SUB-LOGIC) ---
+// bu görişme mantıkları saga ile mi işleyecek agent ui sinden mi yönetilecek bu tarz işlemler 
+// yoksa dial plan kurallarına göre mi dial plan lar iin ayrı bir ui yapacakmıyız
+// aslında her serrvisi bağımsız ve yönetilebilir ve düzenli olşuturmaya çalışıoruz.
 
 func (h *CallHandler) startAIConversation(ctx context.Context, event *state.CallEvent, isGuest bool) {
 	l := h.log.With().Str("call_id", event.CallID).Logger()
-
-	welcomeText := "Merhaba, Sentiric iletişim sistemine hoş geldiniz."
-	voiceID := "coqui:default"
+	// bu kısmı neden hardcode yazmışız? 
+	// anouncemınlarda default seslerimiz var mesala oaraya hem bu metinler girilir hemde wav dosyaları ile uyumlu olur
+	// böylece hem gerektiğinde wav dosyasını kullanırız gerektiğinde tts tarafından okunmasını sağlayabiliriz?
+	// bu en basit yaklaşım. Üzerinde daha da değerlendirme yapalım.
+	// ayrıca sentirik türkçe okunuşlarında doğru telefuz için k ile yazılmalı
+	welcomeText := "Merhaba, Sentirik iletişim sistemine hoş geldiniz."
+	// genelde burada hep deault olarak tanımlıyoruz ancak default olan ses hangisi belli mi tts de.
+	// voiceID := "coqui:default"
+	// parlatk zeynep i kullandık.
+	// bu default ses olabilir hem türkçe hem ingilizce için?
+	// stream gatewayde tts default voice diye bir tanım ile bunu kullanıoruz
+	// tts den belkide tüm sesleri alabiliriz?
+	// aslında bize bir mini ui lazım agent da bu tarz değişiklikleri yapabilmek için 
+	// tabiki compose env lerinde de tanımlanabilir.
+	// ama hardcode olmaması lazım 
+	// db den çekmekte mantıklı eğer ui kullanacakisek 
+	voiceID := "coqui:F_TR_Parlak_Zeynep/neutral"
 	
 	if !isGuest && event.Dialplan != nil && event.Dialplan.MatchedUser != nil {
+		// bu sabit değeri nereden bulduk
+		// databaseden mi çekiyoruz?
+		// eğer otomaitk kaydediyor isek role kısmına göre yapmak daha mantıklı 
+		// örneğin agent admin gibi roller belirlemiş zaten buraası için guest olabilir
+		// ama hardcode olmaması lazım
 		userName := "Misafir"
 		if event.Dialplan.MatchedUser.Name != nil {
 			userName = *event.Dialplan.MatchedUser.Name
 		}
+		// tekrar hoşgeldiniz bu kayıt lı olmayan kullanıcı için mi diyoruz. daha once konustuk ve türkçe konuşan bir kullanıcımı ?
+		// bu dil konusunuda çözümlenmesi grek. neye göre kullanıcı ile iletişime başlayacağız
+		// evet varsayılan başlangıcımız her zaman türkçe olacak ama kullanıcı dil tercihi var ise ona göre de başlatabiliriz
 		welcomeText = fmt.Sprintf("Merhaba %s, tekrar hoş geldiniz. Size nasıl yardımcı olabilirim?", userName)
 	}
 
