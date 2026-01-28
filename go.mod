@@ -10,7 +10,7 @@ require (
 	github.com/rabbitmq/amqp091-go v1.10.0
 	github.com/rs/zerolog v1.34.0
 	// GÜNCELLENDİ: v1.13.5
-	github.com/sentiric/sentiric-contracts v1.13.5
+	github.com/sentiric/sentiric-contracts v1.13.6
 	google.golang.org/grpc v1.75.1
 	google.golang.org/protobuf v1.36.10
 )
