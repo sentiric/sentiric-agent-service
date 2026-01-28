@@ -1,9 +1,12 @@
+// sentiric-agent-service/internal/handler/call_handler.go
+
 package handler
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time" // EKLENDİ
 
 	"github.com/rs/zerolog"
 
@@ -35,6 +38,23 @@ func NewCallHandler(clients *client.Clients, sm *state.Manager, db *sql.DB, log 
 
 func (h *CallHandler) HandleCallStarted(ctx context.Context, event *state.CallEvent) {
 	l := h.log.With().Str("call_id", event.CallID).Logger()
+	
+	// [FIX] Idempotency Check: Aynı çağrı için işlem yapılıyor mu?
+	// Redis'te basit bir kilit kontrolü yapıyoruz.
+	lockKey := fmt.Sprintf("lock:call_started:%s", event.CallID)
+	// RedisClient() metodunu Manager'a eklemiştik (state/manager.go)
+	isNew, err := h.stateManager.RedisClient().SetNX(ctx, lockKey, "1", 10*time.Second).Result()
+	
+	if err != nil {
+		l.Error().Err(err).Msg("Redis kilit hatası")
+		return
+	}
+	
+	if !isNew {
+		l.Warn().Msg("⚠️ Çift 'call.started' olayı algılandı ve yoksayıldı.")
+		return
+	}
+
 	l.Info().Msg("📞 Yeni çağrı yakalandı. Orkestrasyon başlıyor.")
 
 	if event.Media == nil {
@@ -42,7 +62,7 @@ func (h *CallHandler) HandleCallStarted(ctx context.Context, event *state.CallEv
 		return
 	}
 
-	err := h.stateManager.Set(ctx, &state.CallState{
+	err = h.stateManager.Set(ctx, &state.CallState{
 		CallID:       event.CallID,
 		TraceID:      event.TraceID,
 		Event:        event,
@@ -76,6 +96,7 @@ func (h *CallHandler) HandleCallStarted(ctx context.Context, event *state.CallEv
 
 func (h *CallHandler) HandleCallEnded(ctx context.Context, event *state.CallEvent) {
 	h.log.Info().Str("call_id", event.CallID).Msg("📴 Çağrı sonlandı.")
+	// Kilidi temizle (opsiyonel, zaten TTL var)
 }
 
 // --- ALT MANTIKLAR (SUB-LOGIC) ---
@@ -111,8 +132,6 @@ func (h *CallHandler) startAIConversation(ctx context.Context, event *state.Call
 	_, err := h.clients.TelephonyAction.SpeakText(ctx, req)
 	if err != nil {
 		l.Error().Err(err).Msg("❌ SpeakText başarısız oldu. Fallback anons çalınıyor.")
-		
-		// ROBUSTNESS FIX: AI başarısızsa standart anons çal
 		h.playAnnouncementAndHangup(ctx, event.CallID, "ANNOUNCE_SYSTEM_ERROR", "system", "tr", event.Media)
 		return
 	}
