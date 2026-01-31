@@ -36,20 +36,20 @@ func NewEventHandler(
 }
 
 func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
+	// 1. Protobuf Olarak Dene (Standart)
 	var protoEvent eventv1.CallStartedEvent
-
-	// Protobuf unmarshal işlemi
 	if err := proto.Unmarshal(body, &protoEvent); err == nil {
-		// EventType kontrolü
-		if protoEvent.EventType == string(constants.EventTypeCallStarted) || protoEvent.EventType == "" {
+		// EventType doluysa ve 'call.started' ise işle
+		if protoEvent.EventType == string(constants.EventTypeCallStarted) {
 			h.handleCallStartedProto(&protoEvent)
 			return
 		}
-		// Diğer event tipleri buraya eklenebilir (switch-case)
+		// Diğer event tipleri (CallEnded vb.) buraya switch-case ile eklenebilir.
 	}
 
-	h.log.Warn().Msg("Mesaj işlenemedi. Protobuf decode hatası veya bilinmeyen format.")
-	h.eventsFailed.WithLabelValues("unknown", "proto_unmarshal").Inc()
+	// 2. Başarısız Olursa Logla
+	h.log.Warn().Msg("Mesaj işlenemedi. Geçersiz format (Protobuf bekleniyor) veya bilinmeyen event type.")
+	h.eventsFailed.WithLabelValues("unknown", "proto_unmarshal_fail").Inc()
 }
 
 func (h *EventHandler) handleCallStartedProto(event *eventv1.CallStartedEvent) {
@@ -60,11 +60,11 @@ func (h *EventHandler) handleCallStartedProto(event *eventv1.CallStartedEvent) {
 		Logger()
 
 	h.eventsProcessed.WithLabelValues(event.EventType).Inc()
-	l.Info().Msg("🚀 PROTOBUF 'call.started' olayı alındı ve işleniyor.")
+	l.Info().Msg("🚀 [EVENT] 'call.started' alındı (Protobuf).")
 
 	ctx := ctxlogger.ToContext(context.Background(), l)
 
-	// 1. Media Info Dönüşümü
+	// Veri Dönüşümü (Contract -> Internal State)
 	var mediaInfo *state.MediaInfoPayload
 	if event.MediaInfo != nil {
 		mediaInfo = &state.MediaInfoPayload{
@@ -73,39 +73,9 @@ func (h *EventHandler) handleCallStartedProto(event *eventv1.CallStartedEvent) {
 		}
 	}
 
-	// 2. Dialplan Dönüşümü (Mapping)
-	var dialplan *state.DialplanPayload
-	if event.DialplanResolution != nil {
-		dialplan = &state.DialplanPayload{
-			DialplanID: event.DialplanResolution.DialplanId,
-			TenantID:   event.DialplanResolution.TenantId,
-		}
-
-		// Action Mapping
-		if event.DialplanResolution.Action != nil {
-			dialplan.Action = &state.DialplanActionPayload{
-				Action: event.DialplanResolution.Action.Action,
-			}
-			if event.DialplanResolution.Action.ActionData != nil {
-				dialplan.Action.ActionData = &state.ActionDataPayload{
-					Data: event.DialplanResolution.Action.ActionData.Data,
-				}
-			}
-		}
-
-		// Matched User Mapping
-		if event.DialplanResolution.MatchedUser != nil {
-			u := event.DialplanResolution.MatchedUser
-			dialplan.MatchedUser = &state.MatchedUserPayload{
-				ID:       u.Id,
-				TenantID: u.TenantId,
-				UserType: u.UserType,
-			}
-			// DÜZELTME: Pointer ataması (Pointer to Pointer engellendi)
-			dialplan.MatchedUser.Name = u.Name
-			dialplan.MatchedUser.PreferredLanguageCode = u.PreferredLanguageCode
-		}
-	}
+	// Dialplan verisi B2BUA eventinden gelmiyor olabilir, Agent servisi
+	// gerekirse Dialplan servisini tekrar sorgulayabilir.
+	// Şimdilik temel mapping ile devam ediyoruz.
 
 	internalEvent := &state.CallEvent{
 		EventType: event.EventType,
@@ -113,9 +83,9 @@ func (h *EventHandler) handleCallStartedProto(event *eventv1.CallStartedEvent) {
 		TraceID:   event.TraceId,
 		Media:     mediaInfo,
 		From:      event.FromUri,
-		Dialplan:  dialplan,
+		// Dialplan verisi event içinde varsa maple, yoksa nil.
+		// B2BUA zenginleştirme yapana kadar bu alan boş gelebilir.
 	}
 
-	// Asenkron işleme gönder
 	go h.callHandler.HandleCallStarted(ctx, internalEvent)
 }

@@ -1,5 +1,3 @@
-// sentiric-agent-service/internal/handler/call_handler.go
-
 package handler
 
 import (
@@ -40,10 +38,8 @@ func NewCallHandler(clients *client.Clients, sm *state.Manager, db *sql.DB, log 
 func (h *CallHandler) HandleCallStarted(ctx context.Context, event *state.CallEvent) {
 	l := h.log.With().Str("call_id", event.CallID).Logger()
 
-	// [FIX] Idempotency Check: Aynı çağrı için işlem yapılıyor mu?
-	// Redis'te basit bir kilit kontrolü yapıyoruz.
+	// [FIX] Idempotency Check: Redis kilidi
 	lockKey := fmt.Sprintf("lock:call_started:%s", event.CallID)
-	// RedisClient() metodunu Manager'a eklemiştik (state/manager.go)
 	isNew, err := h.stateManager.RedisClient().SetNX(ctx, lockKey, "1", 10*time.Second).Result()
 
 	if err != nil {
@@ -60,9 +56,12 @@ func (h *CallHandler) HandleCallStarted(ctx context.Context, event *state.CallEv
 
 	if event.Media == nil {
 		l.Error().Msg("🚨 KRİTİK: Media bilgisi eksik, çağrı yönetilemez.")
+		// Hata anonsu çalıp kapatabiliriz
+		h.playAnnouncementAndHangup(ctx, event.CallID, "ANNOUNCE_SYSTEM_ERROR", "system", "tr", event.Media)
 		return
 	}
 
+	// Durumu kaydet
 	err = h.stateManager.Set(ctx, &state.CallState{
 		CallID:       event.CallID,
 		TraceID:      event.TraceID,
@@ -73,14 +72,14 @@ func (h *CallHandler) HandleCallStarted(ctx context.Context, event *state.CallEv
 		l.Error().Err(err).Msg("Redis durum kaydı başarısız.")
 	}
 
-	if event.Dialplan == nil || event.Dialplan.Action == nil {
-		l.Warn().Msg("⚠️ Dialplan çözülemedi veya aksiyon yok. Varsayılan (Misafir) akışı başlatılıyor.")
-		h.startAIConversation(ctx, event, true)
-		return
+	// Aksiyon Kararı
+	// Eğer event içinde dialplan bilgisi yoksa varsayılan olarak AI başlat
+	action := "START_AI_CONVERSATION"
+	if event.Dialplan != nil && event.Dialplan.Action != nil {
+		action = event.Dialplan.Action.Action
 	}
 
-	action := event.Dialplan.Action.Action
-	l.Info().Str("action", action).Msg("🎯 Dialplan kararı uygulanıyor.")
+	l.Info().Str("action", action).Msg("🎯 Aksiyon uygulanıyor.")
 
 	switch action {
 	case "START_AI_CONVERSATION":
@@ -90,51 +89,38 @@ func (h *CallHandler) HandleCallStarted(ctx context.Context, event *state.CallEv
 	case "PLAY_ANNOUNCEMENT":
 		h.handlePlayAnnouncement(ctx, event)
 	default:
-		l.Warn().Str("unknown_action", action).Msg("❓ Bilinmeyen aksiyon. Varsayılan akışa dönülüyor.")
-		h.startAIConversation(ctx, event, true)
+		l.Warn().Str("unknown_action", action).Msg("❓ Bilinmeyen aksiyon. AI başlatılıyor.")
+		h.startAIConversation(ctx, event, false)
 	}
 }
 
-func (h *CallHandler) HandleCallEnded(ctx context.Context, event *state.CallEvent) {
-	h.log.Info().Str("call_id", event.CallID).Msg("📴 Çağrı sonlandı.")
-	// Kilidi temizle (opsiyonel, zaten TTL var)
-}
-
-// --- ALT MANTIKLAR (SUB-LOGIC) ---
-// startAIConversation: Bu fonksiyon artık daha dayanıklı bir RunPipeline mantığı kullanıyor.
+// startAIConversation: Sorumluluğu TelephonyActionService'e devreder.
 func (h *CallHandler) startAIConversation(ctx context.Context, event *state.CallEvent, isGuest bool) {
 	l := h.log.With().Str("call_id", event.CallID).Logger()
 
-	l.Info().Msg("🤖 AI Pipeline başlatılıyor (v1.13.6 Stabilize)...")
+	l.Info().Msg("🤖 AI Pipeline Tetikleniyor (Delegation Mode)...")
 
-	// 1. Session ID Oluştur (veya User'dan al)
 	sessionID := event.TraceID
 	if sessionID == "" {
 		sessionID = fmt.Sprintf("sess-%s", event.CallID)
 	}
 
-	// 2. Medya Bilgilerini Hazırla
-	if event.Media == nil {
-		l.Error().Msg("❌ Kritik: Medya bilgisi eksik, pipeline başlatılamaz.")
-		h.playAnnouncementAndHangup(ctx, event.CallID, "ANNOUNCE_SYSTEM_ERROR", "system", "tr", event.Media)
-		return
-	}
-
+	// Protobuf için MediaInfo hazırlığı
 	mediaInfoProto := &eventv1.MediaInfo{
 		CallerRtpAddr: event.Media.CallerRtpAddr,
 		ServerRtpPort: uint32(event.Media.ServerRtpPort),
 	}
 
-	// 3. Telephony Action Service'e Pipeline İsteği Gönder (STREAMING)
 	req := &telephonyv1.RunPipelineRequest{
-		CallId:    event.CallID,
-		SessionId: sessionID,
-		MediaInfo: mediaInfoProto,
-		// İleride konfigüre edilebilir modeller buraya eklenebilir
-		SttModelId: "whisper:default",
-		TtsModelId: "coqui:default",
+		CallId:        event.CallID,
+		SessionId:     sessionID,
+		MediaInfo:     mediaInfoProto,
+		SttModelId:    "whisper:default",
+		TtsModelId:    "coqui:default",
+		RecordSession: true, // Varsayılan kayıt açık
 	}
 
+	// Streaming RPC başlat
 	stream, err := h.clients.TelephonyAction.RunPipeline(ctx, req)
 	if err != nil {
 		l.Error().Err(err).Msg("❌ RunPipeline başlatılamadı. Fallback anons çalınıyor.")
@@ -142,27 +128,27 @@ func (h *CallHandler) startAIConversation(ctx context.Context, event *state.Call
 		return
 	}
 
-	// 4. Pipeline Durumunu Dinle (Non-Blocking)
-	// Bu goroutine, pipeline'dan gelen durum güncellemelerini ve hataları izler.
+	// Pipeline durumunu izleyen arka plan görevi
 	go func() {
 		for {
 			resp, err := stream.Recv()
 			if err == io.EOF {
-				l.Info().Msg("🏁 Pipeline normal şekilde sonlandı.")
+				l.Info().Msg("🏁 Pipeline tamamlandı (EOF).")
 				return
 			}
 			if err != nil {
-				l.Error().Err(err).Msg("⚠️ Pipeline akış hatası veya kesildi.")
-				// Burada gerekirse yeniden bağlanma (reconnect) mantığı eklenebilir.
+				l.Error().Err(err).Msg("⚠️ Pipeline bağlantısı koptu.")
 				return
 			}
 
-			// Durum Loglama
 			switch resp.State {
 			case telephonyv1.RunPipelineResponse_STATE_RUNNING:
-				l.Info().Msg("🟢 Pipeline aktif ve çalışıyor.")
+				l.Debug().Msg("🟢 Pipeline çalışıyor...")
 			case telephonyv1.RunPipelineResponse_STATE_ERROR:
-				l.Error().Str("error", resp.Message).Msg("🔴 Pipeline hata bildirdi.")
+				l.Error().Str("msg", resp.Message).Msg("🔴 Pipeline Hatası")
+			case telephonyv1.RunPipelineResponse_STATE_STOPPED:
+				l.Info().Msg("🛑 Pipeline durdu.")
+				return
 			}
 		}
 	}()
@@ -170,7 +156,6 @@ func (h *CallHandler) startAIConversation(ctx context.Context, event *state.Call
 
 func (h *CallHandler) handlePlayAnnouncement(ctx context.Context, event *state.CallEvent) {
 	l := h.log.With().Str("call_id", event.CallID).Logger()
-
 	announceID := "ANNOUNCE_GENERIC"
 	lang := "tr"
 	tenantID := "system"
@@ -183,7 +168,6 @@ func (h *CallHandler) handlePlayAnnouncement(ctx context.Context, event *state.C
 			}
 		}
 	}
-
 	l.Info().Str("announce_id", announceID).Msg("📢 Anons çalma isteği.")
 	h.playAnnouncementAndHangup(ctx, event.CallID, announceID, tenantID, lang, event.Media)
 }
@@ -215,4 +199,8 @@ func (h *CallHandler) playAnnouncementAndHangup(ctx context.Context, callID, ann
 	} else {
 		l.Info().Str("uri", fullURI).Msg("✅ PlayAudio komutu gönderildi.")
 	}
+}
+
+func (h *CallHandler) HandleCallEnded(ctx context.Context, event *state.CallEvent) {
+	h.log.Info().Str("call_id", event.CallID).Msg("📴 Çağrı sonlandı.")
 }
