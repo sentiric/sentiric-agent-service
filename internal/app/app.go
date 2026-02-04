@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"net"
 	"os"
 	"os/signal"
 	"sync"
@@ -11,6 +12,10 @@ import (
 	"github.com/go-redis/redis/v8"
 	"github.com/rabbitmq/amqp091-go"
 	"github.com/rs/zerolog"
+	"google.golang.org/grpc"
+
+	agentv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/agent/v1"
+
 	"github.com/sentiric/sentiric-agent-service/internal/client"
 	"github.com/sentiric/sentiric-agent-service/internal/config"
 	"github.com/sentiric/sentiric-agent-service/internal/database"
@@ -38,9 +43,15 @@ func (a *App) Run() {
 
 	// 2. Altyapı Bağlantıları
 	db, redisClient, rabbitCh, closeChan := a.setupInfrastructure(ctx)
-	if db != nil { defer db.Close() }
-	if redisClient != nil { defer redisClient.Close() }
-	if rabbitCh != nil { defer rabbitCh.Close() }
+	if db != nil {
+		defer db.Close()
+	}
+	if redisClient != nil {
+		defer redisClient.Close()
+	}
+	if rabbitCh != nil {
+		defer rabbitCh.Close()
+	}
 
 	// 3. gRPC İstemcileri
 	clients, err := client.NewClients(a.Cfg)
@@ -50,27 +61,40 @@ func (a *App) Run() {
 
 	// 4. Handler ve State Manager
 	stateManager := state.NewManager(redisClient)
-	
-	// DÜZELTME: CallHandler artık DB bağlantısını da alıyor
 	callHandler := handler.NewCallHandler(clients, stateManager, db, a.Log)
 
-	// EventHandler Başlatma
+	// 5. gRPC Sunucusu (Orchestration Server)
+	grpcServer := grpc.NewServer()
+	// Wrapper ile sunucuya kayıt
+	agentv1.RegisterAgentOrchestrationServiceServer(grpcServer, &AgentGrpcServerWrapper{handler: callHandler})
+
+	// gRPC Dinleme (Port 12031)
+	go func() {
+		lis, err := net.Listen("tcp", ":12031")
+		if err != nil {
+			a.Log.Fatal().Err(err).Msg("gRPC portu dinlenemedi")
+		}
+		a.Log.Info().Msg("gRPC sunucusu (Orchestration) dinleniyor: 12031")
+		if err := grpcServer.Serve(lis); err != nil {
+			a.Log.Fatal().Err(err).Msg("gRPC sunucusu çöktü")
+		}
+	}()
+
+	// 6. RabbitMQ Event Handler
 	eventHandler := handler.NewEventHandler(
 		a.Log,
 		metrics.EventsProcessed,
 		metrics.EventsFailed,
 		callHandler,
 	)
-	
+
 	var consumerWg sync.WaitGroup
-	
-	// RabbitMQ Consumer Başlat
 	go queue.StartConsumer(ctx, rabbitCh, eventHandler.HandleRabbitMQMessage, a.Log, &consumerWg)
 
-	// 5. Graceful Shutdown
+	// 7. Graceful Shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	
+
 	select {
 	case <-quit:
 		a.Log.Info().Msg("Kapatma sinyali alındı...")
@@ -78,10 +102,30 @@ func (a *App) Run() {
 		a.Log.Error().Err(err).Msg("RabbitMQ bağlantısı koptu!")
 	}
 
-	cancel() // Context'i iptal et
-	a.Log.Info().Msg("Consumer işlemlerinin bitmesi bekleniyor...")
-	consumerWg.Wait() // Consumer'ın bitmesini bekle
+	grpcServer.GracefulStop()
+	cancel()
+	consumerWg.Wait()
 	a.Log.Info().Msg("Servis durduruldu.")
+}
+
+// Wrapper for gRPC Interface Compliance
+type AgentGrpcServerWrapper struct {
+	agentv1.UnimplementedAgentOrchestrationServiceServer
+	handler *handler.CallHandler
+}
+
+// ProcessManualDial: Stream Gateway'den gelen çağrıyı handler'a iletir
+func (s *AgentGrpcServerWrapper) ProcessManualDial(ctx context.Context, req *agentv1.ProcessManualDialRequest) (*agentv1.ProcessManualDialResponse, error) {
+	return s.handler.ProcessManualDial(ctx, req)
+}
+
+// Dummy methods (Unimplemented override)
+func (s *AgentGrpcServerWrapper) ProcessCallStart(ctx context.Context, req *agentv1.ProcessCallStartRequest) (*agentv1.ProcessCallStartResponse, error) {
+	return &agentv1.ProcessCallStartResponse{Initiated: true}, nil
+}
+
+func (s *AgentGrpcServerWrapper) ProcessSagaStep(ctx context.Context, req *agentv1.ProcessSagaStepRequest) (*agentv1.ProcessSagaStepResponse, error) {
+	return &agentv1.ProcessSagaStepResponse{Completed: true}, nil
 }
 
 func (a *App) setupInfrastructure(ctx context.Context) (*sql.DB, *redis.Client, *amqp091.Channel, <-chan *amqp091.Error) {

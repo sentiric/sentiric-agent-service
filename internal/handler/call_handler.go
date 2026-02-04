@@ -7,10 +7,12 @@ import (
 	"io"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 
-	// Contracts v1.13.6
+	agentv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/agent/v1"
 	eventv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/event/v1"
+	sipv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/sip/v1"
 	telephonyv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/telephony/v1"
 
 	"github.com/sentiric/sentiric-agent-service/internal/client"
@@ -35,10 +37,56 @@ func NewCallHandler(clients *client.Clients, sm *state.Manager, db *sql.DB, log 
 	}
 }
 
+// ProcessManualDial: v1.13.7 Manuel arama emrini işler
+func (h *CallHandler) ProcessManualDial(ctx context.Context, req *agentv1.ProcessManualDialRequest) (*agentv1.ProcessManualDialResponse, error) {
+	l := h.log.With().Str("dest", req.DestinationNumber).Str("agent", req.UserId).Logger()
+	l.Info().Msg("☎️ Manuel dış arama orkestrasyonu tetiklendi.")
+
+	// 1. Validasyon
+	if len(req.DestinationNumber) < 4 {
+		return &agentv1.ProcessManualDialResponse{Accepted: false, ErrorMessage: "Geçersiz hedef numara"}, nil
+	}
+
+	callID := fmt.Sprintf("out-%s", uuid.New().String())
+
+	// 2. B2BUA Üzerinden SIP INVITE Tetikle
+	b2buaReq := &sipv1.InitiateCallRequest{
+		CallId:  callID,
+		FromUri: fmt.Sprintf("sip:%s@sentiric.cloud", req.UserId),
+		ToUri:   fmt.Sprintf("sip:%s@sentiric.cloud", req.DestinationNumber),
+	}
+
+	// DÜZELTME: B2BUA (Büyük harf uyumu sağlandı)
+	_, err := h.clients.B2BUA.InitiateCall(ctx, b2buaReq)
+	if err != nil {
+		l.Error().Err(err).Msg("❌ B2BUA servis çağrısı başarısız.")
+		return &agentv1.ProcessManualDialResponse{Accepted: false, ErrorMessage: "Sinyalleşme hatası: " + err.Error()}, nil
+	}
+
+	// 3. Redis State Oluştur (PRE-WARM)
+	// Çağrı henüz başlamadı ama bir niyet (intent) var.
+	stateErr := h.stateManager.Set(ctx, &state.CallState{
+		CallID:       callID,
+		TenantID:     req.TenantId,
+		CurrentState: constants.StateWelcoming,
+	})
+
+	if stateErr != nil {
+		l.Warn().Err(stateErr).Msg("State kaydı oluşturulamadı (Kritik değil)")
+	}
+
+	l.Info().Str("call_id", callID).Msg("✅ Dış arama başarıyla kuyruğa alındı.")
+	return &agentv1.ProcessManualDialResponse{Accepted: true, CallId: callID}, nil
+}
+
+// -----------------------------------------------------------------------------
+// MEVCUT METODLAR (INBOUND LOGIC)
+// -----------------------------------------------------------------------------
+
 func (h *CallHandler) HandleCallStarted(ctx context.Context, event *state.CallEvent) {
 	l := h.log.With().Str("call_id", event.CallID).Logger()
 
-	// [FIX] Idempotency Check: Redis kilidi
+	// Idempotency Check: Redis kilidi
 	lockKey := fmt.Sprintf("lock:call_started:%s", event.CallID)
 	isNew, err := h.stateManager.RedisClient().SetNX(ctx, lockKey, "1", 10*time.Second).Result()
 
@@ -56,7 +104,6 @@ func (h *CallHandler) HandleCallStarted(ctx context.Context, event *state.CallEv
 
 	if event.Media == nil {
 		l.Error().Msg("🚨 KRİTİK: Media bilgisi eksik, çağrı yönetilemez.")
-		// Hata anonsu çalıp kapatabiliriz
 		h.playAnnouncementAndHangup(ctx, event.CallID, "ANNOUNCE_SYSTEM_ERROR", "system", "tr", event.Media)
 		return
 	}
@@ -73,7 +120,6 @@ func (h *CallHandler) HandleCallStarted(ctx context.Context, event *state.CallEv
 	}
 
 	// Aksiyon Kararı
-	// Eğer event içinde dialplan bilgisi yoksa varsayılan olarak AI başlat
 	action := "START_AI_CONVERSATION"
 	if event.Dialplan != nil && event.Dialplan.Action != nil {
 		action = event.Dialplan.Action.Action
@@ -94,7 +140,6 @@ func (h *CallHandler) HandleCallStarted(ctx context.Context, event *state.CallEv
 	}
 }
 
-// startAIConversation: Sorumluluğu TelephonyActionService'e devreder.
 func (h *CallHandler) startAIConversation(ctx context.Context, event *state.CallEvent, isGuest bool) {
 	l := h.log.With().Str("call_id", event.CallID).Logger()
 
@@ -105,7 +150,6 @@ func (h *CallHandler) startAIConversation(ctx context.Context, event *state.Call
 		sessionID = fmt.Sprintf("sess-%s", event.CallID)
 	}
 
-	// Protobuf için MediaInfo hazırlığı
 	mediaInfoProto := &eventv1.MediaInfo{
 		CallerRtpAddr: event.Media.CallerRtpAddr,
 		ServerRtpPort: uint32(event.Media.ServerRtpPort),
@@ -117,10 +161,9 @@ func (h *CallHandler) startAIConversation(ctx context.Context, event *state.Call
 		MediaInfo:     mediaInfoProto,
 		SttModelId:    "whisper:default",
 		TtsModelId:    "coqui:default",
-		RecordSession: true, // Varsayılan kayıt açık
+		RecordSession: true,
 	}
 
-	// Streaming RPC başlat
 	stream, err := h.clients.TelephonyAction.RunPipeline(ctx, req)
 	if err != nil {
 		l.Error().Err(err).Msg("❌ RunPipeline başlatılamadı. Fallback anons çalınıyor.")
@@ -128,7 +171,6 @@ func (h *CallHandler) startAIConversation(ctx context.Context, event *state.Call
 		return
 	}
 
-	// Pipeline durumunu izleyen arka plan görevi
 	go func() {
 		for {
 			resp, err := stream.Recv()
