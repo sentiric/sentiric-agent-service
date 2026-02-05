@@ -33,7 +33,6 @@ func (p *Publisher) PublishJSON(ctx context.Context, routingKey string, body int
 		return err
 	}
 
-	// DEĞİŞİKLİK: Bu logu INFO'dan DEBUG'a çekiyoruz.
 	p.log.Debug().Str("routing_key", routingKey).Bytes("payload", jsonBody).Msg("RabbitMQ'ya olay yayınlanıyor...")
 
 	err = p.ch.PublishWithContext(
@@ -55,17 +54,14 @@ func (p *Publisher) PublishJSON(ctx context.Context, routingKey string, body int
 	return nil
 }
 
-// DEĞİŞİKLİK: Fonksiyon artık context alıyor.
 func Connect(ctx context.Context, url string, log zerolog.Logger) (*amqp091.Channel, <-chan *amqp091.Error, error) {
 	var conn *amqp091.Connection
 	var err error
 
-    // --- GÜNCELLEME: Heartbeat ayarı eklendi ---
-    config := amqp091.Config{
-        Heartbeat: 60 * time.Second, // 60 saniyelik heartbeat
-        Locale:    "en_US",
-    }
-    // --- GÜNCELLEME SONU ---
+	config := amqp091.Config{
+		Heartbeat: 60 * time.Second,
+		Locale:    "en_US",
+	}
 
 	for i := 0; i < 10; i++ {
 		select {
@@ -74,7 +70,7 @@ func Connect(ctx context.Context, url string, log zerolog.Logger) (*amqp091.Chan
 		default:
 		}
 
-		conn, err = amqp091.DialConfig(url, config) // Dial yerine DialConfig kullan
+		conn, err = amqp091.DialConfig(url, config)
 		if err == nil {
 			log.Info().Msg("RabbitMQ bağlantısı başarılı.")
 			ch, chErr := conn.Channel()
@@ -94,7 +90,7 @@ func Connect(ctx context.Context, url string, log zerolog.Logger) (*amqp091.Chan
 		}
 	}
 	return nil, nil, fmt.Errorf("maksimum deneme (%d) sonrası RabbitMQ'ya bağlanılamadı: %w", 10, err)
-	
+
 }
 
 func StartConsumer(ctx context.Context, ch *amqp091.Channel, handlerFunc func([]byte), log zerolog.Logger, wg *sync.WaitGroup) {
@@ -136,8 +132,7 @@ func StartConsumer(ctx context.Context, ch *amqp091.Channel, handlerFunc func([]
 
 	log.Info().Str("queue", q.Name).Str("exchange", exchangeName).Msg("Kalıcı kuyruk başarıyla exchange'e bağlandı.")
 
-	// ✅ KRİTİK DÜZELTME: Prefetch 1'den 10'a çıkarıldı
-	err = ch.Qos(10, 0, false) // 10 mesaj prefetch
+	err = ch.Qos(10, 0, false)
 	if err != nil {
 		log.Fatal().Err(err).Msg("QoS ayarı yapılamadı.")
 	}
@@ -170,8 +165,25 @@ func StartConsumer(ctx context.Context, ch *amqp091.Channel, handlerFunc func([]
 			wg.Add(1)
 			go func(msg amqp091.Delivery) {
 				defer wg.Done()
+
+				// [ANTI-FRAGILE] PANIC RECOVERY & DEAD LETTERING
+				defer func() {
+					if r := recover(); r != nil {
+						log.Error().Interface("panic_info", r).Msg("CRITICAL: Message handler panikledi! Zehirli mesaj Nack ediliyor.")
+						// Tekrar kuyruğa atma (requeue=false), mesajı öldür.
+						// Üretimde bu mesaj bir Dead Letter Exchange'e yönlendirilmelidir.
+						if err := msg.Nack(false, false); err != nil {
+							log.Error().Err(err).Msg("Zehirli mesaj Nack edilemedi.")
+						}
+					}
+				}()
+
 				handlerFunc(msg.Body)
-				_ = msg.Ack(false)
+
+				// Sadece başarılı işleme sonrası Ack
+				if err := msg.Ack(false); err != nil {
+					log.Error().Err(err).Msg("Mesaj Ack edilemedi.")
+				}
 			}(d)
 		}
 	}
