@@ -1,3 +1,4 @@
+// sentiric-agent-service/internal/config/config.go
 package config
 
 import (
@@ -16,9 +17,10 @@ type Config struct {
 	RedisURL    string
 	MetricsPort string
 
-	// Hedef Servisler (Sadece gerekli olanlar)
-	UserServiceURL      string
-	TelephonyActionURL  string
+	// Hedef Servisler
+	UserServiceURL     string
+	TelephonyActionURL string
+	B2buaServiceURL    string // YENİ EKLENDİ
 
 	// Security
 	CertPath string
@@ -40,14 +42,15 @@ func Load() (*Config, error) {
 		Env:         getEnvWithDefault("ENV", "production"),
 		LogLevel:    getEnvWithDefault("LOG_LEVEL", "info"),
 		PostgresURL: GetEnvOrFail("POSTGRES_URL"),
-		
+
 		RabbitMQURL: GetEnvOrFail("RABBITMQ_URL"),
 		RedisURL:    GetEnvOrFail("REDIS_URL"),
-		
+
 		MetricsPort: getEnvWithDefault("AGENT_SERVICE_METRICS_PORT", "12032"),
 
 		UserServiceURL:     getEnvWithDefault("USER_SERVICE_TARGET_GRPC_URL", "user-service:12011"),
 		TelephonyActionURL: getEnvWithDefault("TELEPHONY_ACTION_TARGET_GRPC_URL", "telephony-action-service:13111"),
+		B2buaServiceURL:    getEnvWithDefault("B2BUA_SERVICE_TARGET_GRPC_URL", "b2bua-service:13081"), // YENİ EKLENDİ
 
 		CertPath: GetEnvOrFail("AGENT_SERVICE_CERT_PATH"),
 		KeyPath:  GetEnvOrFail("AGENT_SERVICE_KEY_PATH"),

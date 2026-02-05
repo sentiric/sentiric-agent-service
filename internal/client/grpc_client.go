@@ -1,3 +1,4 @@
+// sentiric-agent-service/internal/client/grpc_client.go
 package client
 
 import (
@@ -22,8 +23,7 @@ import (
 type Clients struct {
 	User            userv1.UserServiceClient
 	TelephonyAction telephonyv1.TelephonyActionServiceClient
-	// DÜZELTME: B2BuaServiceClient -> B2BUAServiceClient
-	B2BUA sipv1.B2BUAServiceClient
+	B2BUA           sipv1.B2BUAServiceClient
 }
 
 func NewClients(cfg *config.Config) (*Clients, error) {
@@ -32,21 +32,19 @@ func NewClients(cfg *config.Config) (*Clients, error) {
 	// 1. User Service
 	userConn, err := createConnection(cfg, cfg.UserServiceURL)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("user-service bağlantısı başarısız: %w", err)
 	}
 
 	// 2. Telephony Action Service
 	telephonyConn, err := createConnection(cfg, cfg.TelephonyActionURL)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("telephony-action-service bağlantısı başarısız: %w", err)
 	}
 
 	// 3. B2BUA Service
-	// Config'e henüz eklenmediyse burada default değerle bağlanmayı dene
-	b2buaTarget := "https://b2bua-service:13081"
-	b2buaConn, err := createConnection(cfg, b2buaTarget)
+	b2buaConn, err := createConnection(cfg, cfg.B2buaServiceURL)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("b2bua-service bağlantısı başarısız: %w", err)
 	}
 
 	log.Info().Msg("✅ İstemciler hazır.")
@@ -54,25 +52,17 @@ func NewClients(cfg *config.Config) (*Clients, error) {
 	return &Clients{
 		User:            userv1.NewUserServiceClient(userConn),
 		TelephonyAction: telephonyv1.NewTelephonyActionServiceClient(telephonyConn),
-		// DÜZELTME: NewB2BuaServiceClient -> NewB2BUAServiceClient
-		B2BUA: sipv1.NewB2BUAServiceClient(b2buaConn),
+		B2BUA:           sipv1.NewB2BUAServiceClient(b2buaConn),
 	}, nil
 }
 
 func createConnection(cfg *config.Config, targetURL string) (*grpc.ClientConn, error) {
 	var opts []grpc.DialOption
 
-	cleanTarget := targetURL
-	if strings.HasPrefix(cleanTarget, "https://") {
-		cleanTarget = strings.TrimPrefix(cleanTarget, "https://")
-	} else if strings.HasPrefix(cleanTarget, "http://") {
-		cleanTarget = strings.TrimPrefix(cleanTarget, "http://")
-	}
-
+	cleanTarget := strings.TrimPrefix(strings.TrimPrefix(targetURL, "https://"), "http://")
 	serverName := strings.Split(cleanTarget, ":")[0]
 
 	if cfg.CertPath != "" && cfg.KeyPath != "" && cfg.CaPath != "" {
-		// Dosya varlık kontrolü
 		if _, err := os.Stat(cfg.CertPath); os.IsNotExist(err) {
 			log.Warn().Str("path", cfg.CertPath).Msg("Sertifika dosyası bulunamadı, INSECURE moduna geçiliyor.")
 			opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
