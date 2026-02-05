@@ -2,6 +2,7 @@
 package client
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 )
 
 type Clients struct {
@@ -27,7 +29,7 @@ type Clients struct {
 }
 
 func NewClients(cfg *config.Config) (*Clients, error) {
-	log.Info().Msg("🔌 Servis bağlantıları kuruluyor...")
+	log.Info().Msg("🔌 Servis bağlantıları (mTLS/Trace destekli) kuruluyor...")
 
 	// 1. User Service
 	userConn, err := createConnection(cfg, cfg.UserServiceURL)
@@ -47,7 +49,7 @@ func NewClients(cfg *config.Config) (*Clients, error) {
 		return nil, fmt.Errorf("b2bua-service bağlantısı başarısız: %w", err)
 	}
 
-	log.Info().Msg("✅ İstemciler hazır.")
+	log.Info().Msg("✅ İstemciler ve Trace Interceptor'lar hazır.")
 
 	return &Clients{
 		User:            userv1.NewUserServiceClient(userConn),
@@ -56,11 +58,16 @@ func NewClients(cfg *config.Config) (*Clients, error) {
 	}, nil
 }
 
+// createConnection: Trace Propagation Interceptor ile gRPC bağlantısı oluşturur.
 func createConnection(cfg *config.Config, targetURL string) (*grpc.ClientConn, error) {
 	var opts []grpc.DialOption
 
 	cleanTarget := strings.TrimPrefix(strings.TrimPrefix(targetURL, "https://"), "http://")
 	serverName := strings.Split(cleanTarget, ":")[0]
+
+	// [CRITICAL UPDATE] Trace ID Propagation Interceptor
+	opts = append(opts, grpc.WithUnaryInterceptor(tracePropagationInterceptor))
+	opts = append(opts, grpc.WithStreamInterceptor(streamTracePropagationInterceptor))
 
 	if cfg.CertPath != "" && cfg.KeyPath != "" && cfg.CaPath != "" {
 		if _, err := os.Stat(cfg.CertPath); os.IsNotExist(err) {
@@ -75,22 +82,66 @@ func createConnection(cfg *config.Config, targetURL string) (*grpc.ClientConn, e
 			if err != nil {
 				return nil, fmt.Errorf("ca load error: %w", err)
 			}
-			caPool := x509.NewCertPool()
-			if !caPool.AppendCertsFromPEM(caCert) {
+
+			// DÜZELTME BURADA: Değişken adı 'caCertPool' olarak standardize edildi.
+			caCertPool := x509.NewCertPool()
+			if !caCertPool.AppendCertsFromPEM(caCert) {
 				return nil, fmt.Errorf("failed to append CA")
 			}
 
 			creds := credentials.NewTLS(&tls.Config{
 				Certificates: []tls.Certificate{clientCert},
-				RootCAs:      caPool,
+				RootCAs:      caCertPool, // DÜZELTME: Doğru değişken kullanıldı
 				ServerName:   serverName,
 			})
 			opts = append(opts, grpc.WithTransportCredentials(creds))
 		}
 	} else {
-		log.Warn().Msg("mTLS config eksik, INSECURE bağlanılıyor.")
+		log.Warn().Str("target", cleanTarget).Msg("mTLS config eksik, INSECURE bağlanılıyor.")
 		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 
 	return grpc.NewClient(cleanTarget, opts...)
+}
+
+// tracePropagationInterceptor: Unary çağrılar için Trace ID taşır.
+func tracePropagationInterceptor(
+	ctx context.Context,
+	method string,
+	req, reply interface{},
+	cc *grpc.ClientConn,
+	invoker grpc.UnaryInvoker,
+	opts ...grpc.CallOption,
+) error {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		md = metadata.New(nil)
+	}
+
+	if traceIDs := md.Get("x-trace-id"); len(traceIDs) > 0 {
+		ctx = metadata.AppendToOutgoingContext(ctx, "x-trace-id", traceIDs[0])
+	}
+
+	return invoker(ctx, method, req, reply, cc, opts...)
+}
+
+// streamTracePropagationInterceptor: Stream çağrılar için Trace ID taşır.
+func streamTracePropagationInterceptor(
+	ctx context.Context,
+	desc *grpc.StreamDesc,
+	cc *grpc.ClientConn,
+	method string,
+	streamer grpc.Streamer,
+	opts ...grpc.CallOption,
+) (grpc.ClientStream, error) {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		md = metadata.New(nil)
+	}
+
+	if traceIDs := md.Get("x-trace-id"); len(traceIDs) > 0 {
+		ctx = metadata.AppendToOutgoingContext(ctx, "x-trace-id", traceIDs[0])
+	}
+
+	return streamer(ctx, desc, cc, method, opts...)
 }
