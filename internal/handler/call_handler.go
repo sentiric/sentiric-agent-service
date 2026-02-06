@@ -18,20 +18,23 @@ import (
 
 	"github.com/sentiric/sentiric-agent-service/internal/client"
 	"github.com/sentiric/sentiric-agent-service/internal/constants"
+	"github.com/sentiric/sentiric-agent-service/internal/queue"
 	"github.com/sentiric/sentiric-agent-service/internal/state"
 )
 
 type CallHandler struct {
 	clients      *client.Clients
 	stateManager *state.Manager
-	db           *sql.DB // DB'yi şimdilik tutuyoruz, gelecekte prompt'lar için gerekebilir.
+	publisher    *queue.Publisher
+	db           *sql.DB
 	log          zerolog.Logger
 }
 
-func NewCallHandler(clients *client.Clients, sm *state.Manager, db *sql.DB, log zerolog.Logger) *CallHandler {
+func NewCallHandler(clients *client.Clients, sm *state.Manager, pub *queue.Publisher, db *sql.DB, log zerolog.Logger) *CallHandler {
 	return &CallHandler{
 		clients:      clients,
 		stateManager: sm,
+		publisher:    pub,
 		db:           db,
 		log:          log,
 	}
@@ -39,11 +42,6 @@ func NewCallHandler(clients *client.Clients, sm *state.Manager, db *sql.DB, log 
 
 func (h *CallHandler) ProcessManualDial(ctx context.Context, req *agentv1.ProcessManualDialRequest) (*agentv1.ProcessManualDialResponse, error) {
 	l := h.log.With().Str("dest", req.DestinationNumber).Str("agent", req.UserId).Logger()
-	l.Info().Msg("☎️ Manuel dış arama orkestrasyonu tetiklendi.")
-
-	if len(req.DestinationNumber) < 4 {
-		return &agentv1.ProcessManualDialResponse{Accepted: false, ErrorMessage: "Geçersiz hedef numara"}, nil
-	}
 
 	callID := fmt.Sprintf("out-%s", uuid.New().String())
 
@@ -55,125 +53,113 @@ func (h *CallHandler) ProcessManualDial(ctx context.Context, req *agentv1.Proces
 
 	_, err := h.clients.B2BUA.InitiateCall(ctx, b2buaReq)
 	if err != nil {
-		l.Error().Err(err).Msg("❌ B2BUA servis çağrısı başarısız.")
-		return &agentv1.ProcessManualDialResponse{Accepted: false, ErrorMessage: "Sinyalleşme hatası: " + err.Error()}, nil
+		l.Error().Err(err).Msg("❌ B2BUA InitiateCall hatası")
+		return &agentv1.ProcessManualDialResponse{Accepted: false, ErrorMessage: err.Error()}, nil
 	}
 
-	stateErr := h.stateManager.Set(ctx, &state.CallState{
+	h.stateManager.Set(ctx, &state.CallState{
 		CallID:       callID,
 		TenantID:     req.TenantId,
 		CurrentState: constants.StateWelcoming,
+		CreatedAt:    time.Now(),
 	})
 
-	if stateErr != nil {
-		l.Warn().Err(stateErr).Msg("State kaydı oluşturulamadı (Kritik değil)")
-	}
-
-	l.Info().Str("call_id", callID).Msg("✅ Dış arama başarıyla kuyruğa alındı.")
 	return &agentv1.ProcessManualDialResponse{Accepted: true, CallId: callID}, nil
 }
 
-func (h *CallHandler) HandleCallStarted(ctx context.Context, event *state.CallEvent) {
-	l := h.log.With().Str("call_id", event.CallID).Logger()
+func (h *CallHandler) HandleCallStarted(ctx context.Context, event *eventv1.CallStartedEvent) {
+	l := h.log.With().Str("call_id", event.CallId).Logger()
 
-	lockKey := fmt.Sprintf("lock:call_started:%s", event.CallID)
+	// 1. Double Trigger Koruması (Idempotency)
+	lockKey := fmt.Sprintf("lock:call:%s", event.CallId)
 	isNew, err := h.stateManager.RedisClient().SetNX(ctx, lockKey, "1", 10*time.Second).Result()
 	if err != nil || !isNew {
-		if err != nil {
-			l.Error().Err(err).Msg("Redis kilit hatası")
-		} else {
-			l.Warn().Msg("⚠️ Çift 'call.started' olayı algılandı ve yoksayıldı.")
-		}
 		return
 	}
 
-	l.Info().Msg("📞 Yeni çağrı yakalandı. Orkestrasyon başlıyor.")
+	l.Info().Msg("📞 Çağrı orkestrasyonu başlıyor.")
 
-	if event.Media == nil {
-		l.Error().Msg("🚨 KRİTİK: Media bilgisi eksik, çağrı yönetilemez.")
-		// Fallback anonsu doğrudan Media Service'e gönderemeyiz, bu yüzden sadece logluyoruz.
-		return
-	}
-
-	err = h.stateManager.Set(ctx, &state.CallState{
-		CallID:       event.CallID,
-		TraceID:      event.TraceID,
-		Event:        event,
+	// 2. State Kaydı
+	s := &state.CallState{
+		CallID:       event.CallId,
+		TraceID:      event.TraceId,
+		TenantID:     event.DialplanResolution.TenantId,
 		CurrentState: constants.StateWelcoming,
-	})
-	if err != nil {
-		l.Error().Err(err).Msg("Redis durum kaydı başarısız.")
+		FromURI:      event.FromUri,
+		ToURI:        event.ToUri,
+		CreatedAt:    time.Now(),
 	}
+	if event.MediaInfo != nil {
+		s.ServerRtpPort = event.MediaInfo.ServerRtpPort
+		s.CallerRtpAddr = event.MediaInfo.CallerRtpAddr
+	}
+	h.stateManager.Set(ctx, s)
 
-	// Tüm iş mantığı `telephony-action-service`'e devrediliyor.
-	h.delegateToTelephonyAction(ctx, event)
+	// 3. TAS Pipeline Devri
+	h.delegateToTAS(ctx, s)
 }
 
-// YENİ METOT: delegateToTelephonyAction
-// Bu metot, gelen çağrının tüm ses işleme döngüsünü `telephony-action-service`'e devreder.
-func (h *CallHandler) delegateToTelephonyAction(ctx context.Context, event *state.CallEvent) {
-	l := h.log.With().Str("call_id", event.CallID).Logger()
-	l.Info().Msg("🤖 Pipeline, telephony-action-service'e devrediliyor...")
-
-	sessionID := event.TraceID
-	if sessionID == "" {
-		sessionID = fmt.Sprintf("sess-%s", event.CallID)
-	}
-
-	mediaInfoProto := &eventv1.MediaInfo{
-		CallerRtpAddr: event.Media.CallerRtpAddr,
-		ServerRtpPort: uint32(event.Media.ServerRtpPort),
-	}
+func (h *CallHandler) delegateToTAS(ctx context.Context, s *state.CallState) {
+	l := h.log.With().Str("call_id", s.CallID).Logger()
 
 	req := &telephonyv1.RunPipelineRequest{
-		CallId:        event.CallID,
-		SessionId:     sessionID,
-		MediaInfo:     mediaInfoProto,
-		SttModelId:    "whisper:default", // Gelecekte dialplan'dan gelebilir
-		TtsModelId:    "coqui:default",   // Gelecekte dialplan'dan gelebilir
-		RecordSession: true,
+		CallId:    s.CallID,
+		SessionId: s.TraceID,
+		MediaInfo: &eventv1.MediaInfo{
+			CallerRtpAddr: s.CallerRtpAddr,
+			ServerRtpPort: s.ServerRtpPort,
+		},
+		SttModelId: "whisper:default",
+		TtsModelId: "coqui:default",
 	}
 
-	// gRPC stream'ini başlat
 	stream, err := h.clients.TelephonyAction.RunPipeline(ctx, req)
 	if err != nil {
-		l.Error().Err(err).Msg("❌ RunPipeline başlatılamadı.")
-		// Burada yapılacak fallback (örn: hata anonsu) yine telephony-action-service'de olmalı.
+		l.Error().Err(err).Msg("❌ TAS Pipeline başlatılamadı. Telafi işlemi tetikleniyor.")
+		h.compensateFailedCall(ctx, s.CallID, "TAS_START_FAILED")
 		return
 	}
 
-	l.Info().Msg("✅ Pipeline başarıyla devredildi. Durum güncellemeleri dinleniyor.")
-
-	// Arka planda stream'den gelen durum güncellemelerini dinle.
-	// Bu, Agent'ın pipeline'ın sağlığını izlemesini sağlar.
+	// Stream Monitoring
 	go func() {
 		for {
 			resp, err := stream.Recv()
 			if err == io.EOF {
-				l.Info().Msg("🏁 Pipeline tamamlandı (EOF).")
+				l.Info().Msg("🏁 TAS Pipeline normal sonlandı.")
 				return
 			}
 			if err != nil {
-				l.Error().Err(err).Msg("⚠️ Pipeline bağlantısı koptu.")
-				// Burada yeniden bağlanma veya SAGA'yı fail etme mantığı eklenebilir.
+				l.Error().Err(err).Msg("⚠️ TAS Stream koptu! Kaynaklar temizleniyor.")
+				h.compensateFailedCall(context.Background(), s.CallID, "TAS_STREAM_LOST")
 				return
 			}
 
-			// Gelen durum güncellemelerini logla
-			switch resp.State {
-			case telephonyv1.RunPipelineResponse_STATE_RUNNING:
-				l.Debug().Msg("🟢 Pipeline çalışıyor...")
-			case telephonyv1.RunPipelineResponse_STATE_ERROR:
-				l.Error().Str("msg", resp.Message).Msg("🔴 Pipeline Hatası")
-			case telephonyv1.RunPipelineResponse_STATE_STOPPED:
-				l.Info().Msg("🛑 Pipeline durdu.")
+			if resp.State == telephonyv1.RunPipelineResponse_STATE_ERROR {
+				l.Error().Str("msg", resp.Message).Msg("🔴 TAS Pipeline Hatası!")
+				h.compensateFailedCall(context.Background(), s.CallID, "TAS_INTERNAL_ERROR")
 				return
 			}
 		}
 	}()
 }
 
-func (h *CallHandler) HandleCallEnded(ctx context.Context, event *state.CallEvent) {
-	h.log.Info().Str("call_id", event.CallID).Msg("📴 Çağrı sonlandı.")
-	// Burada, eğer pipeline hala çalışıyorsa sonlandırma komutu gönderilebilir.
+// compensateFailedCall: SAGA Telafi işlemi. Çağrıyı tüm platformda sonlandırır.
+func (h *CallHandler) compensateFailedCall(ctx context.Context, callID, reason string) {
+	l := h.log.With().Str("call_id", callID).Str("reason", reason).Logger()
+	l.Warn().Msg("🔄 SAGA Telafisi: call.terminate.request yayınlanıyor.")
+
+	err := h.publisher.PublishJSON(ctx, string(constants.EventTypeCallTerminateRequest), map[string]string{
+		"callId": callID,
+		"reason": reason,
+	})
+	if err != nil {
+		l.Error().Err(err).Msg("❌ Telafi olayı yayınlanamadı! KRİTİK VERİ TUTARSIZLIĞI.")
+	}
+
+	h.stateManager.Delete(ctx, callID)
+}
+
+func (h *CallHandler) HandleCallEnded(ctx context.Context, callID string) {
+	h.log.Info().Str("call_id", callID).Msg("📴 Çağrı sonlandı. State temizleniyor.")
+	h.stateManager.Delete(ctx, callID)
 }

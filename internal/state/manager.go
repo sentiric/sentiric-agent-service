@@ -4,85 +4,43 @@ package state
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/sentiric/sentiric-agent-service/internal/constants"
 )
 
-// MatchedContactPayload, dialplan çözümlemesinden dönen contact verisini temsil eder.
-type MatchedContactPayload struct {
-	ID           int32  `json:"id"`
-	UserID       string `json:"userId"`
-	ContactType  string `json:"contactType"`
-	ContactValue string `json:"contactValue"`
-	IsPrimary    bool   `json:"isPrimary"`
-}
+const SessionTTL = 2 * time.Hour
 
-// MatchedUserPayload, dialplan çözümlemesinden dönen user verisini temsil eder.
-type MatchedUserPayload struct {
-	ID                    string                   `json:"id"`
-	Name                  *string                  `json:"name"`
-	TenantID              string                   `json:"tenantId"`
-	UserType              string                   `json:"userType"`
-	Contacts              []*MatchedContactPayload `json:"contacts"`
-	PreferredLanguageCode *string                  `json:"preferredLanguageCode"`
-}
-
-// ActionDataPayload, dialplan'deki eylem verisini temsil eder.
-type ActionDataPayload struct {
-	Data map[string]string `json:"data"`
-}
-
-// DialplanActionPayload, dialplan'deki eylemi temsil eder.
-type DialplanActionPayload struct {
-	Action     string             `json:"action"`
-	ActionData *ActionDataPayload `json:"actionData"`
-}
-
-// DialplanPayload, call.started olayının içindeki zenginleştirilmiş dialplan verisini temsil eder.
-type DialplanPayload struct {
-	DialplanID     string                 `json:"dialplanId"`
-	TenantID       string                 `json:"tenantId"`
-	Action         *DialplanActionPayload `json:"action"`
-	MatchedUser    *MatchedUserPayload    `json:"matchedUser"`
-	MatchedContact *MatchedContactPayload `json:"matchedContact"`
-	InboundRoute   struct {
-		DefaultLanguageCode string `json:"defaultLanguageCode"`
-	} `json:"inboundRoute"`
-}
-
-// ==================== YENİ DÜZENLEME ====================
-// MediaInfoPayload, RabbitMQ olayındaki 'mediaInfo' alanını
-// tip-güvenli bir şekilde temsil eder.
+// MediaInfoPayload, olaylardaki medya verilerini temsil eder.
 type MediaInfoPayload struct {
 	CallerRtpAddr string  `json:"callerRtpAddr"`
-	ServerRtpPort float64 `json:"serverRtpPort"` // JSON'dan gelen sayısal değerler Go'da float64 olarak decode edilir
+	ServerRtpPort float64 `json:"serverRtpPort"`
 }
 
-// ==================== DÜZENLEME SONU ====================
-
-// CallEvent, RabbitMQ'dan gelen call.started olayının yapısını temsil eder.
+// CallEvent, ham olay verilerini temsil eder.
 type CallEvent struct {
-	EventType string `json:"eventType"`
-	TraceID   string `json:"traceId"`
-	CallID    string `json:"callId"`
-	// --- DEĞİŞİKLİK BURADA ---
-	Media *MediaInfoPayload `json:"mediaInfo"`
-	// --- DEĞİŞİKLİK SONU ---
-	From     string           `json:"fromUri"`
-	Dialplan *DialplanPayload `json:"dialplanResolution"`
+	EventType string            `json:"eventType"`
+	TraceID   string            `json:"traceId"`
+	CallID    string            `json:"callId"`
+	Media     *MediaInfoPayload `json:"mediaInfo"`
+	From      string            `json:"fromUri"`
+	To        string            `json:"toUri"`
 }
 
-// CallState, bir çağrının yaşam döngüsü boyunca Redis'te saklanan durumunu temsil eder.
+// CallState, Redis'te saklanan orkestrasyon durumudur.
 type CallState struct {
-	CallID              string
-	TraceID             string
-	TenantID            string
-	CurrentState        constants.DialogState
-	Event               *CallEvent
-	Conversation        []map[string]string
-	ConsecutiveFailures int
+	CallID              string                `json:"callId"`
+	TraceID             string                `json:"traceId"`
+	TenantID            string                `json:"tenantId"`
+	CurrentState        constants.DialogState `json:"currentState"`
+	FromURI             string                `json:"fromUri"`
+	ToURI               string                `json:"toUri"`
+	ServerRtpPort       uint32                `json:"serverRtpPort"`
+	CallerRtpAddr       string                `json:"callerRtpAddr"`
+	ConsecutiveFailures int                   `json:"consecutiveFailures"`
+	CreatedAt           time.Time             `json:"createdAt"`
 }
 
 type Manager struct {
@@ -104,11 +62,11 @@ func (m *Manager) Get(ctx context.Context, callID string) (*CallState, error) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("redis get error: %w", err)
 	}
 	var state CallState
 	if err := json.Unmarshal([]byte(val), &state); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("json unmarshal error: %w", err)
 	}
 	return &state, nil
 }
@@ -119,5 +77,9 @@ func (m *Manager) Set(ctx context.Context, state *CallState) error {
 	if err != nil {
 		return err
 	}
-	return m.rdb.Set(ctx, key, val, 2*time.Hour).Err()
+	return m.rdb.Set(ctx, key, val, SessionTTL).Err()
+}
+
+func (m *Manager) Delete(ctx context.Context, callID string) error {
+	return m.rdb.Del(ctx, "callstate:"+callID).Err()
 }
