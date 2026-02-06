@@ -38,7 +38,7 @@ func (a *App) Run() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 1. Altyapı Bağlantıları
+	// 1. Altyapı
 	db, rdb, rabbitCh, closeChan, err := a.initInfra(ctx)
 	if err != nil {
 		a.Log.Fatal().Err(err).Msg("Altyapı başlatılamadı")
@@ -47,29 +47,25 @@ func (a *App) Run() {
 	defer rdb.Close()
 	defer rabbitCh.Close()
 
-	// 2. Bağımlılık Enjeksiyonu
-	clients, err := client.NewClients(a.Cfg)
-	if err != nil {
-		a.Log.Fatal().Err(err).Msg("gRPC istemcileri başlatılamadı")
-	}
-
+	// 2. DI
+	clients, _ := client.NewClients(a.Cfg)
 	stateMgr := state.NewManager(rdb)
 	publisher := queue.NewPublisher(rabbitCh, a.Log)
 	callHandler := handler.NewCallHandler(clients, stateMgr, publisher, db, a.Log)
 	eventHandler := handler.NewEventHandler(a.Log, metrics.EventsProcessed, metrics.EventsFailed, callHandler)
 
-	// 3. Sunucular
+	// 3. Server
 	grpcServer := grpc.NewServer()
 	agentv1.RegisterAgentOrchestrationServiceServer(grpcServer, &AgentServer{handler: callHandler})
 
 	go a.startGRPC(grpcServer)
 	go metrics.StartServer(a.Cfg.MetricsPort, a.Log)
 
-	// 4. RabbitMQ Worker
+	// 4. Worker
 	var wg sync.WaitGroup
 	go queue.StartConsumer(ctx, rabbitCh, eventHandler.HandleRabbitMQMessage, a.Log, &wg)
 
-	// 5. Shutdown
+	// 5. Cleanup
 	a.handleShutdown(cancel, grpcServer, &wg, closeChan)
 }
 
@@ -92,11 +88,11 @@ func (a *App) initInfra(ctx context.Context) (*sql.DB, *redis.Client, *amqp091.C
 func (a *App) startGRPC(srv *grpc.Server) {
 	lis, err := net.Listen("tcp", ":12031")
 	if err != nil {
-		a.Log.Fatal().Err(err).Msg("gRPC dinleme hatası")
+		a.Log.Fatal().Err(err).Msg("gRPC listen failed")
 	}
-	a.Log.Info().Msg("🚀 gRPC Sunucusu (Orchestration) dinleniyor: 12031")
+	a.Log.Info().Msg("🚀 gRPC Server (Orchestration) active: 12031")
 	if err := srv.Serve(lis); err != nil {
-		a.Log.Fatal().Err(err).Msg("gRPC sunucu hatası")
+		a.Log.Fatal().Err(err).Msg("gRPC serve failed")
 	}
 }
 
@@ -106,17 +102,18 @@ func (a *App) handleShutdown(cancel context.CancelFunc, srv *grpc.Server, wg *sy
 
 	select {
 	case <-sig:
-		a.Log.Info().Msg("Kapatma sinyali alındı.")
+		a.Log.Info().Msg("Shutdown signal received.")
 	case err := <-closeChan:
-		a.Log.Error().Err(err).Msg("RabbitMQ bağlantısı koptu.")
+		a.Log.Error().Err(err).Msg("RabbitMQ connection lost.")
 	}
 
 	cancel()
 	srv.GracefulStop()
 	wg.Wait()
-	a.Log.Info().Msg("Servis başarıyla durduruldu.")
+	a.Log.Info().Msg("Agent Service stopped.")
 }
 
+// AgentServer: gRPC Interface implementation
 type AgentServer struct {
 	agentv1.UnimplementedAgentOrchestrationServiceServer
 	handler *handler.CallHandler
