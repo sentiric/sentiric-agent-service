@@ -30,22 +30,18 @@ func NewEventHandler(log zerolog.Logger, processed, failed *prometheus.CounterVe
 }
 
 func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
-	// 1. Protobuf Unmarshal
-	var event eventv1.CallStartedEvent
-	if err := proto.Unmarshal(body, &event); err == nil {
-		if event.EventType == string(constants.EventTypeCallStarted) {
-			h.processCallStarted(&event)
-			return
-		}
+	// 1. Check if it's a CallStartedEvent (v1.15.0)
+	var startedEvent eventv1.CallStartedEvent
+	if err := proto.Unmarshal(body, &startedEvent); err == nil && startedEvent.EventType == string(constants.EventTypeCallStarted) {
+		h.processCallStarted(&startedEvent)
+		return
 	}
 
-	// 2. Unmarshal CallEndedEvent
+	// 2. Check if it's a CallEndedEvent
 	var endedEvent eventv1.CallEndedEvent
-	if err := proto.Unmarshal(body, &endedEvent); err == nil {
-		if endedEvent.EventType == string(constants.EventTypeCallEnded) {
-			h.processCallEnded(&endedEvent)
-			return
-		}
+	if err := proto.Unmarshal(body, &endedEvent); err == nil && endedEvent.EventType == string(constants.EventTypeCallEnded) {
+		h.processCallEnded(&endedEvent)
+		return
 	}
 
 	h.log.Warn().Msg("⚠️ Unrecognized or malformed event received.")
