@@ -30,7 +30,7 @@ func NewEventHandler(log zerolog.Logger, processed, failed *prometheus.CounterVe
 }
 
 func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
-	// 1. Unmarshal CallStartedEvent (Protobuf)
+	// 1. Protobuf Unmarshal
 	var event eventv1.CallStartedEvent
 	if err := proto.Unmarshal(body, &event); err == nil {
 		if event.EventType == string(constants.EventTypeCallStarted) {
@@ -39,7 +39,7 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 		}
 	}
 
-	// 2. Unmarshal CallEndedEvent (Protobuf)
+	// 2. Unmarshal CallEndedEvent
 	var endedEvent eventv1.CallEndedEvent
 	if err := proto.Unmarshal(body, &endedEvent); err == nil {
 		if endedEvent.EventType == string(constants.EventTypeCallEnded) {
@@ -48,6 +48,7 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 		}
 	}
 
+	h.log.Warn().Msg("⚠️ Unrecognized or malformed event received.")
 	h.eventsFailed.WithLabelValues("unknown", "unmarshal_error").Inc()
 }
 
@@ -59,6 +60,5 @@ func (h *EventHandler) processCallStarted(event *eventv1.CallStartedEvent) {
 
 func (h *EventHandler) processCallEnded(event *eventv1.CallEndedEvent) {
 	h.eventsProcessed.WithLabelValues(event.EventType).Inc()
-	ctx := context.Background()
-	h.callHandler.HandleCallEnded(ctx, event.CallId)
+	h.callHandler.HandleCallEnded(context.Background(), event.CallId)
 }

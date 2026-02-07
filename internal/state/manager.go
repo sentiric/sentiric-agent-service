@@ -4,6 +4,7 @@ package state
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -12,7 +13,7 @@ import (
 
 const SessionTTL = 2 * time.Hour
 
-// CallState, Redis'te saklanan aktif orkestrasyon verisidir.
+// CallState, platform genelindeki asenkron orkestrasyonun "Tek Doğruluk Kaynağı"dır.
 type CallState struct {
 	CallID         string                `json:"callId"`
 	TraceID        string                `json:"traceId"`
@@ -22,8 +23,8 @@ type CallState struct {
 	ToURI          string                `json:"toUri"`
 	ServerRtpPort  uint32                `json:"serverRtpPort"`
 	CallerRtpAddr  string                `json:"callerRtpAddr"`
-	CreatedAt      time.Time             `json:"createdAt"`
 	PipelineActive bool                  `json:"pipelineActive"`
+	CreatedAt      time.Time             `json:"createdAt"`
 }
 
 type Manager struct {
@@ -44,11 +45,11 @@ func (m *Manager) Get(ctx context.Context, callID string) (*CallState, error) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("redis get error: %w", err)
 	}
 	var state CallState
 	if err := json.Unmarshal([]byte(val), &state); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("json unmarshal error: %w", err)
 	}
 	return &state, nil
 }
