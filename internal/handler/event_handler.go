@@ -30,17 +30,27 @@ func NewEventHandler(log zerolog.Logger, processed, failed *prometheus.CounterVe
 }
 
 func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
-	// 1. Check if it's a CallStartedEvent (v1.15.0)
+	// 1. CallStartedEvent
 	var startedEvent eventv1.CallStartedEvent
 	if err := proto.Unmarshal(body, &startedEvent); err == nil && startedEvent.EventType == string(constants.EventTypeCallStarted) {
 		h.processCallStarted(&startedEvent)
 		return
 	}
 
-	// 2. Check if it's a CallEndedEvent
+	// 2. CallEndedEvent
 	var endedEvent eventv1.CallEndedEvent
 	if err := proto.Unmarshal(body, &endedEvent); err == nil && endedEvent.EventType == string(constants.EventTypeCallEnded) {
 		h.processCallEnded(&endedEvent)
+		return
+	}
+
+	// 3. [FIX] GenericEvent (Playback finished vb.)
+	// Agent şimdilik bu eventleri sadece tüketir ve sessizce geçer (ACK eder).
+	// İleride "Playback bitti, şimdi dinlemeye başla" mantığı buraya eklenebilir.
+	var genericEvent eventv1.GenericEvent
+	if err := proto.Unmarshal(body, &genericEvent); err == nil && genericEvent.EventType != "" {
+		h.eventsProcessed.WithLabelValues(genericEvent.EventType).Inc()
+		h.log.Debug().Str("type", genericEvent.EventType).Msg("GenericEvent alındı (No-op).")
 		return
 	}
 
