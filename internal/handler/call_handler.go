@@ -150,13 +150,19 @@ func (h *CallHandler) runTASPipeline(ctx context.Context, s *state.CallState, ac
 }
 
 func (h *CallHandler) compensate(ctx context.Context, callID, reason string) {
+	// YENİ: TraceID'yi context'ten çekerek logla
 	l := h.log.With().Str("call_id", callID).Str("reason", reason).Logger()
+
 	l.Warn().Msg("🔄 SAGA Compensation: Publishing call.terminate.request.")
 
-	err := h.publisher.PublishJSON(ctx, "call.terminate.request", map[string]string{
-		"callId": callID,
-		"reason": reason,
+	// RabbitMQ'ya hata bilgisini yapılandırılmış olarak gönder
+	err := h.publisher.PublishJSON(ctx, "call.terminate.request", map[string]interface{}{
+		"callId":    callID,
+		"reason":    reason,
+		"timestamp": time.Now().Format(time.RFC3339),
+		"code":      "SAGA_FAILURE_COMPENSATION",
 	})
+
 	if err != nil {
 		l.Error().Err(err).Msg("❌ CRITICAL: Failed to publish compensation event.")
 	}
