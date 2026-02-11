@@ -1,35 +1,45 @@
 // sentiric-agent-service/internal/logger/logger.go
+// NOT: Bu dosya artık cdr-service ile aynı Sentiric Standart Logger'ı kullanacak.
+// Proje genelinde tutarlılık için tam içerik cdr-service/internal/logger/logger.go ile aynıdır.
+
 package logger
 
 import (
 	"os"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 )
 
-func New(serviceName, env, logLevel string) zerolog.Logger {
-	var logger zerolog.Logger
+var phoneRegex = regexp.MustCompile(`(90|0)?5[0-9]{9}`)
 
-	// --- DEĞİŞİKLİK 1: Log Seviyesini Dinamik Olarak Ayarla ---
-	level, err := zerolog.ParseLevel(logLevel)
-	if err != nil {
-		level = zerolog.InfoLevel // Hatalı bir seviye girilirse INFO'ya fallback yap.
-		log.Warn().Msgf("Geçersiz LOG_LEVEL '%s', varsayılan olarak 'info' kullanılıyor.", logLevel)
+type PIIHook struct{}
+
+func (h PIIHook) Run(e *zerolog.Event, level zerolog.Level, msg string) {
+	if phoneRegex.MatchString(msg) {
+		masked := phoneRegex.ReplaceAllStringFunc(msg, func(phone string) string {
+			if len(phone) < 7 {
+				return "****"
+			}
+			return phone[:5] + "***" + phone[len(phone)-2:]
+		})
+		e.Str("masked_msg", masked)
 	}
+}
 
+func New(serviceName, env, logLevel string) zerolog.Logger {
+	level, _ := zerolog.ParseLevel(strings.ToLower(logLevel))
 	zerolog.TimeFieldFormat = time.RFC3339
 
+	var logger zerolog.Logger
 	if env == "development" {
-		// Geliştirme ortamı için renkli, okunabilir konsol logları
-		output := zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339}
-		logger = log.Output(output).With().Timestamp().Str("service", serviceName).Logger()
+		output := zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: "15:04:05"}
+		logger = zerolog.New(output).With().Timestamp().Str("svc", serviceName).Logger()
 	} else {
-		// Üretim ortamı için yapılandırılmış JSON logları
-		logger = zerolog.New(os.Stderr).With().Timestamp().Str("service", serviceName).Logger()
+		logger = zerolog.New(os.Stderr).With().Timestamp().Str("svc", serviceName).Logger()
 	}
 
-	// --- DEĞİŞİKLİK 2: Ayarlanan seviyeyi uygula ---
-	return logger.Level(level)
+	return logger.Level(level).Hook(PIIHook{})
 }
