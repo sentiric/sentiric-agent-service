@@ -19,16 +19,10 @@ var (
 
 const serviceName = "agent-service"
 
-// Bu fonksiyon, gRPC'nin varsayılan logger'ını bizim istediğimiz şekilde yapılandırır.
 func initGrpcLogger(logLevel string) {
-	// Eğer log seviyesi DEBUG değilse, gRPC'nin tüm loglarını yoksay.
 	if logLevel != "debug" {
-		// grpclog.NewLoggerV2'nin ioutil.Discard'a yazmasını sağlayarak
-		// tüm gRPC loglarını /dev/null gibi bir çöpe yönlendiriyoruz.
 		grpclog.SetLoggerV2(grpclog.NewLoggerV2(ioutil.Discard, ioutil.Discard, ioutil.Discard))
 	}
-	// Eğer logLevel == "debug" ise, hiçbir şey yapmıyoruz ve gRPC'nin
-	// varsayılan (ve genellikle çok detaylı olan) loglamasına izin veriyoruz.
 }
 
 func main() {
@@ -37,8 +31,8 @@ func main() {
 		log.Fatalf("Konfigürasyon yüklenemedi: %v", err)
 	}
 
-	// --- DEĞİŞİKLİK 3: Hem ENV hem de LOG_LEVEL'i logger'a gönder ---
-	appLog := logger.New(serviceName, cfg.Env, cfg.LogLevel)
+	// [GÜNCELLENDİ] LogFormat parametresi eklendi
+	appLog := logger.New(serviceName, cfg.Env, cfg.LogLevel, cfg.LogFormat)
 	initGrpcLogger(cfg.LogLevel)
 
 	appLog.Info().

@@ -12,6 +12,7 @@ import (
 type Config struct {
 	Env         string
 	LogLevel    string
+	LogFormat   string // [YENİ]
 	PostgresURL string
 	RabbitMQURL string
 	RedisURL    string
@@ -20,7 +21,7 @@ type Config struct {
 	// Hedef Servisler
 	UserServiceURL     string
 	TelephonyActionURL string
-	B2buaServiceURL    string // YENİ EKLENDİ
+	B2buaServiceURL    string
 
 	// Security
 	CertPath string
@@ -41,6 +42,7 @@ func Load() (*Config, error) {
 	return &Config{
 		Env:         getEnvWithDefault("ENV", "production"),
 		LogLevel:    getEnvWithDefault("LOG_LEVEL", "info"),
+		LogFormat:   getEnvWithDefault("LOG_FORMAT", "text"), // [YENİ]
 		PostgresURL: GetEnvOrFail("POSTGRES_URL"),
 
 		RabbitMQURL: GetEnvOrFail("RABBITMQ_URL"),
@@ -50,7 +52,7 @@ func Load() (*Config, error) {
 
 		UserServiceURL:     getEnvWithDefault("USER_SERVICE_TARGET_GRPC_URL", "user-service:12011"),
 		TelephonyActionURL: getEnvWithDefault("TELEPHONY_ACTION_TARGET_GRPC_URL", "telephony-action-service:13111"),
-		B2buaServiceURL:    getEnvWithDefault("B2BUA_SERVICE_TARGET_GRPC_URL", "b2bua-service:13081"), // YENİ EKLENDİ
+		B2buaServiceURL:    getEnvWithDefault("B2BUA_SERVICE_TARGET_GRPC_URL", "b2bua-service:13081"),
 
 		CertPath: GetEnvOrFail("AGENT_SERVICE_CERT_PATH"),
 		KeyPath:  GetEnvOrFail("AGENT_SERVICE_KEY_PATH"),
