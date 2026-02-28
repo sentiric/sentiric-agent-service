@@ -1,45 +1,43 @@
-# 🧠 Agent Service - Mantık Mimarisi (v3.0 - Conversation Specialist)
+# 🧠 Sentiric Agent Service - Mantık Mimarisi (v3.0)
 
-**Rol:** Konuşma Uzmanı. Sadece kendisine atanan aktif bir konuşmayı yönetir.
+**Rol:** Konuşma Uzmanı (Conversation Specialist). Bir çağrının baştan sona yönetimiyle (yönlendirme, sonlandırma) ilgilenmez; sadece kendisine verilen **İnsan-Makine diyalog anını** yönetir.
 
-## 1. Çalışma Prensibi (Dialogue Loop)
+## 1. Sisteme Entegrasyonu (The Trigger)
 
-Bu servis, bir çağrının *yönlendirmesiyle* ilgilenmez. Sadece **Ses/Metin** akışıyla ilgilenir.
+Agent Service, çağrı akışının neresinde devreye gireceğine kendi karar vermez. 
+**Workflow Service**, veritabanındaki kuralları (JSON) işlerken "AI Devreye Girsin" (Handover to Agent) adımına geldiğinde, Agent Service'i bir gRPC çağrısı ile uyandırır.
+
+## 2. Çalışma Prensibi (The Executor)
+
+Agent Service uyandırıldığında, asıl "Ağır İşçi" olan `Telephony Action Service`'i (TAS) kullanır.
 
 ```mermaid
 sequenceDiagram
-    participant User as Kullanıcı
-    participant Media as Media Service
-    participant STT as STT Gateway
+    participant WF as Workflow Service
     participant Agent as Agent Service
-    participant LLM as LLM Gateway
-    participant TTS as TTS Gateway
-
-    Note over Agent: Workflow Service tarafından tetiklenir
-
-    loop Aktif Konuşma (Full-Duplex)
-        User->>Media: Konuşur (RTP)
-        Media->>STT: Stream Audio
-        STT->>Agent: "Fiyatlarınız nedir?" (Text)
-        
-        Agent->>Agent: Bağlamı Kontrol Et (Context)
-        Agent->>LLM: Prompt Gönder
-        LLM-->>Agent: "Paketlerimiz 100 TL..." (Stream Token)
-        
-        par Parallel Execution
-            Agent->>TTS: "Paketlerimiz 100 TL..." (Text)
-            TTS-->>Media: Audio Stream (RTP)
-            Media->>User: Sesi Çal
-        end
-        
-        Note right of Agent: Eğer kullanıcı araya girerse (Barge-in), TTS'i durdur.
+    participant TAS as Telephony Action Service
+    participant Dialog as Dialog Service
+    
+    WF->>Agent: HandoverCall(CallID, Context)
+    Note over Agent: Agent çağrıyı devralır.
+    
+    Agent->>TAS: RunPipeline(CallID, STT_Model, TTS_Model)
+    Note over TAS: TAS, arka planda Media, STT, TTS ve Dialog servislerini birleştirip Full-Duplex bir döngü başlatır.
+    
+    loop Konuşma Süresince
+        TAS->>Dialog: Metin gönderir ve yanıt alır.
+        Note over Agent: Agent, TAS'ın durumunu izler (Hata var mı? Kapandı mı?)
     end
+    
+    TAS-->>Agent: Pipeline Finished
+    Agent-->>WF: Handover Complete
 ```
 
-## 2. Sorumluluk Sınırları
+## 3. Kesin Sınırlar (Boundaries)
 
-*   ❌ **Arama Başlatmaz:** `call.started` olayına tepki vermez (Bu artık Workflow'un işi).
-*   ❌ **Arama Sonlandırmaz:** Konuşma bittiğinde Workflow'a "Diyalog Bitti" sinyali gönderir, hattı Workflow kapatır.
-*   ✅ **Kişilik Bürünür:** Satışçı, Destek, Tekniker modlarına girer.
+*   **Gateway'lerle Konuşmaz:** Agent servisi STT, TTS veya LLM Gateway'lerine doğrudan ağ isteği atmaz. Bu işi `telephony-action-service` (TAS) yapar.
+*   **SIP ile İlgilenmez:** Çağrının nasıl geldiğini, B2BUA'yı veya Proxy'yi bilmez.
+*   **Orkestrasyon:** Agent'ın tek orkestrasyon görevi, TAS'ı doğru parametrelerle başlatmak ve gerektiğinde durdurmaktır.
+
 
 ---
