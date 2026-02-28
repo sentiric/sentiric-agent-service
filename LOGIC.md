@@ -1,46 +1,45 @@
-# 🧠 Sentiric Agent Service - Mantık Mimarisi (Final)
+# 🧠 Agent Service - Mantık Mimarisi (v3.0 - Conversation Specialist)
 
-**Rol:** Orkestra Şefi. Asenkron iş mantığı yürütücüsü.
+**Rol:** Konuşma Uzmanı. Sadece kendisine atanan aktif bir konuşmayı yönetir.
 
-## 1. Çalışma Prensibi (Event-Driven SAGA)
+## 1. Çalışma Prensibi (Dialogue Loop)
 
-Bu servis HTTP veya SIP dinlemez. Sadece `RabbitMQ` dinler.
-
-### Senaryo: Çağrı Başlangıcı
-
-1.  **Tetiklenme:** `call.started` olayı gelir.
-2.  **Bağlam (Context) Yükleme:**
-    *   Redis'ten veya olaydan `dialplan` bilgisini al.
-    *   Kullanıcıyı `user-service` üzerinden doğrula (veya misafir olarak işaretle).
-3.  **Karar (Logic):**
-    *   Eğer `START_AI_CONVERSATION` ise:
-        *   `telephony-action-service`'e "Karşılama mesajını çal" (`SpeakText`) emrini gönder.
-        *   `stt-gateway`'i tetikle (Dinlemeye başla).
-    *   Eğer `PLAY_ANNOUNCEMENT` ise:
-        *   `telephony-action-service`'e "Şu dosyayı çal" (`PlayAudio`) emrini gönder.
-
-## 2. Servis Etkileşim Haritası
+Bu servis, bir çağrının *yönlendirmesiyle* ilgilenmez. Sadece **Ses/Metin** akışıyla ilgilenir.
 
 ```mermaid
 sequenceDiagram
-    participant MQ as RabbitMQ
+    participant User as Kullanıcı
+    participant Media as Media Service
+    participant STT as STT Gateway
     participant Agent as Agent Service
-    participant TAS as Telephony Action
-    participant Dialog as Dialog Service
+    participant LLM as LLM Gateway
+    participant TTS as TTS Gateway
 
-    MQ->>Agent: call.started
-    
-    Note over Agent: İş mantığını yükle...
-    
-    Agent->>TAS: SpeakText("Merhaba, ben Asistan.")
-    TAS-->>Agent: OK (İşlem Başladı)
-    
-    loop Conversation Loop
-        TAS->>Agent: UserSpeech("Fiyatlar nedir?") (via STT)
-        Agent->>Dialog: GetResponse("Fiyatlar nedir?")
-        Dialog-->>Agent: "Paketimiz 100 TL..."
-        Agent->>TAS: SpeakText("Paketimiz 100 TL...")
+    Note over Agent: Workflow Service tarafından tetiklenir
+
+    loop Aktif Konuşma (Full-Duplex)
+        User->>Media: Konuşur (RTP)
+        Media->>STT: Stream Audio
+        STT->>Agent: "Fiyatlarınız nedir?" (Text)
+        
+        Agent->>Agent: Bağlamı Kontrol Et (Context)
+        Agent->>LLM: Prompt Gönder
+        LLM-->>Agent: "Paketlerimiz 100 TL..." (Stream Token)
+        
+        par Parallel Execution
+            Agent->>TTS: "Paketlerimiz 100 TL..." (Text)
+            TTS-->>Media: Audio Stream (RTP)
+            Media->>User: Sesi Çal
+        end
+        
+        Note right of Agent: Eğer kullanıcı araya girerse (Barge-in), TTS'i durdur.
     end
 ```
+
+## 2. Sorumluluk Sınırları
+
+*   ❌ **Arama Başlatmaz:** `call.started` olayına tepki vermez (Bu artık Workflow'un işi).
+*   ❌ **Arama Sonlandırmaz:** Konuşma bittiğinde Workflow'a "Diyalog Bitti" sinyali gönderir, hattı Workflow kapatır.
+*   ✅ **Kişilik Bürünür:** Satışçı, Destek, Tekniker modlarına girer.
 
 ---
