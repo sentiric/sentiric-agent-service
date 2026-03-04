@@ -146,3 +146,49 @@ func GetTemplateFromDB(db *sql.DB, templateID, languageCode, tenantID string) (s
 	}
 	return content, nil
 }
+
+// --- Conversation Management ---
+
+// CreateConversation: Yeni bir konuşma oturumu başlatır.
+func CreateConversation(db *sql.DB, callID, tenantID string, channel string) error {
+	query := `
+		INSERT INTO conversations (call_id, tenant_id, channel, status, created_at)
+		VALUES ($1, $2, $3, 'ACTIVE', NOW())
+		ON CONFLICT (id) DO NOTHING` // call_id unique değilse (id uuid), conflict olmaz ama idempotent olsun.
+
+	// Not: Schema'da ID UUID primary key, call_id normal kolon.
+	// Pratiklik adına call_id ile arama yapacağız, bu yüzden conversation ID'sini döndürmüyoruz şimdilik.
+
+	_, err := db.Exec(query, callID, tenantID, channel)
+	return err
+}
+
+// UpdateConversationStatus: Konuşma durumunu günceller.
+func UpdateConversationStatus(db *sql.DB, callID, status string) error {
+	query := `
+		UPDATE conversations 
+		SET status = $1, updated_at = NOW() 
+		WHERE call_id = $2`
+	_, err := db.Exec(query, status, callID)
+	return err
+}
+
+// AddTranscript: Konuşma dökümünü kaydeder.
+// Not: conversation_id'yi bulmak için call_id kullanılır.
+func AddTranscript(db *sql.DB, callID, senderType, message string) error {
+	// Önce conversation UUID'sini bul
+	var convID string
+	err := db.QueryRow("SELECT id FROM conversations WHERE call_id = $1 ORDER BY created_at DESC LIMIT 1", callID).Scan(&convID)
+	if err != nil {
+		return fmt.Errorf("conversation not found for call_id %s: %w", callID, err)
+	}
+
+	query := `
+		INSERT INTO transcripts (conversation_id, sender_type, message_text, created_at)
+		VALUES ($1, $2, $3, NOW())`
+
+	_, err = db.Exec(query, convID, senderType, message)
+	return err
+}
+
+// ... (GetAnnouncementPathFromDB ve GetTemplateFromDB aynen kalıyor) ...
