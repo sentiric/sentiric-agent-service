@@ -14,6 +14,8 @@ import (
 	"github.com/rabbitmq/amqp091-go"
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/sentiric/sentiric-agent-service/internal/client"
 	"github.com/sentiric/sentiric-agent-service/internal/config"
@@ -117,6 +119,30 @@ func (a *App) handleShutdown(cancel context.CancelFunc, srv *grpc.Server, wg *sy
 type AgentServer struct {
 	agentv1.UnimplementedAgentOrchestrationServiceServer
 	handler *handler.CallHandler
+}
+
+// [KRİTİK DÜZELTME]: Workflow'un Agent'a yetki devri yapabilmesi için gerekli gRPC metodları
+func (s *AgentServer) ProcessCallStart(ctx context.Context, req *agentv1.ProcessCallStartRequest) (*agentv1.ProcessCallStartResponse, error) {
+	stateMgr := s.handler.GetStateManager()
+	callState, err := stateMgr.Get(ctx, req.CallId)
+	if err != nil || callState == nil {
+		return nil, status.Errorf(codes.NotFound, "Call state not found in Redis. Call may have disconnected.")
+	}
+
+	// Workflow'un ilettiği parametreleri actionData'ya sararak çalıştırıyoruz
+	s.handler.RunTASPipelineWithPlan(ctx, callState, map[string]string{
+		"dialplan_id": req.DialplanId,
+	})
+
+	return &agentv1.ProcessCallStartResponse{Initiated: true}, nil
+}
+
+func (s *AgentServer) ProcessSagaStep(ctx context.Context, req *agentv1.ProcessSagaStepRequest) (*agentv1.ProcessSagaStepResponse, error) {
+	return &agentv1.ProcessSagaStepResponse{Completed: true}, nil
+}
+
+func (s *AgentServer) GetConversationTranscript(ctx context.Context, req *agentv1.GetConversationTranscriptRequest) (*agentv1.GetConversationTranscriptResponse, error) {
+	return &agentv1.GetConversationTranscriptResponse{}, nil
 }
 
 func (s *AgentServer) ProcessManualDial(ctx context.Context, req *agentv1.ProcessManualDialRequest) (*agentv1.ProcessManualDialResponse, error) {

@@ -15,7 +15,7 @@ import (
 	telephonyv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/telephony/v1"
 	userv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/user/v1"
 
-	"github.com/sentiric/sentiric-agent-service/internal/client" // Config import edilmeli
+	"github.com/sentiric/sentiric-agent-service/internal/client"
 	"github.com/sentiric/sentiric-agent-service/internal/constants"
 	"github.com/sentiric/sentiric-agent-service/internal/database"
 	"github.com/sentiric/sentiric-agent-service/internal/queue"
@@ -40,11 +40,19 @@ func NewCallHandler(clients *client.Clients, sm *state.Manager, pub *queue.Publi
 	}
 }
 
-// HandleCallStarted: RabbitMQ'dan gelen olayı karşılar ve SAGA akışını dallandırır.
+// [YENİ]: App katmanının erişebilmesi için accessor
+func (h *CallHandler) GetStateManager() *state.Manager {
+	return h.stateManager
+}
+
+// [YENİ]: App katmanının gRPC'den tetikleyebilmesi için Public wrapper
+func (h *CallHandler) RunTASPipelineWithPlan(ctx context.Context, s *state.CallState, actionData map[string]string) {
+	h.runTASPipeline(ctx, s, actionData)
+}
+
 func (h *CallHandler) HandleCallStarted(ctx context.Context, event *eventv1.CallStartedEvent) {
 	l := h.log.With().Str("call_id", event.CallId).Logger()
 
-	// 1. Idempotency Check
 	lockKey := fmt.Sprintf("lock:agent:%s", event.CallId)
 	isNew, err := h.stateManager.RedisClient().SetNX(ctx, lockKey, "1", 15*time.Second).Result()
 	if err != nil || !isNew {
@@ -52,14 +60,12 @@ func (h *CallHandler) HandleCallStarted(ctx context.Context, event *eventv1.Call
 		return
 	}
 
-	// 2. Dialplan Karar Analizi
 	res := event.GetDialplanResolution()
 	if res == nil || res.Action == nil {
 		l.Error().Msg("❌ CRITICAL: Event received without dialplan resolution!")
 		return
 	}
 
-	// [YENİ] Veritabanında Konuşma Kaydı Oluştur
 	if err := database.CreateConversation(h.db, event.CallId, res.TenantId, "voice"); err != nil {
 		l.Warn().Err(err).Msg("Konuşma kaydı veritabanına yazılamadı (Logic devam ediyor)")
 	}
@@ -67,7 +73,6 @@ func (h *CallHandler) HandleCallStarted(ctx context.Context, event *eventv1.Call
 	actionType := res.Action.Type
 	l.Info().Interface("action_type", actionType).Msg("🧠 Analyzing Dialplan Decision")
 
-	// 3. State Hazırlığı
 	s := &state.CallState{
 		CallID:       event.CallId,
 		TraceID:      event.TraceId,
@@ -83,22 +88,30 @@ func (h *CallHandler) HandleCallStarted(ctx context.Context, event *eventv1.Call
 	}
 	_ = h.stateManager.Set(ctx, s)
 
-	// 4. İş Akışı Dallanması (Workflow Branching)
 	switch actionType {
 	case dialplanv1.ActionType_ACTION_TYPE_START_AI_CONVERSATION:
-		l.Info().Msg("🤖 Starting AI Pipeline Execution.")
-		h.runTASPipeline(ctx, s, res.Action.ActionData)
+		l.Info().Msg("🤖 AI Çağrısı Algılandı. Workflow devri bekleniyor...")
+
+		//[KRİTİK DÜZELTME]: Otonom Fallback (Yedek Plan)
+		// Eğer workflow-service kapalıysa veya hata verdiyse (Örn: DB Hatası), çağrı havada kalır.
+		// Agent Service, çağrıyı 3 saniye sonra kontrol eder. Kimse sahiplenmemişse kendisi devralır.
+		go func() {
+			time.Sleep(3 * time.Second)
+			stateObj, _ := h.stateManager.Get(context.Background(), event.CallId)
+			if stateObj != nil && !stateObj.PipelineActive {
+				l.Warn().Msg("⚠️ Workflow Service yanıt vermedi! Agent Service FALLBACK modunda çağrıyı doğrudan devralıyor.")
+				h.runTASPipeline(context.Background(), stateObj, res.Action.ActionData)
+			}
+		}()
 
 	case dialplanv1.ActionType_ACTION_TYPE_BRIDGE_CALL:
 		l.Info().Msg("📞 Action: BRIDGE_CALL. Handed over to SIP Signaling.")
 		s.CurrentState = "BRIDGED"
 		_ = h.stateManager.Set(ctx, s)
-		// BridgeCall mantığı B2BUA veya Proxy tarafından yönetilir, Agent burada izleyici kalabilir.
 
 	case dialplanv1.ActionType_ACTION_TYPE_ECHO_TEST:
 		l.Info().Msg("🔊 Action: ECHO_TEST. Agent in standby mode.")
 
-	// [YENİ] Kuyruk / Ajan Yönlendirme Mantığı
 	case dialplanv1.ActionType_ACTION_TYPE_ENQUEUE_CALL:
 		l.Info().Msg("👥 Action: ENQUEUE_CALL. Checking agent availability...")
 		h.handleEnqueueCall(ctx, s, res.Action.ActionData)
@@ -108,26 +121,14 @@ func (h *CallHandler) HandleCallStarted(ctx context.Context, event *eventv1.Call
 	}
 }
 
-// handleEnqueueCall: Çağrıyı bir insana aktarmadan önce durum kontrolü yapar.
 func (h *CallHandler) handleEnqueueCall(ctx context.Context, s *state.CallState, actionData map[string]string) {
 	l := h.log.With().Str("call_id", s.CallID).Logger()
-
-	// Hedef ajan belirtilmiş mi? (Smart Routing)
 	targetAgentID, hasTarget := actionData["target_agent_id"]
 
 	if hasTarget {
-		// User Service'e sor: Bu ajan uygun mu?
 		profile, err := h.clients.User.GetAgentProfile(ctx, &userv1.GetAgentProfileRequest{UserId: targetAgentID})
-
 		if err == nil && profile.Profile.Status == "ONLINE" {
 			l.Info().Str("agent_id", targetAgentID).Msg("✅ Hedef ajan ONLINE. Transfer başlatılıyor.")
-
-			// B2BUA'ya transfer emri ver (Bridge)
-			// Not: B2BUA'nın BridgeCall RPC'si kullanılmalı.
-			// Şimdilik stub olarak logluyoruz.
-			// _, err := h.clients.B2BUA.TransferCall(...)
-
-			// Transfer başarılı varsayalım ve state güncelle
 			s.CurrentState = "TRANSFERRED"
 			_ = h.stateManager.Set(ctx, s)
 			return
@@ -135,11 +136,7 @@ func (h *CallHandler) handleEnqueueCall(ctx context.Context, s *state.CallState,
 			l.Warn().Str("agent_id", targetAgentID).Msg("⛔ Hedef ajan OFFLINE veya meşgul. Fallback uygulanıyor.")
 		}
 	}
-
-	// Eğer direkt ajan yoksa veya meşgulse, Bekletme Müziği veya Anons çal.
-	// Burada TAS'ı kullanarak "Bütün temsilcilerimiz meşgul" anonsu çaldırabiliriz.
 	l.Info().Msg("🎵 Kuyruk müziği başlatılıyor (Mock).")
-	// h.runTASPipeline(ctx, s, map[string]string{"mode": "play_only", "file": "queue_music.wav"})
 }
 
 func (h *CallHandler) runTASPipeline(ctx context.Context, s *state.CallState, actionData map[string]string) {
@@ -168,8 +165,10 @@ func (h *CallHandler) runTASPipeline(ctx context.Context, s *state.CallState, ac
 		return
 	}
 
+	// [KRİTİK]: State'i güncelle ki Fallback bir daha çalışmasın.
 	s.PipelineActive = true
 	_ = h.stateManager.Set(ctx, s)
+	l.Info().Msg("▶️ TAS Pipeline Active")
 
 	go func() {
 		for {
@@ -180,7 +179,6 @@ func (h *CallHandler) runTASPipeline(ctx context.Context, s *state.CallState, ac
 			}
 			if err != nil {
 				l.Error().Err(err).Msg("⚠️ SAGA BREAK: TAS Stream connection lost.")
-				// h.compensate çağrısı burada loop yaratabilir, dikkatli olunmalı.
 				return
 			}
 
@@ -212,18 +210,12 @@ func (h *CallHandler) compensate(ctx context.Context, callID, reason string) {
 
 func (h *CallHandler) HandleCallEnded(ctx context.Context, callID string) {
 	h.log.Info().Str("call_id", callID).Msg("🧹 Call ended. Session cleanup.")
-
-	// [YENİ] Veritabanında durumu güncelle
 	if err := database.UpdateConversationStatus(h.db, callID, "COMPLETED"); err != nil {
 		h.log.Warn().Err(err).Msg("Konuşma durumu güncellenemedi")
 	}
-
 	_ = h.stateManager.Delete(ctx, callID)
 }
 
 func (h *CallHandler) ProcessManualDial(ctx context.Context, req *agentv1.ProcessManualDialRequest) (*agentv1.ProcessManualDialResponse, error) {
-	// B2BUA üzerinden dış arama başlatma
-	// Burada B2BUA.InitiateCall RPC'si çağrılmalı.
-	// Şimdilik stub olarak bırakıyoruz.
 	return &agentv1.ProcessManualDialResponse{Accepted: true, CallId: "out-dummy"}, nil
 }
