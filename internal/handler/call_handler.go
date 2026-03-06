@@ -40,12 +40,10 @@ func NewCallHandler(clients *client.Clients, sm *state.Manager, pub *queue.Publi
 	}
 }
 
-// [YENİ]: App katmanının erişebilmesi için accessor
 func (h *CallHandler) GetStateManager() *state.Manager {
 	return h.stateManager
 }
 
-// [YENİ]: App katmanının gRPC'den tetikleyebilmesi için Public wrapper
 func (h *CallHandler) RunTASPipelineWithPlan(ctx context.Context, s *state.CallState, actionData map[string]string) {
 	h.runTASPipeline(ctx, s, actionData)
 }
@@ -91,31 +89,17 @@ func (h *CallHandler) HandleCallStarted(ctx context.Context, event *eventv1.Call
 	switch actionType {
 	case dialplanv1.ActionType_ACTION_TYPE_START_AI_CONVERSATION:
 		l.Info().Msg("🤖 AI Çağrısı Algılandı. Workflow devri bekleniyor...")
-
-		//[KRİTİK DÜZELTME]: Otonom Fallback (Yedek Plan)
-		// Eğer workflow-service kapalıysa veya hata verdiyse (Örn: DB Hatası), çağrı havada kalır.
-		// Agent Service, çağrıyı 3 saniye sonra kontrol eder. Kimse sahiplenmemişse kendisi devralır.
-		go func() {
-			time.Sleep(3 * time.Second)
-			stateObj, _ := h.stateManager.Get(context.Background(), event.CallId)
-			if stateObj != nil && !stateObj.PipelineActive {
-				l.Warn().Msg("⚠️ Workflow Service yanıt vermedi! Agent Service FALLBACK modunda çağrıyı doğrudan devralıyor.")
-				h.runTASPipeline(context.Background(), stateObj, res.Action.ActionData)
-			}
-		}()
-
+		// [MİMARİ DÜZELTME]: Hardcoded 3 saniyelik sleep fallback iptal edildi.
+		// Artık Workflow servisine %100 güveniyoruz.
 	case dialplanv1.ActionType_ACTION_TYPE_BRIDGE_CALL:
 		l.Info().Msg("📞 Action: BRIDGE_CALL. Handed over to SIP Signaling.")
 		s.CurrentState = "BRIDGED"
 		_ = h.stateManager.Set(ctx, s)
-
 	case dialplanv1.ActionType_ACTION_TYPE_ECHO_TEST:
 		l.Info().Msg("🔊 Action: ECHO_TEST. Agent in standby mode.")
-
 	case dialplanv1.ActionType_ACTION_TYPE_ENQUEUE_CALL:
 		l.Info().Msg("👥 Action: ENQUEUE_CALL. Checking agent availability...")
 		h.handleEnqueueCall(ctx, s, res.Action.ActionData)
-
 	default:
 		l.Warn().Interface("type", actionType).Msg("⚠️ Unhandled action type received.")
 	}
@@ -165,7 +149,6 @@ func (h *CallHandler) runTASPipeline(ctx context.Context, s *state.CallState, ac
 		return
 	}
 
-	// [KRİTİK]: State'i güncelle ki Fallback bir daha çalışmasın.
 	s.PipelineActive = true
 	_ = h.stateManager.Set(ctx, s)
 	l.Info().Msg("▶️ TAS Pipeline Active")
