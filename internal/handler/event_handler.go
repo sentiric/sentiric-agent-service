@@ -1,4 +1,3 @@
-// sentiric-agent-service/internal/handler/event_handler.go
 package handler
 
 import (
@@ -44,17 +43,28 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 		return
 	}
 
-	// 3. [FIX] GenericEvent (Playback finished vb.)
-	// Agent şimdilik bu eventleri sadece tüketir ve sessizce geçer (ACK eder).
-	// İleride "Playback bitti, şimdi dinlemeye başla" mantığı buraya eklenebilir.
+	// 3. Media Olayları (Zararsızca Yoksay)
 	var genericEvent eventv1.GenericEvent
 	if err := proto.Unmarshal(body, &genericEvent); err == nil && genericEvent.EventType != "" {
+		// "call.recording.available" VEYA "call.media.playback.finished" gibi olayları güvenle atla
+		if genericEvent.EventType == "call.recording.available" || genericEvent.EventType == "call.media.playback.finished" {
+			h.eventsProcessed.WithLabelValues(genericEvent.EventType).Inc()
+			return // Hata veya log basmadan yut
+		}
+
 		h.eventsProcessed.WithLabelValues(genericEvent.EventType).Inc()
 		h.log.Debug().Str("type", genericEvent.EventType).Msg("GenericEvent alındı (No-op).")
 		return
 	}
 
-	h.log.Warn().Msg("⚠️ Unrecognized or malformed event received.")
+	// CallRecordingAvailableEvent native tipten geliyorsa
+	var recEvent eventv1.CallRecordingAvailableEvent
+	if err := proto.Unmarshal(body, &recEvent); err == nil && recEvent.EventType == "call.recording.available" {
+		h.eventsProcessed.WithLabelValues(recEvent.EventType).Inc()
+		return
+	}
+
+	h.log.Warn().Msg("⚠️ Unrecognized or malformed event received in Agent.")
 	h.eventsFailed.WithLabelValues("unknown", "unmarshal_error").Inc()
 }
 

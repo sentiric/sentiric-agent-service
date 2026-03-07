@@ -1,10 +1,8 @@
-// sentiric-agent-service/internal/app/app.go
 package app
 
 import (
 	"context"
 	"database/sql"
-	"net"
 	"os"
 	"os/signal"
 	"sync"
@@ -23,6 +21,7 @@ import (
 	"github.com/sentiric/sentiric-agent-service/internal/handler"
 	"github.com/sentiric/sentiric-agent-service/internal/metrics"
 	"github.com/sentiric/sentiric-agent-service/internal/queue"
+	"github.com/sentiric/sentiric-agent-service/internal/server"
 	"github.com/sentiric/sentiric-agent-service/internal/state"
 	agentv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/agent/v1"
 )
@@ -56,11 +55,17 @@ func (a *App) Run() {
 	callHandler := handler.NewCallHandler(clients, stateMgr, publisher, db, a.Log)
 	eventHandler := handler.NewEventHandler(a.Log, metrics.EventsProcessed, metrics.EventsFailed, callHandler)
 
-	// 3. Server
-	grpcServer := grpc.NewServer()
+	// 3. gRPC Sunucusu (TLS Desteği Eklendi)
+	grpcServer := server.NewGrpcServer(a.Cfg, a.Log)
 	agentv1.RegisterAgentOrchestrationServiceServer(grpcServer, &AgentServer{handler: callHandler})
 
-	go a.startGRPC(grpcServer)
+	go func() {
+		a.Log.Info().Msg("🚀 gRPC Server (Orchestration) active: 12031")
+		if err := server.Start(grpcServer, "12031"); err != nil && err.Error() != "http: Server closed" {
+			a.Log.Fatal().Err(err).Msg("gRPC serve failed")
+		}
+	}()
+
 	go metrics.StartServer(a.Cfg.MetricsPort, a.Log)
 
 	// 4. Worker
@@ -87,17 +92,6 @@ func (a *App) initInfra(ctx context.Context) (*sql.DB, *redis.Client, *amqp091.C
 	return db, rdb, ch, closeCh, nil
 }
 
-func (a *App) startGRPC(srv *grpc.Server) {
-	lis, err := net.Listen("tcp", ":12031")
-	if err != nil {
-		a.Log.Fatal().Err(err).Msg("gRPC listen failed")
-	}
-	a.Log.Info().Msg("🚀 gRPC Server (Orchestration) active: 12031")
-	if err := srv.Serve(lis); err != nil {
-		a.Log.Fatal().Err(err).Msg("gRPC serve failed")
-	}
-}
-
 func (a *App) handleShutdown(cancel context.CancelFunc, srv *grpc.Server, wg *sync.WaitGroup, closeChan <-chan *amqp091.Error) {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
@@ -110,7 +104,7 @@ func (a *App) handleShutdown(cancel context.CancelFunc, srv *grpc.Server, wg *sy
 	}
 
 	cancel()
-	srv.GracefulStop()
+	server.Stop(srv)
 	wg.Wait()
 	a.Log.Info().Msg("Agent Service stopped.")
 }
@@ -121,7 +115,6 @@ type AgentServer struct {
 	handler *handler.CallHandler
 }
 
-// [KRİTİK DÜZELTME]: Workflow'un Agent'a yetki devri yapabilmesi için gerekli gRPC metodları
 func (s *AgentServer) ProcessCallStart(ctx context.Context, req *agentv1.ProcessCallStartRequest) (*agentv1.ProcessCallStartResponse, error) {
 	stateMgr := s.handler.GetStateManager()
 	callState, err := stateMgr.Get(ctx, req.CallId)
@@ -129,7 +122,6 @@ func (s *AgentServer) ProcessCallStart(ctx context.Context, req *agentv1.Process
 		return nil, status.Errorf(codes.NotFound, "Call state not found in Redis. Call may have disconnected.")
 	}
 
-	// Workflow'un ilettiği parametreleri actionData'ya sararak çalıştırıyoruz
 	s.handler.RunTASPipelineWithPlan(ctx, callState, map[string]string{
 		"dialplan_id": req.DialplanId,
 	})
