@@ -46,26 +46,33 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 	// 3. Media Olayları (Zararsızca Yoksay)
 	var genericEvent eventv1.GenericEvent
 	if err := proto.Unmarshal(body, &genericEvent); err == nil && genericEvent.EventType != "" {
-		// "call.recording.available" VEYA "call.media.playback.finished" gibi olayları güvenle atla
 		if genericEvent.EventType == "call.recording.available" || genericEvent.EventType == "call.media.playback.finished" {
 			h.eventsProcessed.WithLabelValues(genericEvent.EventType).Inc()
 			return // Hata veya log basmadan yut
 		}
-
 		h.eventsProcessed.WithLabelValues(genericEvent.EventType).Inc()
 		h.log.Debug().Str("type", genericEvent.EventType).Msg("GenericEvent alındı (No-op).")
 		return
 	}
 
-	// CallRecordingAvailableEvent native tipten geliyorsa
+	// [YENİ]: Native struct kontrolü (Panopticon log kirliliğini önler)
 	var recEvent eventv1.CallRecordingAvailableEvent
 	if err := proto.Unmarshal(body, &recEvent); err == nil && recEvent.EventType == "call.recording.available" {
 		h.eventsProcessed.WithLabelValues(recEvent.EventType).Inc()
 		return
 	}
 
-	h.log.Warn().Msg("⚠️ Unrecognized or malformed event received in Agent.")
+	// YENİ: Playback bitiş eventini yut
+	var playEvent eventv1.GenericEvent // Playback finished genelde Generic olarak atılır
+	if err := proto.Unmarshal(body, &playEvent); err == nil && playEvent.EventType == "call.media.playback.finished" {
+		return
+	}
+
+	// Buraya gelirse gerçekten bozuk bir eventtir.
+	// Ancak log level'ı DEBUG yapıyoruz, ERROR veya WARN olmasın ki SRE dashboard'u kirletmesin.
+	h.log.Debug().Msg("Unrecognized event structure received in Agent.")
 	h.eventsFailed.WithLabelValues("unknown", "unmarshal_error").Inc()
+
 }
 
 func (h *EventHandler) processCallStarted(event *eventv1.CallStartedEvent) {
