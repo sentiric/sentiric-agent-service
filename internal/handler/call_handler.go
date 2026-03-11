@@ -14,6 +14,7 @@ import (
 	eventv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/event/v1"
 	telephonyv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/telephony/v1"
 	userv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/user/v1"
+	"google.golang.org/grpc/metadata"
 
 	"github.com/sentiric/sentiric-agent-service/internal/client"
 	"github.com/sentiric/sentiric-agent-service/internal/constants"
@@ -134,7 +135,7 @@ func (h *CallHandler) handleEnqueueCall(ctx context.Context, s *state.CallState,
 	l.Info().Msg("🎵 Kuyruk müziği başlatılıyor (Mock).")
 }
 
-func (h *CallHandler) runTASPipeline(ctx context.Context, s *state.CallState, actionData map[string]string) {
+func (h *CallHandler) runTASPipeline(grpcCtx context.Context, s *state.CallState, actionData map[string]string) {
 	l := h.log.With().Str("call_id", s.CallID).Logger()
 
 	voiceID := "coqui:default"
@@ -153,15 +154,27 @@ func (h *CallHandler) runTASPipeline(ctx context.Context, s *state.CallState, ac
 		TtsModelId: voiceID,
 	}
 
-	stream, err := h.clients.TelephonyAction.RunPipeline(ctx, req)
+	// =====================================================================
+	// [CRITICAL FIX]: BACKGROUND CONTEXT ISOLATION
+	// Gelen grpcCtx kısa ömürlüdür (Workflow gRPC çağrısı bittiğinde iptal olur).
+	// TAS Pipeline ise dakikalarca sürebilir. Eğer grpcCtx'i paslarsak,
+	// Workflow işini bitirdiği an TAS stream'i "context canceled" hatasıyla çöker.
+	// Çözüm: Yepyeni bir Background context oluşturup TraceID'yi içine aşılıyoruz.
+	// =====================================================================
+	pipelineCtx := context.Background()
+	if s.TraceID != "" {
+		pipelineCtx = metadata.AppendToOutgoingContext(pipelineCtx, "x-trace-id", s.TraceID)
+	}
+
+	stream, err := h.clients.TelephonyAction.RunPipeline(pipelineCtx, req)
 	if err != nil {
 		l.Error().Err(err).Msg("❌ SAGA FAILURE: Cannot start TAS Pipeline.")
-		h.compensate(ctx, s.CallID, "TAS_UNREACHABLE")
+		h.compensate(context.Background(), s.CallID, "TAS_UNREACHABLE")
 		return
 	}
 
 	s.PipelineActive = true
-	_ = h.stateManager.Set(ctx, s)
+	_ = h.stateManager.Set(context.Background(), s)
 	l.Info().Msg("▶️ TAS Pipeline Active")
 
 	go func() {
@@ -172,6 +185,7 @@ func (h *CallHandler) runTASPipeline(ctx context.Context, s *state.CallState, ac
 				return
 			}
 			if err != nil {
+				// Artık burada "context canceled" görmeyeceğiz!
 				l.Error().Err(err).Msg("⚠️ SAGA BREAK: TAS Stream connection lost.")
 				return
 			}
