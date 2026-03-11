@@ -180,13 +180,19 @@ func (h *CallHandler) runTASPipeline(grpcCtx context.Context, s *state.CallState
 	go func() {
 		for {
 			resp, err := stream.Recv()
+
+			// [CRITICAL FIX]: GÜVENLİ KAPATMA MEKANİZMASI
+			// Eğer stream bittiyse (EOF) veya hata verip koptuysa (Failsafe vs)
+			// sistemi asılı bırakmamak için B2BUA'ya "Kapat" komutu gönderiyoruz.
 			if err == io.EOF {
-				l.Info().Msg("🏁 SAGA SUCCESS: Pipeline finished.")
+				l.Info().Msg("🏁 SAGA SUCCESS: Pipeline finished naturally.")
+				h.compensate(context.Background(), s.CallID, "NORMAL_CLEARING")
 				return
 			}
 			if err != nil {
-				// Artık burada "context canceled" görmeyeceğiz!
 				l.Error().Err(err).Msg("⚠️ SAGA BREAK: TAS Stream connection lost.")
+				// BURASI EKSİKTİ: Stream koptuğunda B2BUA'ya kapat diyoruz!
+				h.compensate(context.Background(), s.CallID, "PIPELINE_BROKEN")
 				return
 			}
 
