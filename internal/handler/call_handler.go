@@ -1,4 +1,4 @@
-// sentiric-agent-service/internal/handler/call_handler.go
+// Dosya: internal/handler/call_handler.go
 package handler
 
 import (
@@ -91,13 +91,9 @@ func (h *CallHandler) HandleCallStarted(ctx context.Context, event *eventv1.Call
 
 	case dialplanv1.ActionType_ACTION_TYPE_START_AI_CONVERSATION:
 		l.Info().Msg("🤖 AI Çağrısı Algılandı. Workflow devri bekleniyor...")
-		// [MİMARİ DÜZELTME]: Hardcoded 3 saniyelik sleep fallback iptal edildi.
-		// Artık Workflow servisine %100 güveniyoruz.
 
-	// [YENİ EKLENECEK KISIM]
 	case dialplanv1.ActionType_ACTION_TYPE_PLAY_STATIC_ANNOUNCEMENT:
 		l.Info().Msg("📢 Action: PLAY_STATIC_ANNOUNCEMENT. Agent görevi yok, izlemede.")
-		// Hata basmadan çıkıyoruz, çünkü bu bir AI çağrısı değil.
 		return
 
 	case dialplanv1.ActionType_ACTION_TYPE_BRIDGE_CALL:
@@ -143,6 +139,12 @@ func (h *CallHandler) runTASPipeline(grpcCtx context.Context, s *state.CallState
 		voiceID = v
 	}
 
+	// [MİMARİ DÜZELTME]: Kayıt durumu Dialplan'dan okunarak TAS'a iletiliyor.
+	recordSession := false
+	if r, ok := actionData["record"]; ok && r == "true" {
+		recordSession = true
+	}
+
 	req := &telephonyv1.RunPipelineRequest{
 		CallId:    s.CallID,
 		SessionId: s.TraceID,
@@ -150,17 +152,11 @@ func (h *CallHandler) runTASPipeline(grpcCtx context.Context, s *state.CallState
 			CallerRtpAddr: s.CallerRtpAddr,
 			ServerRtpPort: s.ServerRtpPort,
 		},
-		SttModelId: "whisper:default",
-		TtsModelId: voiceID,
+		SttModelId:    "whisper:default",
+		TtsModelId:    voiceID,
+		RecordSession: recordSession,
 	}
 
-	// =====================================================================
-	// [CRITICAL FIX]: BACKGROUND CONTEXT ISOLATION
-	// Gelen grpcCtx kısa ömürlüdür (Workflow gRPC çağrısı bittiğinde iptal olur).
-	// TAS Pipeline ise dakikalarca sürebilir. Eğer grpcCtx'i paslarsak,
-	// Workflow işini bitirdiği an TAS stream'i "context canceled" hatasıyla çöker.
-	// Çözüm: Yepyeni bir Background context oluşturup TraceID'yi içine aşılıyoruz.
-	// =====================================================================
 	pipelineCtx := context.Background()
 	if s.TraceID != "" {
 		pipelineCtx = metadata.AppendToOutgoingContext(pipelineCtx, "x-trace-id", s.TraceID)
@@ -181,9 +177,6 @@ func (h *CallHandler) runTASPipeline(grpcCtx context.Context, s *state.CallState
 		for {
 			resp, err := stream.Recv()
 
-			// [CRITICAL FIX]: GÜVENLİ KAPATMA MEKANİZMASI
-			// Eğer stream bittiyse (EOF) veya hata verip koptuysa (Failsafe vs)
-			// sistemi asılı bırakmamak için B2BUA'ya "Kapat" komutu gönderiyoruz.
 			if err == io.EOF {
 				l.Info().Msg("🏁 SAGA SUCCESS: Pipeline finished naturally.")
 				h.compensate(context.Background(), s.CallID, "NORMAL_CLEARING")
@@ -191,7 +184,6 @@ func (h *CallHandler) runTASPipeline(grpcCtx context.Context, s *state.CallState
 			}
 			if err != nil {
 				l.Error().Err(err).Msg("⚠️ SAGA BREAK: TAS Stream connection lost.")
-				// BURASI EKSİKTİ: Stream koptuğunda B2BUA'ya kapat diyoruz!
 				h.compensate(context.Background(), s.CallID, "PIPELINE_BROKEN")
 				return
 			}
