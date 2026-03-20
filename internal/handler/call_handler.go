@@ -72,15 +72,23 @@ func (h *CallHandler) HandleCallStarted(ctx context.Context, event *eventv1.Call
 	actionType := res.Action.Type
 	l.Info().Interface("action_type", actionType).Msg("🧠 Analyzing Dialplan Decision")
 
+	// HandleCallStarted metodu içi:
+	lang := "tr" // Fallback
+	if res.InboundRoute != nil && res.InboundRoute.DefaultLanguageCode != "" {
+		lang = res.InboundRoute.DefaultLanguageCode
+	}
+
 	s := &state.CallState{
 		CallID:       event.CallId,
 		TraceID:      event.TraceId,
 		TenantID:     res.TenantId,
+		LanguageCode: lang, // Dilden haberdarız
 		CurrentState: constants.StateWelcoming,
 		FromURI:      event.FromUri,
 		ToURI:        event.ToUri,
 		CreatedAt:    time.Now(),
 	}
+
 	if event.MediaInfo != nil {
 		s.ServerRtpPort = event.MediaInfo.ServerRtpPort
 		s.CallerRtpAddr = event.MediaInfo.CallerRtpAddr
@@ -152,9 +160,11 @@ func (h *CallHandler) runTASPipeline(grpcCtx context.Context, s *state.CallState
 			CallerRtpAddr: s.CallerRtpAddr,
 			ServerRtpPort: s.ServerRtpPort,
 		},
-		SttModelId:    "whisper:default",
-		TtsModelId:    voiceID,
-		RecordSession: recordSession,
+		SttModelId:     "whisper:default",
+		TtsModelId:     voiceID,
+		RecordSession:  recordSession,
+		LanguageCode:   s.LanguageCode, // Akışa basıyoruz
+		SystemPromptId: actionData["system_prompt_id"],
 	}
 
 	pipelineCtx := context.Background()

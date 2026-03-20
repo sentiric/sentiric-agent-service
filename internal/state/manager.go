@@ -18,6 +18,7 @@ type CallState struct {
 	CallID         string                `json:"callId"`
 	TraceID        string                `json:"traceId"`
 	TenantID       string                `json:"tenantId"`
+	LanguageCode   string                `json:"languageCode"` // [MİMARİ DÜZELTME] Eklendi
 	CurrentState   constants.DialogState `json:"currentState"`
 	FromURI        string                `json:"fromUri"`
 	ToURI          string                `json:"toUri"`
