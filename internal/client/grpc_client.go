@@ -1,4 +1,4 @@
-// sentiric-agent-service/internal/client/grpc_client.go
+// Dosya: sentiric-agent-service/internal/client/grpc_client.go
 package client
 
 import (
@@ -18,7 +18,6 @@ import (
 	"github.com/sentiric/sentiric-agent-service/internal/config"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -69,37 +68,37 @@ func createConnection(cfg *config.Config, targetURL string) (*grpc.ClientConn, e
 	opts = append(opts, grpc.WithUnaryInterceptor(tracePropagationInterceptor))
 	opts = append(opts, grpc.WithStreamInterceptor(streamTracePropagationInterceptor))
 
-	if cfg.CertPath != "" && cfg.KeyPath != "" && cfg.CaPath != "" {
-		if _, err := os.Stat(cfg.CertPath); os.IsNotExist(err) {
-			log.Warn().Str("path", cfg.CertPath).Msg("Sertifika dosyası bulunamadı, INSECURE moduna geçiliyor.")
-			opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
-		} else {
-			clientCert, err := tls.LoadX509KeyPair(cfg.CertPath, cfg.KeyPath)
-			if err != nil {
-				return nil, fmt.Errorf("cert load error: %w", err)
-			}
-			caCert, err := os.ReadFile(cfg.CaPath)
-			if err != nil {
-				return nil, fmt.Errorf("ca load error: %w", err)
-			}
-
-			// DÜZELTME BURADA: Değişken adı 'caCertPool' olarak standardize edildi.
-			caCertPool := x509.NewCertPool()
-			if !caCertPool.AppendCertsFromPEM(caCert) {
-				return nil, fmt.Errorf("failed to append CA")
-			}
-
-			creds := credentials.NewTLS(&tls.Config{
-				Certificates: []tls.Certificate{clientCert},
-				RootCAs:      caCertPool, // DÜZELTME: Doğru değişken kullanıldı
-				ServerName:   serverName,
-			})
-			opts = append(opts, grpc.WithTransportCredentials(creds))
-		}
-	} else {
-		log.Warn().Str("target", cleanTarget).Msg("mTLS config eksik, INSECURE bağlanılıyor.")
-		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// [ARCH-COMPLIANCE] constraints.yaml: grpc_communication zorunluluğu.
+	// Insecure mode fallback (güvensiz yama) KESİNLİKLE YASAKTIR. Fail-fast uygulanır.
+	if cfg.CertPath == "" || cfg.KeyPath == "" || cfg.CaPath == "" {
+		return nil, fmt.Errorf("[ARCH-COMPLIANCE] mTLS sertifika yolları eksik yapılandırılmış. Insecure mod yasaktır")
 	}
+
+	if _, err := os.Stat(cfg.CertPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("[ARCH-COMPLIANCE] mTLS sertifika dosyası bulunamadı: %s. Insecure mod yasaktır", cfg.CertPath)
+	}
+
+	clientCert, err := tls.LoadX509KeyPair(cfg.CertPath, cfg.KeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("cert load error: %w", err)
+	}
+	caCert, err := os.ReadFile(cfg.CaPath)
+	if err != nil {
+		return nil, fmt.Errorf("ca load error: %w", err)
+	}
+
+	caCertPool := x509.NewCertPool()
+	if !caCertPool.AppendCertsFromPEM(caCert) {
+		return nil, fmt.Errorf("failed to append CA")
+	}
+
+	creds := credentials.NewTLS(&tls.Config{
+		Certificates: []tls.Certificate{clientCert},
+		RootCAs:      caCertPool,
+		ServerName:   serverName,
+	})
+
+	opts = append(opts, grpc.WithTransportCredentials(creds))
 
 	return grpc.NewClient(cleanTarget, opts...)
 }

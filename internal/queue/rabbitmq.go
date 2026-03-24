@@ -1,4 +1,4 @@
-// sentiric-agent-service/internal/queue/rabbitmq.go
+// Dosya: sentiric-agent-service/internal/queue/rabbitmq.go
 package queue
 
 import (
@@ -15,6 +15,8 @@ import (
 const (
 	exchangeName   = "sentiric_events"
 	agentQueueName = "sentiric.agent_service.events"
+	dlxName        = "sentiric_events.failed"
+	dlqName        = "sentiric.agent_service.failed"
 )
 
 type Publisher struct {
@@ -90,7 +92,6 @@ func Connect(ctx context.Context, url string, log zerolog.Logger) (*amqp091.Chan
 		}
 	}
 	return nil, nil, fmt.Errorf("maksimum deneme (%d) sonrası RabbitMQ'ya bağlanılamadı: %w", 10, err)
-
 }
 
 func StartConsumer(ctx context.Context, ch *amqp091.Channel, handlerFunc func([]byte), log zerolog.Logger, wg *sync.WaitGroup) {
@@ -107,13 +108,22 @@ func StartConsumer(ctx context.Context, ch *amqp091.Channel, handlerFunc func([]
 		log.Fatal().Err(err).Str("exchange", exchangeName).Msg("Exchange deklare edilemedi")
 	}
 
+	// [ARCH-COMPLIANCE] constraints.yaml: dead_letter_queue kuralı
+	_ = ch.ExchangeDeclare(dlxName, "topic", true, false, false, false, nil)
+	_, _ = ch.QueueDeclare(dlqName, true, false, false, false, nil)
+	_ = ch.QueueBind(dlqName, "#", dlxName, false, nil)
+
+	args := amqp091.Table{
+		"x-dead-letter-exchange": dlxName,
+	}
+
 	q, err := ch.QueueDeclare(
 		agentQueueName,
 		true,
 		false,
 		false,
 		false,
-		nil,
+		args,
 	)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Kalıcı agent kuyruğu oluşturulamadı")
@@ -170,8 +180,6 @@ func StartConsumer(ctx context.Context, ch *amqp091.Channel, handlerFunc func([]
 				defer func() {
 					if r := recover(); r != nil {
 						log.Error().Interface("panic_info", r).Msg("CRITICAL: Message handler panikledi! Zehirli mesaj Nack ediliyor.")
-						// Tekrar kuyruğa atma (requeue=false), mesajı öldür.
-						// Üretimde bu mesaj bir Dead Letter Exchange'e yönlendirilmelidir.
 						if err := msg.Nack(false, false); err != nil {
 							log.Error().Err(err).Msg("Zehirli mesaj Nack edilemedi.")
 						}
