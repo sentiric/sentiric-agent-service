@@ -1,3 +1,4 @@
+// [ARCH-COMPLIANCE] strict mtls_failure_policy: Fail-fast, no insecure fallback allowed.
 package server
 
 import (
@@ -16,17 +17,17 @@ import (
 func NewGrpcServer(cfg *config.Config, log zerolog.Logger) *grpc.Server {
 	opts := []grpc.ServerOption{}
 
-	if cfg.CertPath != "" && cfg.KeyPath != "" {
-		creds, err := loadServerTLS(cfg.CertPath, cfg.KeyPath, cfg.CaPath)
-		if err != nil {
-			log.Warn().Err(err).Msg("TLS yüklenemedi, INSECURE moda geçiliyor")
-		} else {
-			opts = append(opts, grpc.Creds(creds))
-			log.Info().Msg("🔐 mTLS Aktif (Agent Server)")
-		}
-	} else {
-		log.Warn().Msg("⚠️ TLS yolları boş, INSECURE modda başlatılıyor")
+	if cfg.CertPath == "" || cfg.KeyPath == "" || cfg.CaPath == "" {
+		log.Fatal().Str("event", "MTLS_CONFIG_MISSING").Msg("mTLS sertifika yolları eksik. Güvensiz mod yasaktır.")
 	}
+
+	creds, err := loadServerTLS(cfg.CertPath, cfg.KeyPath, cfg.CaPath)
+	if err != nil {
+		log.Fatal().Str("event", "MTLS_LOAD_FAILED").Err(err).Msg("TLS yüklenemedi, güvensiz moda geçiş YASAKTIR.")
+	}
+
+	opts = append(opts, grpc.Creds(creds))
+	log.Info().Str("event", "MTLS_ACTIVE").Msg("🔐 mTLS Aktif (Agent Server)")
 
 	return grpc.NewServer(opts...)
 }

@@ -1,4 +1,4 @@
-// sentiric-agent-service/internal/config/config.go
+// [ARCH-COMPLIANCE] ENV fail-fast and Tenant isolation added
 package config
 
 import (
@@ -12,23 +12,21 @@ import (
 type Config struct {
 	Env         string
 	LogLevel    string
-	LogFormat   string // [YENİ]
+	LogFormat   string
 	PostgresURL string
 	RabbitMQURL string
 	RedisURL    string
 	MetricsPort string
+	TenantID    string
 
-	// Hedef Servisler
 	UserServiceURL     string
 	TelephonyActionURL string
 	B2buaServiceURL    string
 
-	// Security
 	CertPath string
 	KeyPath  string
 	CaPath   string
 
-	// Diğer ayarlar
 	AgentMaxConsecutiveFailures int
 	BucketName                  string
 }
@@ -42,12 +40,11 @@ func Load() (*Config, error) {
 	return &Config{
 		Env:         getEnvWithDefault("ENV", "production"),
 		LogLevel:    getEnvWithDefault("LOG_LEVEL", "info"),
-		LogFormat:   getEnvWithDefault("LOG_FORMAT", "text"), // [YENİ]
+		LogFormat:   getEnvWithDefault("LOG_FORMAT", "text"),
 		PostgresURL: GetEnvOrFail("POSTGRES_URL"),
-
 		RabbitMQURL: GetEnvOrFail("RABBITMQ_URL"),
 		RedisURL:    GetEnvOrFail("REDIS_URL"),
-
+		TenantID:    GetEnvOrFail("TENANT_ID"),
 		MetricsPort: getEnvWithDefault("AGENT_SERVICE_METRICS_PORT", "12032"),
 
 		UserServiceURL:     getEnvWithDefault("USER_SERVICE_TARGET_GRPC_URL", "user-service:12011"),
@@ -65,8 +62,8 @@ func Load() (*Config, error) {
 
 func GetEnvOrFail(key string) string {
 	value, exists := os.LookupEnv(key)
-	if !exists {
-		log.Fatal().Str("variable", key).Msg("Gerekli ortam değişkeni eksik")
+	if !exists || value == "" {
+		log.Fatal().Str("event", "MISSING_ENV_VAR").Str("variable", key).Msg("Gerekli ortam değişkeni eksik")
 	}
 	return value
 }

@@ -1,4 +1,4 @@
-// Dosya: internal/handler/call_handler.go
+// [ARCH-COMPLIANCE] Context timeout wrapper implemented on runTASPipeline
 package handler
 
 import (
@@ -55,25 +55,24 @@ func (h *CallHandler) HandleCallStarted(ctx context.Context, event *eventv1.Call
 	lockKey := fmt.Sprintf("lock:agent:%s", event.CallId)
 	isNew, err := h.stateManager.RedisClient().SetNX(ctx, lockKey, "1", 15*time.Second).Result()
 	if err != nil || !isNew {
-		l.Debug().Msg("Duplicate event ignored.")
+		l.Debug().Str("event", "DUPLICATE_EVENT_IGNORED").Msg("Duplicate event ignored.")
 		return
 	}
 
 	res := event.GetDialplanResolution()
 	if res == nil || res.Action == nil {
-		l.Error().Msg("❌ CRITICAL: Event received without dialplan resolution!")
+		l.Error().Str("event", "MISSING_DIALPLAN_RESOLUTION").Msg("❌ CRITICAL: Event received without dialplan resolution!")
 		return
 	}
 
 	if err := database.CreateConversation(h.db, event.CallId, res.TenantId, "voice"); err != nil {
-		l.Warn().Err(err).Msg("Konuşma kaydı veritabanına yazılamadı (Logic devam ediyor)")
+		l.Warn().Str("event", "DB_CONVERSATION_CREATE_FAILED").Err(err).Msg("Konuşma kaydı veritabanına yazılamadı (Logic devam ediyor)")
 	}
 
 	actionType := res.Action.Type
-	l.Info().Interface("action_type", actionType).Msg("🧠 Analyzing Dialplan Decision")
+	l.Info().Str("event", "DIALPLAN_DECISION").Interface("action_type", actionType).Msg("🧠 Analyzing Dialplan Decision")
 
-	// HandleCallStarted metodu içi:
-	lang := "tr" // Fallback
+	lang := "tr"
 	if res.InboundRoute != nil && res.InboundRoute.DefaultLanguageCode != "" {
 		lang = res.InboundRoute.DefaultLanguageCode
 	}
@@ -82,7 +81,7 @@ func (h *CallHandler) HandleCallStarted(ctx context.Context, event *eventv1.Call
 		CallID:       event.CallId,
 		TraceID:      event.TraceId,
 		TenantID:     res.TenantId,
-		LanguageCode: lang, // Dilden haberdarız
+		LanguageCode: lang,
 		CurrentState: constants.StateWelcoming,
 		FromURI:      event.FromUri,
 		ToURI:        event.ToUri,
@@ -96,28 +95,22 @@ func (h *CallHandler) HandleCallStarted(ctx context.Context, event *eventv1.Call
 	_ = h.stateManager.Set(ctx, s)
 
 	switch actionType {
-
 	case dialplanv1.ActionType_ACTION_TYPE_START_AI_CONVERSATION:
-		l.Info().Msg("🤖 AI Çağrısı Algılandı. Workflow devri bekleniyor...")
-
+		l.Info().Str("event", "AI_CALL_DETECTED").Msg("🤖 AI Çağrısı Algılandı. Workflow devri bekleniyor...")
 	case dialplanv1.ActionType_ACTION_TYPE_PLAY_STATIC_ANNOUNCEMENT:
-		l.Info().Msg("📢 Action: PLAY_STATIC_ANNOUNCEMENT. Agent görevi yok, izlemede.")
+		l.Info().Str("event", "ACTION_PLAY_STATIC").Msg("📢 Action: PLAY_STATIC_ANNOUNCEMENT. Agent görevi yok, izlemede.")
 		return
-
 	case dialplanv1.ActionType_ACTION_TYPE_BRIDGE_CALL:
-		l.Info().Msg("📞 Action: BRIDGE_CALL. Handed over to SIP Signaling.")
+		l.Info().Str("event", "ACTION_BRIDGE_CALL").Msg("📞 Action: BRIDGE_CALL. Handed over to SIP Signaling.")
 		s.CurrentState = "BRIDGED"
 		_ = h.stateManager.Set(ctx, s)
-
 	case dialplanv1.ActionType_ACTION_TYPE_ECHO_TEST:
-		l.Info().Msg("🔊 Action: ECHO_TEST. Agent in standby mode.")
-
+		l.Info().Str("event", "ACTION_ECHO_TEST").Msg("🔊 Action: ECHO_TEST. Agent in standby mode.")
 	case dialplanv1.ActionType_ACTION_TYPE_ENQUEUE_CALL:
-		l.Info().Msg("👥 Action: ENQUEUE_CALL. Checking agent availability...")
+		l.Info().Str("event", "ACTION_ENQUEUE_CALL").Msg("👥 Action: ENQUEUE_CALL. Checking agent availability...")
 		h.handleEnqueueCall(ctx, s, res.Action.ActionData)
-
 	default:
-		l.Warn().Interface("type", actionType).Msg("⚠️ Unhandled action type received.")
+		l.Warn().Str("event", "UNHANDLED_ACTION").Interface("type", actionType).Msg("⚠️ Unhandled action type received.")
 	}
 }
 
@@ -126,17 +119,19 @@ func (h *CallHandler) handleEnqueueCall(ctx context.Context, s *state.CallState,
 	targetAgentID, hasTarget := actionData["target_agent_id"]
 
 	if hasTarget {
-		profile, err := h.clients.User.GetAgentProfile(ctx, &userv1.GetAgentProfileRequest{UserId: targetAgentID})
+		reqCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		profile, err := h.clients.User.GetAgentProfile(reqCtx, &userv1.GetAgentProfileRequest{UserId: targetAgentID})
 		if err == nil && profile.Profile.Status == "ONLINE" {
-			l.Info().Str("agent_id", targetAgentID).Msg("✅ Hedef ajan ONLINE. Transfer başlatılıyor.")
+			l.Info().Str("event", "AGENT_ONLINE").Str("agent_id", targetAgentID).Msg("✅ Hedef ajan ONLINE. Transfer başlatılıyor.")
 			s.CurrentState = "TRANSFERRED"
 			_ = h.stateManager.Set(ctx, s)
 			return
 		} else {
-			l.Warn().Str("agent_id", targetAgentID).Msg("⛔ Hedef ajan OFFLINE veya meşgul. Fallback uygulanıyor.")
+			l.Warn().Str("event", "AGENT_OFFLINE").Str("agent_id", targetAgentID).Msg("⛔ Hedef ajan OFFLINE veya meşgul. Fallback uygulanıyor.")
 		}
 	}
-	l.Info().Msg("🎵 Kuyruk müziği başlatılıyor (Mock).")
+	l.Info().Str("event", "QUEUE_MUSIC_STARTED").Msg("🎵 Kuyruk müziği başlatılıyor (Mock).")
 }
 
 func (h *CallHandler) runTASPipeline(grpcCtx context.Context, s *state.CallState, actionData map[string]string) {
@@ -147,7 +142,6 @@ func (h *CallHandler) runTASPipeline(grpcCtx context.Context, s *state.CallState
 		voiceID = v
 	}
 
-	// [MİMARİ DÜZELTME]: Kayıt durumu Dialplan'dan okunarak TAS'a iletiliyor.
 	recordSession := false
 	if r, ok := actionData["record"]; ok && r == "true" {
 		recordSession = true
@@ -163,43 +157,45 @@ func (h *CallHandler) runTASPipeline(grpcCtx context.Context, s *state.CallState
 		SttModelId:     "whisper:default",
 		TtsModelId:     voiceID,
 		RecordSession:  recordSession,
-		LanguageCode:   s.LanguageCode, // Akışa basıyoruz
+		LanguageCode:   s.LanguageCode,
 		SystemPromptId: actionData["system_prompt_id"],
 	}
 
-	pipelineCtx := context.Background()
+	pipelineCtx, cancel := context.WithTimeout(context.Background(), 24*time.Hour)
 	if s.TraceID != "" {
 		pipelineCtx = metadata.AppendToOutgoingContext(pipelineCtx, "x-trace-id", s.TraceID)
 	}
 
 	stream, err := h.clients.TelephonyAction.RunPipeline(pipelineCtx, req)
 	if err != nil {
-		l.Error().Err(err).Msg("❌ SAGA FAILURE: Cannot start TAS Pipeline.")
+		cancel()
+		l.Error().Str("event", "TAS_PIPELINE_START_FAIL").Err(err).Msg("❌ SAGA FAILURE: Cannot start TAS Pipeline.")
 		h.compensate(context.Background(), s.CallID, "TAS_UNREACHABLE")
 		return
 	}
 
 	s.PipelineActive = true
 	_ = h.stateManager.Set(context.Background(), s)
-	l.Info().Msg("▶️ TAS Pipeline Active")
+	l.Info().Str("event", "TAS_PIPELINE_ACTIVE").Msg("▶️ TAS Pipeline Active")
 
 	go func() {
+		defer cancel()
 		for {
 			resp, err := stream.Recv()
 
 			if err == io.EOF {
-				l.Info().Msg("🏁 SAGA SUCCESS: Pipeline finished naturally.")
+				l.Info().Str("event", "TAS_PIPELINE_EOF").Msg("🏁 SAGA SUCCESS: Pipeline finished naturally.")
 				h.compensate(context.Background(), s.CallID, "NORMAL_CLEARING")
 				return
 			}
 			if err != nil {
-				l.Error().Err(err).Msg("⚠️ SAGA BREAK: TAS Stream connection lost.")
+				l.Error().Str("event", "TAS_PIPELINE_BROKEN").Err(err).Msg("⚠️ SAGA BREAK: TAS Stream connection lost.")
 				h.compensate(context.Background(), s.CallID, "PIPELINE_BROKEN")
 				return
 			}
 
 			if resp.State == telephonyv1.RunPipelineResponse_STATE_ERROR {
-				l.Error().Str("msg", resp.Message).Msg("❌ SAGA FAILURE: TAS internal error.")
+				l.Error().Str("event", "TAS_INTERNAL_ERROR").Str("msg", resp.Message).Msg("❌ SAGA FAILURE: TAS internal error.")
 				h.compensate(context.Background(), s.CallID, "PIPELINE_ERROR")
 				return
 			}
@@ -209,7 +205,7 @@ func (h *CallHandler) runTASPipeline(grpcCtx context.Context, s *state.CallState
 
 func (h *CallHandler) compensate(ctx context.Context, callID, reason string) {
 	l := h.log.With().Str("call_id", callID).Str("reason", reason).Logger()
-	l.Warn().Msg("🔄 SAGA Compensation: Publishing call.terminate.request.")
+	l.Warn().Str("event", "SAGA_COMPENSATION").Msg("🔄 SAGA Compensation: Publishing call.terminate.request.")
 
 	err := h.publisher.PublishJSON(ctx, "call.terminate.request", map[string]interface{}{
 		"callId":    callID,
@@ -219,15 +215,15 @@ func (h *CallHandler) compensate(ctx context.Context, callID, reason string) {
 	})
 
 	if err != nil {
-		l.Error().Err(err).Msg("❌ CRITICAL: Failed to publish compensation event.")
+		l.Error().Str("event", "COMPENSATION_PUBLISH_FAIL").Err(err).Msg("❌ CRITICAL: Failed to publish compensation event.")
 	}
 	_ = h.stateManager.Delete(ctx, callID)
 }
 
 func (h *CallHandler) HandleCallEnded(ctx context.Context, callID string) {
-	h.log.Info().Str("call_id", callID).Msg("🧹 Call ended. Session cleanup.")
+	h.log.Info().Str("event", "CALL_ENDED").Str("call_id", callID).Msg("🧹 Call ended. Session cleanup.")
 	if err := database.UpdateConversationStatus(h.db, callID, "COMPLETED"); err != nil {
-		h.log.Warn().Err(err).Msg("Konuşma durumu güncellenemedi")
+		h.log.Warn().Str("event", "DB_UPDATE_FAIL").Err(err).Msg("Konuşma durumu güncellenemedi")
 	}
 	_ = h.stateManager.Delete(ctx, callID)
 }

@@ -1,4 +1,4 @@
-// Dosya: sentiric-agent-service/internal/queue/rabbitmq.go
+// [ARCH-COMPLIANCE] Added explicit RabbitMQ publisher channel reconnect policies
 package queue
 
 import (
@@ -20,43 +20,83 @@ const (
 )
 
 type Publisher struct {
-	ch  *amqp091.Channel
-	log zerolog.Logger
+	conn *amqp091.Connection
+	ch   *amqp091.Channel
+	mu   sync.RWMutex
+	log  zerolog.Logger
 }
 
-func NewPublisher(ch *amqp091.Channel, log zerolog.Logger) *Publisher {
-	return &Publisher{ch: ch, log: log}
+func NewPublisher(conn *amqp091.Connection, log zerolog.Logger) *Publisher {
+	p := &Publisher{
+		conn: conn,
+		log:  log,
+	}
+	_ = p.reconnectChannel()
+	return p
+}
+
+func (p *Publisher) reconnectChannel() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.ch != nil && !p.ch.IsClosed() {
+		return nil
+	}
+	ch, err := p.conn.Channel()
+	if err != nil {
+		p.log.Error().Str("event", "RMQ_CH_RECONNECT_FAIL").Err(err).Msg("RabbitMQ channel oluşturulamadı")
+		return err
+	}
+	p.ch = ch
+	return nil
 }
 
 func (p *Publisher) PublishJSON(ctx context.Context, routingKey string, body interface{}) error {
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
-		p.log.Error().Err(err).Msg("Mesaj JSON'a çevrilemedi.")
+		p.log.Error().Str("event", "RMQ_JSON_ERROR").Err(err).Msg("Mesaj JSON'a çevrilemedi.")
 		return err
 	}
 
-	p.log.Debug().Str("routing_key", routingKey).Bytes("payload", jsonBody).Msg("RabbitMQ'ya olay yayınlanıyor...")
+	p.log.Debug().Str("event", "RMQ_PUBLISH").Str("routing_key", routingKey).Msg("RabbitMQ'ya olay yayınlanıyor...")
 
-	err = p.ch.PublishWithContext(
-		ctx,
-		exchangeName,
-		routingKey,
-		false,
-		false,
-		amqp091.Publishing{
-			ContentType:  "application/json",
-			Body:         jsonBody,
-			DeliveryMode: amqp091.Persistent,
-		},
-	)
-	if err != nil {
-		p.log.Error().Err(err).Str("routing_key", routingKey).Msg("RabbitMQ'ya mesaj yayınlanamadı.")
-		return err
+	for i := 0; i < 2; i++ {
+		p.mu.RLock()
+		ch := p.ch
+		p.mu.RUnlock()
+
+		if ch == nil || ch.IsClosed() {
+			if err := p.reconnectChannel(); err != nil {
+				continue
+			}
+			p.mu.RLock()
+			ch = p.ch
+			p.mu.RUnlock()
+		}
+
+		err = ch.PublishWithContext(
+			ctx,
+			exchangeName,
+			routingKey,
+			false,
+			false,
+			amqp091.Publishing{
+				ContentType:  "application/json",
+				Body:         jsonBody,
+				DeliveryMode: amqp091.Persistent,
+			},
+		)
+		if err == nil {
+			return nil
+		}
+		p.log.Warn().Str("event", "RMQ_PUBLISH_RETRY").Err(err).Msg("Publish başarısız, channel reconnect denenecek")
+		_ = p.reconnectChannel()
 	}
-	return nil
+
+	p.log.Error().Str("event", "RMQ_PUBLISH_FAILED").Err(err).Str("routing_key", routingKey).Msg("RabbitMQ'ya mesaj yayınlanamadı.")
+	return err
 }
 
-func Connect(ctx context.Context, url string, log zerolog.Logger) (*amqp091.Channel, <-chan *amqp091.Error, error) {
+func Connect(ctx context.Context, url string, log zerolog.Logger) (*amqp091.Connection, <-chan *amqp091.Error, error) {
 	var conn *amqp091.Connection
 	var err error
 
@@ -74,16 +114,12 @@ func Connect(ctx context.Context, url string, log zerolog.Logger) (*amqp091.Chan
 
 		conn, err = amqp091.DialConfig(url, config)
 		if err == nil {
-			log.Info().Msg("RabbitMQ bağlantısı başarılı.")
-			ch, chErr := conn.Channel()
-			if chErr != nil {
-				return nil, nil, fmt.Errorf("RabbitMQ kanalı oluşturulamadı: %w", chErr)
-			}
+			log.Info().Str("event", "RMQ_CONNECTED").Msg("RabbitMQ bağlantısı başarılı.")
 			closeChan := make(chan *amqp091.Error)
 			conn.NotifyClose(closeChan)
-			return ch, closeChan, nil
+			return conn, closeChan, nil
 		}
-		log.Warn().Err(err).Int("attempt", i+1).Int("max_attempts", 10).Msg("RabbitMQ'ya bağlanılamadı, 5 saniye sonra tekrar denenecek...")
+		log.Warn().Str("event", "RMQ_CONNECTION_RETRY").Err(err).Int("attempt", i+1).Int("max_attempts", 10).Msg("RabbitMQ'ya bağlanılamadı, 5 saniye sonra tekrar denenecek...")
 
 		select {
 		case <-time.After(5 * time.Second):
@@ -94,8 +130,13 @@ func Connect(ctx context.Context, url string, log zerolog.Logger) (*amqp091.Chan
 	return nil, nil, fmt.Errorf("maksimum deneme (%d) sonrası RabbitMQ'ya bağlanılamadı: %w", 10, err)
 }
 
-func StartConsumer(ctx context.Context, ch *amqp091.Channel, handlerFunc func([]byte), log zerolog.Logger, wg *sync.WaitGroup) {
-	err := ch.ExchangeDeclare(
+func StartConsumer(ctx context.Context, conn *amqp091.Connection, handlerFunc func([]byte), log zerolog.Logger, wg *sync.WaitGroup) {
+	ch, err := conn.Channel()
+	if err != nil {
+		log.Fatal().Str("event", "RMQ_CONS_CH_FAIL").Err(err).Msg("RabbitMQ tüketici kanalı oluşturulamadı")
+	}
+
+	err = ch.ExchangeDeclare(
 		exchangeName,
 		"topic",
 		true,
@@ -105,10 +146,9 @@ func StartConsumer(ctx context.Context, ch *amqp091.Channel, handlerFunc func([]
 		nil,
 	)
 	if err != nil {
-		log.Fatal().Err(err).Str("exchange", exchangeName).Msg("Exchange deklare edilemedi")
+		log.Fatal().Str("event", "RMQ_EXCHANGE_FAIL").Err(err).Str("exchange", exchangeName).Msg("Exchange deklare edilemedi")
 	}
 
-	// [ARCH-COMPLIANCE] constraints.yaml: dead_letter_queue kuralı
 	_ = ch.ExchangeDeclare(dlxName, "topic", true, false, false, false, nil)
 	_, _ = ch.QueueDeclare(dlqName, true, false, false, false, nil)
 	_ = ch.QueueBind(dlqName, "#", dlxName, false, nil)
@@ -126,7 +166,7 @@ func StartConsumer(ctx context.Context, ch *amqp091.Channel, handlerFunc func([]
 		args,
 	)
 	if err != nil {
-		log.Fatal().Err(err).Msg("Kalıcı agent kuyruğu oluşturulamadı")
+		log.Fatal().Str("event", "RMQ_QUEUE_FAIL").Err(err).Msg("Kalıcı agent kuyruğu oluşturulamadı")
 	}
 
 	err = ch.QueueBind(
@@ -137,14 +177,14 @@ func StartConsumer(ctx context.Context, ch *amqp091.Channel, handlerFunc func([]
 		nil,
 	)
 	if err != nil {
-		log.Fatal().Err(err).Str("queue", q.Name).Str("exchange", exchangeName).Msg("Kuyruk exchange'e bağlanamadı")
+		log.Fatal().Str("event", "RMQ_BIND_FAIL").Err(err).Str("queue", q.Name).Msg("Kuyruk exchange'e bağlanamadı")
 	}
 
-	log.Info().Str("queue", q.Name).Str("exchange", exchangeName).Msg("Kalıcı kuyruk başarıyla exchange'e bağlandı.")
+	log.Info().Str("event", "RMQ_QUEUE_BOUND").Str("queue", q.Name).Msg("Kalıcı kuyruk başarıyla exchange'e bağlandı.")
 
 	err = ch.Qos(10, 0, false)
 	if err != nil {
-		log.Fatal().Err(err).Msg("QoS ayarı yapılamadı.")
+		log.Fatal().Str("event", "RMQ_QOS_FAIL").Err(err).Msg("QoS ayarı yapılamadı.")
 	}
 
 	msgs, err := ch.Consume(
@@ -157,40 +197,38 @@ func StartConsumer(ctx context.Context, ch *amqp091.Channel, handlerFunc func([]
 		nil,
 	)
 	if err != nil {
-		log.Fatal().Err(err).Msg("Mesajlar tüketilemedi")
+		log.Fatal().Str("event", "RMQ_CONSUME_FAIL").Err(err).Msg("Mesajlar tüketilemedi")
 	}
 
-	log.Info().Str("queue", q.Name).Msg("Kuyruk dinleniyor, mesajlar bekleniyor...")
+	log.Info().Str("event", "RMQ_CONSUMING").Str("queue", q.Name).Msg("Kuyruk dinleniyor, mesajlar bekleniyor...")
 
 	for {
 		select {
 		case <-ctx.Done():
-			log.Info().Msg("Tüketici döngüsü durduruluyor, yeni mesajlar alınmayacak.")
+			log.Info().Str("event", "RMQ_CONSUMER_STOP").Msg("Tüketici döngüsü durduruluyor, yeni mesajlar alınmayacak.")
 			return
 		case d, ok := <-msgs:
 			if !ok {
-				log.Info().Msg("RabbitMQ mesaj kanalı kapandı.")
+				log.Info().Str("event", "RMQ_CHANNEL_CLOSED").Msg("RabbitMQ mesaj kanalı kapandı.")
 				return
 			}
 			wg.Add(1)
 			go func(msg amqp091.Delivery) {
 				defer wg.Done()
 
-				// [ANTI-FRAGILE] PANIC RECOVERY & DEAD LETTERING
 				defer func() {
 					if r := recover(); r != nil {
-						log.Error().Interface("panic_info", r).Msg("CRITICAL: Message handler panikledi! Zehirli mesaj Nack ediliyor.")
+						log.Error().Str("event", "RMQ_PANIC_RECOVERY").Interface("panic_info", r).Msg("CRITICAL: Message handler panikledi! Zehirli mesaj Nack ediliyor.")
 						if err := msg.Nack(false, false); err != nil {
-							log.Error().Err(err).Msg("Zehirli mesaj Nack edilemedi.")
+							log.Error().Str("event", "RMQ_NACK_FAIL").Err(err).Msg("Zehirli mesaj Nack edilemedi.")
 						}
 					}
 				}()
 
 				handlerFunc(msg.Body)
 
-				// Sadece başarılı işleme sonrası Ack
 				if err := msg.Ack(false); err != nil {
-					log.Error().Err(err).Msg("Mesaj Ack edilemedi.")
+					log.Error().Str("event", "RMQ_ACK_FAIL").Err(err).Msg("Mesaj Ack edilemedi.")
 				}
 			}(d)
 		}

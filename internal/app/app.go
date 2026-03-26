@@ -39,44 +39,43 @@ func (a *App) Run() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 1. Altyapı
-	db, rdb, rabbitCh, closeChan, err := a.initInfra(ctx)
+	db, rdb, rabbitConn, closeChan, err := a.initInfra(ctx)
 	if err != nil {
-		a.Log.Fatal().Err(err).Msg("Altyapı başlatılamadı")
+		a.Log.Fatal().Str("event", "INFRA_INIT_FAILED").Err(err).Msg("Altyapı başlatılamadı")
 	}
 	defer db.Close()
 	defer rdb.Close()
-	defer rabbitCh.Close()
+	defer rabbitConn.Close()
 
-	// 2. DI
-	clients, _ := client.NewClients(a.Cfg)
+	clients, err := client.NewClients(a.Cfg, a.Log)
+	if err != nil {
+		a.Log.Fatal().Str("event", "CLIENTS_INIT_FAILED").Err(err).Msg("İstemciler başlatılamadı")
+	}
+
 	stateMgr := state.NewManager(rdb)
-	publisher := queue.NewPublisher(rabbitCh, a.Log)
+	publisher := queue.NewPublisher(rabbitConn, a.Log)
 	callHandler := handler.NewCallHandler(clients, stateMgr, publisher, db, a.Log)
 	eventHandler := handler.NewEventHandler(a.Log, metrics.EventsProcessed, metrics.EventsFailed, callHandler)
 
-	// 3. gRPC Sunucusu (TLS Desteği Eklendi)
 	grpcServer := server.NewGrpcServer(a.Cfg, a.Log)
 	agentv1.RegisterAgentOrchestrationServiceServer(grpcServer, &AgentServer{handler: callHandler})
 
 	go func() {
-		a.Log.Info().Msg("🚀 gRPC Server (Orchestration) active: 12031")
+		a.Log.Info().Str("event", "GRPC_SERVER_START").Msg("🚀 gRPC Server (Orchestration) active: 12031")
 		if err := server.Start(grpcServer, "12031"); err != nil && err.Error() != "http: Server closed" {
-			a.Log.Fatal().Err(err).Msg("gRPC serve failed")
+			a.Log.Fatal().Str("event", "GRPC_SERVER_FAILED").Err(err).Msg("gRPC serve failed")
 		}
 	}()
 
 	go metrics.StartServer(a.Cfg.MetricsPort, a.Log)
 
-	// 4. Worker
 	var wg sync.WaitGroup
-	go queue.StartConsumer(ctx, rabbitCh, eventHandler.HandleRabbitMQMessage, a.Log, &wg)
+	go queue.StartConsumer(ctx, rabbitConn, eventHandler.HandleRabbitMQMessage, a.Log, &wg)
 
-	// 5. Cleanup
 	a.handleShutdown(cancel, grpcServer, &wg, closeChan)
 }
 
-func (a *App) initInfra(ctx context.Context) (*sql.DB, *redis.Client, *amqp091.Channel, <-chan *amqp091.Error, error) {
+func (a *App) initInfra(ctx context.Context) (*sql.DB, *redis.Client, *amqp091.Connection, <-chan *amqp091.Error, error) {
 	db, err := database.Connect(ctx, a.Cfg.PostgresURL, a.Log)
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -85,11 +84,11 @@ func (a *App) initInfra(ctx context.Context) (*sql.DB, *redis.Client, *amqp091.C
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	ch, closeCh, err := queue.Connect(ctx, a.Cfg.RabbitMQURL, a.Log)
+	conn, closeCh, err := queue.Connect(ctx, a.Cfg.RabbitMQURL, a.Log)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	return db, rdb, ch, closeCh, nil
+	return db, rdb, conn, closeCh, nil
 }
 
 func (a *App) handleShutdown(cancel context.CancelFunc, srv *grpc.Server, wg *sync.WaitGroup, closeChan <-chan *amqp091.Error) {
@@ -98,18 +97,17 @@ func (a *App) handleShutdown(cancel context.CancelFunc, srv *grpc.Server, wg *sy
 
 	select {
 	case <-sig:
-		a.Log.Info().Msg("Shutdown signal received.")
+		a.Log.Info().Str("event", "SHUTDOWN_SIGNAL").Msg("Shutdown signal received.")
 	case err := <-closeChan:
-		a.Log.Error().Err(err).Msg("RabbitMQ connection lost.")
+		a.Log.Error().Str("event", "RABBITMQ_CONN_LOST").Err(err).Msg("RabbitMQ connection lost.")
 	}
 
 	cancel()
 	server.Stop(srv)
 	wg.Wait()
-	a.Log.Info().Msg("Agent Service stopped.")
+	a.Log.Info().Str("event", "SERVICE_STOPPED").Msg("Agent Service stopped.")
 }
 
-// AgentServer: gRPC Interface implementation
 type AgentServer struct {
 	agentv1.UnimplementedAgentOrchestrationServiceServer
 	handler *handler.CallHandler
@@ -119,7 +117,7 @@ func (s *AgentServer) ProcessCallStart(ctx context.Context, req *agentv1.Process
 	stateMgr := s.handler.GetStateManager()
 	callState, err := stateMgr.Get(ctx, req.CallId)
 	if err != nil || callState == nil {
-		return nil, status.Errorf(codes.NotFound, "Call state not found in Redis. Call may have disconnected.")
+		return nil, status.Errorf(codes.NotFound, "Call state not found in Redis.")
 	}
 
 	s.handler.RunTASPipelineWithPlan(ctx, callState, map[string]string{

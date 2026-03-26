@@ -1,4 +1,4 @@
-// sentiric-agent-service/cmd/agent-service/main.go
+// [ARCH-COMPLIANCE] Strict logging formats and events implemented
 package main
 
 import (
@@ -31,11 +31,11 @@ func main() {
 		log.Fatalf("Konfigürasyon yüklenemedi: %v", err)
 	}
 
-	// [GÜNCELLENDİ] LogFormat parametresi eklendi
-	appLog := logger.New(serviceName, cfg.Env, cfg.LogLevel, cfg.LogFormat)
+	appLog := logger.New(serviceName, cfg.Env, cfg.LogLevel, cfg.LogFormat, cfg.TenantID)
 	initGrpcLogger(cfg.LogLevel)
 
 	appLog.Info().
+		Str("event", "SERVICE_STARTING").
 		Str("version", ServiceVersion).
 		Str("commit", GitCommit).
 		Str("build_date", BuildDate).
