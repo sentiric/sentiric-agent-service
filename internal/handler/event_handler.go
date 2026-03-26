@@ -44,11 +44,14 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 	}
 
 	// 3. Media Olayları (Zararsızca Yoksay)
+	// [YENİ]: GenericEvent (Protobuf) kontrolü. Workflow'dan gelen "call.terminate.request" gibi olayları güvenle yut.
 	var genericEvent eventv1.GenericEvent
 	if err := proto.Unmarshal(body, &genericEvent); err == nil && genericEvent.EventType != "" {
-		if genericEvent.EventType == "call.recording.available" || genericEvent.EventType == "call.media.playback.finished" {
+		if genericEvent.EventType == "call.recording.available" ||
+			genericEvent.EventType == "call.media.playback.finished" ||
+			genericEvent.EventType == "call.terminate.request" { //[ARCH-COMPLIANCE] Hata basmadan yut
 			h.eventsProcessed.WithLabelValues(genericEvent.EventType).Inc()
-			return // Hata veya log basmadan yut
+			return
 		}
 		h.eventsProcessed.WithLabelValues(genericEvent.EventType).Inc()
 		h.log.Debug().Str("type", genericEvent.EventType).Msg("GenericEvent alındı (No-op).")
