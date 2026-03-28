@@ -49,12 +49,13 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 	if err := proto.Unmarshal(body, &genericEvent); err == nil && genericEvent.EventType != "" {
 		if genericEvent.EventType == "call.recording.available" ||
 			genericEvent.EventType == "call.media.playback.finished" ||
-			genericEvent.EventType == "call.terminate.request" { //[ARCH-COMPLIANCE] Hata basmadan yut
+			genericEvent.EventType == "call.terminate.request" {
 			h.eventsProcessed.WithLabelValues(genericEvent.EventType).Inc()
 			return
 		}
 		h.eventsProcessed.WithLabelValues(genericEvent.EventType).Inc()
-		h.log.Debug().Str("type", genericEvent.EventType).Msg("GenericEvent alındı (No-op).")
+		// [ARCH-COMPLIANCE] ARCH-007
+		h.log.Debug().Str("event", "EVENT_IGNORED_GENERIC").Str("type", genericEvent.EventType).Msg("GenericEvent alındı (No-op).")
 		return
 	}
 
@@ -66,14 +67,15 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 	}
 
 	// YENİ: Playback bitiş eventini yut
-	var playEvent eventv1.GenericEvent // Playback finished genelde Generic olarak atılır
+	var playEvent eventv1.GenericEvent
 	if err := proto.Unmarshal(body, &playEvent); err == nil && playEvent.EventType == "call.media.playback.finished" {
 		return
 	}
 
 	// Buraya gelirse gerçekten bozuk bir eventtir.
 	// Ancak log level'ı DEBUG yapıyoruz, ERROR veya WARN olmasın ki SRE dashboard'u kirletmesin.
-	h.log.Debug().Msg("Unrecognized event structure received in Agent.")
+	// [ARCH-COMPLIANCE] ARCH-007
+	h.log.Debug().Str("event", "EVENT_UNRECOGNIZED").Msg("Unrecognized event structure received in Agent.")
 	h.eventsFailed.WithLabelValues("unknown", "unmarshal_error").Inc()
 
 }

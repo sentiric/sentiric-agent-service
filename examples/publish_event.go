@@ -4,17 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"log"
-    // "time" importu kaldırıldı
+	// "time" importu kaldırıldı
 
 	"github.com/rabbitmq/amqp091-go"
 )
 
 func main() {
 	// Docker içinden erişim için host adını 'rabbitmq' olarak varsayıyoruz.
-    // Eğer localhost'tan çalıştırıyorsanız ve port forward yoksa hata alabilirsiniz.
-    // Local test için: "amqp://sentiric:sentiric_pass@localhost:5672/%2f"
+	// Eğer localhost'tan çalıştırıyorsanız ve port forward yoksa hata alabilirsiniz.
+	// Local test için: "amqp://sentiric:sentiric_pass@localhost:5672/%2f"
 	url := "amqp://sentiric:sentiric_pass@localhost:5672/%2f"
-	
+
 	conn, err := amqp091.Dial(url)
 	if err != nil {
 		log.Fatalf("RabbitMQ bağlantı hatası: %v", err)
@@ -41,7 +41,7 @@ func main() {
 				"action": "START_AI_CONVERSATION",
 			},
 			"matchedUser": map[string]string{
-				"id": "user-123",
+				"id":       "user-123",
 				"tenantId": "demo",
 			},
 		},

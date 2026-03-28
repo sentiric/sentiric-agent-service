@@ -25,7 +25,6 @@ const (
 func Connect(ctx context.Context, url string, log zerolog.Logger) (*sql.DB, error) {
 	config, err := pgxpool.ParseConfig(url)
 	if err != nil {
-		// DÜZELTME (ST1005): Hata mesajı küçük harfle başlar.
 		return nil, fmt.Errorf("postgresql URL parse edilemedi: %w", err)
 	}
 	config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
@@ -50,7 +49,8 @@ func Connect(ctx context.Context, url string, log zerolog.Logger) (*sql.DB, erro
 			cancel()
 
 			if pingErr == nil {
-				log.Info().Msg("Veritabanına bağlantı başarılı (Simple Protocol Mode).")
+				// [ARCH-COMPLIANCE] ARCH-007: Event tag eklendi.
+				log.Info().Str("event", "POSTGRES_CONNECTED").Msg("Veritabanına bağlantı başarılı (Simple Protocol Mode).")
 				return db, nil
 			}
 			err = pingErr
@@ -58,7 +58,8 @@ func Connect(ctx context.Context, url string, log zerolog.Logger) (*sql.DB, erro
 		}
 
 		if ctx.Err() == nil {
-			log.Warn().Err(err).Int("attempt", i+1).Int("max_attempts", maxRetries).Msg("Veritabanına bağlanılamadı, 5 saniye sonra tekrar denenecek...")
+			// [ARCH-COMPLIANCE] ARCH-007: Event tag eklendi.
+			log.Warn().Str("event", "POSTGRES_RETRY").Err(err).Int("attempt", i+1).Int("max_attempts", maxRetries).Msg("Veritabanına bağlanılamadı, 5 saniye sonra tekrar denenecek...")
 		}
 
 		select {
@@ -78,7 +79,6 @@ func ConnectRedis(ctx context.Context, url string, log zerolog.Logger) (*redis.C
 
 	opt, parseErr := redis.ParseURL(url)
 	if parseErr != nil {
-		// DÜZELTME (ST1005): Hata mesajı küçük harfle başlar.
 		return nil, fmt.Errorf("redis URL parse edilemedi: %w", parseErr)
 	}
 
@@ -95,14 +95,16 @@ func ConnectRedis(ctx context.Context, url string, log zerolog.Logger) (*redis.C
 		cancel()
 
 		if pingErr == nil {
-			log.Info().Msg("Redis bağlantısı başarılı.")
+			// [ARCH-COMPLIANCE] ARCH-007: Event tag eklendi.
+			log.Info().Str("event", "REDIS_CONNECTED").Msg("Redis bağlantısı başarılı.")
 			return rdb, nil
 		}
 		err = pingErr
 		rdb.Close()
 
 		if ctx.Err() == nil {
-			log.Warn().Err(err).Int("attempt", i+1).Int("max_attempts", maxRetries).Msg("Redis'e bağlanılamadı, 5 saniye sonra tekrar denenecek...")
+			// [ARCH-COMPLIANCE] ARCH-007: Event tag eklendi.
+			log.Warn().Str("event", "REDIS_RETRY").Err(err).Int("attempt", i+1).Int("max_attempts", maxRetries).Msg("Redis'e bağlanılamadı, 5 saniye sonra tekrar denenecek...")
 		}
 
 		select {

@@ -102,6 +102,10 @@ func tracePropagationInterceptor(ctx context.Context, method string, req, reply 
 	if traceIDs := md.Get("x-trace-id"); len(traceIDs) > 0 {
 		ctx = metadata.AppendToOutgoingContext(ctx, "x-trace-id", traceIDs[0])
 	}
+	// [ARCH-COMPLIANCE] span_id aktarımı eklendi
+	if spanIDs := md.Get("x-span-id"); len(spanIDs) > 0 {
+		ctx = metadata.AppendToOutgoingContext(ctx, "x-span-id", spanIDs[0])
+	}
 	return invoker(ctx, method, req, reply, cc, opts...)
 }
 
@@ -112,6 +116,10 @@ func streamTracePropagationInterceptor(ctx context.Context, desc *grpc.StreamDes
 	}
 	if traceIDs := md.Get("x-trace-id"); len(traceIDs) > 0 {
 		ctx = metadata.AppendToOutgoingContext(ctx, "x-trace-id", traceIDs[0])
+	}
+	// [ARCH-COMPLIANCE] span_id aktarımı eklendi
+	if spanIDs := md.Get("x-span-id"); len(spanIDs) > 0 {
+		ctx = metadata.AppendToOutgoingContext(ctx, "x-span-id", spanIDs[0])
 	}
 	return streamer(ctx, desc, cc, method, opts...)
 }

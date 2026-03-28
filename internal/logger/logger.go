@@ -1,4 +1,4 @@
-// [ARCH-COMPLIANCE] Strict structured logging SUTS v4.0, span_id, and dynamic tenant_id implementation
+// Dosya: internal/logger/logger.go
 package logger
 
 import (
@@ -32,7 +32,8 @@ func (h SutsHook) Run(e *zerolog.Event, level zerolog.Level, msg string) {
 	e.Dict("resource", dict)
 }
 
-func New(serviceName, env, logLevel, logFormat, tenantID string) zerolog.Logger {
+// [ARCH-COMPLIANCE] version parametresi eklendi
+func New(serviceName, version, env, logLevel, logFormat, tenantID string) zerolog.Logger {
 	var logger zerolog.Logger
 
 	level, err := zerolog.ParseLevel(strings.ToLower(logLevel))
@@ -49,9 +50,10 @@ func New(serviceName, env, logLevel, logFormat, tenantID string) zerolog.Logger 
 		return strings.ToUpper(l.String())
 	}
 
+	// [ARCH-COMPLIANCE] Dinamik versiyon ataması
 	resource := map[string]string{
 		"service.name":    serviceName,
-		"service.version": "3.3.1",
+		"service.version": version,
 		"service.env":     env,
 		"host.name":       os.Getenv("NODE_HOSTNAME"),
 	}
