@@ -26,12 +26,12 @@ import (
 type CallHandler struct {
 	clients      *client.Clients
 	stateManager *state.Manager
-	publisher    *queue.Publisher
+	publisher    *queue.RabbitMQ // BURASI DEĞİŞTİ
 	db           *sql.DB
 	log          zerolog.Logger
 }
 
-func NewCallHandler(clients *client.Clients, sm *state.Manager, pub *queue.Publisher, db *sql.DB, log zerolog.Logger) *CallHandler {
+func NewCallHandler(clients *client.Clients, sm *state.Manager, pub *queue.RabbitMQ, db *sql.DB, log zerolog.Logger) *CallHandler {
 	return &CallHandler{
 		clients:      clients,
 		stateManager: sm,

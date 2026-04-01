@@ -2,14 +2,11 @@ package app
 
 import (
 	"context"
-	"database/sql"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 
-	"github.com/go-redis/redis/v8"
-	"github.com/rabbitmq/amqp091-go"
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -39,22 +36,22 @@ func (a *App) Run() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	db, rdb, rabbitConn, closeChan, err := a.initInfra(ctx)
-	if err != nil {
-		a.Log.Fatal().Str("event", "INFRA_INIT_FAILED").Err(err).Msg("Altyapı başlatılamadı")
-	}
+	// [ARCH-COMPLIANCE] "Crash" kaldırıldı, altyapı arka planda (async) bağlanmayı dener.
+	db := database.Connect(ctx, a.Cfg.PostgresURL, a.Log)
 	defer db.Close()
+
+	rdb := database.ConnectRedis(ctx, a.Cfg.RedisURL, a.Log)
 	defer rdb.Close()
-	defer rabbitConn.Close()
 
 	clients, err := client.NewClients(a.Cfg, a.Log)
 	if err != nil {
 		a.Log.Fatal().Str("event", "CLIENTS_INIT_FAILED").Err(err).Msg("İstemciler başlatılamadı")
 	}
 
+	rmq := queue.NewRabbitMQ(a.Cfg.RabbitMQURL, a.Log)
 	stateMgr := state.NewManager(rdb)
-	publisher := queue.NewPublisher(rabbitConn, a.Log)
-	callHandler := handler.NewCallHandler(clients, stateMgr, publisher, db, a.Log)
+
+	callHandler := handler.NewCallHandler(clients, stateMgr, rmq, db, a.Log)
 	eventHandler := handler.NewEventHandler(a.Log, metrics.EventsProcessed, metrics.EventsFailed, callHandler)
 
 	grpcServer := server.NewGrpcServer(a.Cfg, a.Log)
@@ -70,37 +67,17 @@ func (a *App) Run() {
 	go metrics.StartServer(a.Cfg.MetricsPort, a.Log)
 
 	var wg sync.WaitGroup
-	go queue.StartConsumer(ctx, rabbitConn, eventHandler.HandleRabbitMQMessage, a.Log, &wg)
+	go rmq.Start(ctx, eventHandler.HandleRabbitMQMessage, &wg)
 
-	a.handleShutdown(cancel, grpcServer, &wg, closeChan)
+	a.handleShutdown(cancel, grpcServer, &wg)
 }
 
-func (a *App) initInfra(ctx context.Context) (*sql.DB, *redis.Client, *amqp091.Connection, <-chan *amqp091.Error, error) {
-	db, err := database.Connect(ctx, a.Cfg.PostgresURL, a.Log)
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-	rdb, err := database.ConnectRedis(ctx, a.Cfg.RedisURL, a.Log)
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-	conn, closeCh, err := queue.Connect(ctx, a.Cfg.RabbitMQURL, a.Log)
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-	return db, rdb, conn, closeCh, nil
-}
-
-func (a *App) handleShutdown(cancel context.CancelFunc, srv *grpc.Server, wg *sync.WaitGroup, closeChan <-chan *amqp091.Error) {
+func (a *App) handleShutdown(cancel context.CancelFunc, srv *grpc.Server, wg *sync.WaitGroup) {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 
-	select {
-	case <-sig:
-		a.Log.Info().Str("event", "SHUTDOWN_SIGNAL").Msg("Shutdown signal received.")
-	case err := <-closeChan:
-		a.Log.Error().Str("event", "RABBITMQ_CONN_LOST").Err(err).Msg("RabbitMQ connection lost.")
-	}
+	<-sig
+	a.Log.Info().Str("event", "SHUTDOWN_SIGNAL").Msg("Shutdown signal received.")
 
 	cancel()
 	server.Stop(srv)

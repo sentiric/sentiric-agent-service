@@ -1,10 +1,8 @@
-// [ARCH-COMPLIANCE] Added explicit RabbitMQ publisher channel reconnect policies
 package queue
 
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"sync"
 	"time"
 
@@ -17,219 +15,197 @@ const (
 	agentQueueName = "sentiric.agent_service.events"
 	dlxName        = "sentiric_events.failed"
 	dlqName        = "sentiric.agent_service.failed"
+	ghostBufSize   = 1000
 )
 
-type Publisher struct {
-	conn *amqp091.Connection
-	ch   *amqp091.Channel
-	mu   sync.RWMutex
-	log  zerolog.Logger
+type GhostMessage struct {
+	RoutingKey  string
+	ContentType string
+	Body        []byte
 }
 
-func NewPublisher(conn *amqp091.Connection, log zerolog.Logger) *Publisher {
-	p := &Publisher{
-		conn: conn,
-		log:  log,
-	}
-	_ = p.reconnectChannel()
-	return p
+type RabbitMQ struct {
+	url    string
+	log    zerolog.Logger
+	conn   *amqp091.Connection
+	ch     *amqp091.Channel
+	mu     sync.RWMutex
+	buffer []GhostMessage
+	bufMu  sync.Mutex
 }
 
-func (p *Publisher) reconnectChannel() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.ch != nil && !p.ch.IsClosed() {
-		return nil
+func NewRabbitMQ(url string, log zerolog.Logger) *RabbitMQ {
+	return &RabbitMQ{
+		url:    url,
+		log:    log,
+		buffer: make([]GhostMessage, 0, ghostBufSize),
 	}
-	ch, err := p.conn.Channel()
-	if err != nil {
-		p.log.Error().Str("event", "RMQ_CH_RECONNECT_FAIL").Err(err).Msg("RabbitMQ channel oluşturulamadı")
-		return err
-	}
-	p.ch = ch
-	return nil
 }
 
-func (p *Publisher) PublishJSON(ctx context.Context, routingKey string, body interface{}) error {
+func (m *RabbitMQ) PublishJSON(ctx context.Context, routingKey string, body interface{}) error {
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
-		p.log.Error().Str("event", "RMQ_JSON_ERROR").Err(err).Msg("Mesaj JSON'a çevrilemedi.")
+		m.log.Error().Str("event", "RMQ_JSON_ERROR").Err(err).Msg("Mesaj JSON'a çevrilemedi.")
 		return err
 	}
 
-	p.log.Debug().Str("event", "RMQ_PUBLISH").Str("routing_key", routingKey).Msg("RabbitMQ'ya olay yayınlanıyor...")
+	m.mu.RLock()
+	ch := m.ch
+	m.mu.RUnlock()
 
-	for i := 0; i < 2; i++ {
-		p.mu.RLock()
-		ch := p.ch
-		p.mu.RUnlock()
-
-		if ch == nil || ch.IsClosed() {
-			if err := p.reconnectChannel(); err != nil {
-				continue
-			}
-			p.mu.RLock()
-			ch = p.ch
-			p.mu.RUnlock()
-		}
-
-		err = ch.PublishWithContext(
-			ctx,
-			exchangeName,
-			routingKey,
-			false,
-			false,
-			amqp091.Publishing{
-				ContentType:  "application/json",
-				Body:         jsonBody,
-				DeliveryMode: amqp091.Persistent,
-			},
-		)
+	if ch != nil && !ch.IsClosed() {
+		err := ch.PublishWithContext(ctx, exchangeName, routingKey, false, false, amqp091.Publishing{
+			ContentType:  "application/json",
+			Body:         jsonBody,
+			DeliveryMode: amqp091.Persistent,
+		})
 		if err == nil {
 			return nil
 		}
-		p.log.Warn().Str("event", "RMQ_PUBLISH_RETRY").Err(err).Msg("Publish başarısız, channel reconnect denenecek")
-		_ = p.reconnectChannel()
 	}
 
-	p.log.Error().Str("event", "RMQ_PUBLISH_FAILED").Err(err).Str("routing_key", routingKey).Msg("RabbitMQ'ya mesaj yayınlanamadı.")
-	return err
+	m.log.Warn().Str("event", "RMQ_GHOST_MODE").Str("routing_key", routingKey).Msg("RabbitMQ çevrimdışı. Mesaj RAM tamponuna (Ghost Buffer) alınıyor.")
+
+	m.bufMu.Lock()
+	defer m.bufMu.Unlock()
+	if len(m.buffer) >= ghostBufSize {
+		m.buffer = m.buffer[1:] // FIFO Drop
+	}
+	m.buffer = append(m.buffer, GhostMessage{
+		RoutingKey:  routingKey,
+		ContentType: "application/json",
+		Body:        jsonBody,
+	})
+	return nil
 }
 
-func Connect(ctx context.Context, url string, log zerolog.Logger) (*amqp091.Connection, <-chan *amqp091.Error, error) {
-	var conn *amqp091.Connection
-	var err error
+func (m *RabbitMQ) flushBuffer(ctx context.Context) {
+	m.bufMu.Lock()
+	defer m.bufMu.Unlock()
 
-	config := amqp091.Config{
-		Heartbeat: 60 * time.Second,
-		Locale:    "en_US",
+	if len(m.buffer) == 0 {
+		return
 	}
 
-	for i := 0; i < 10; i++ {
+	m.mu.RLock()
+	ch := m.ch
+	m.mu.RUnlock()
+
+	if ch == nil || ch.IsClosed() {
+		return
+	}
+
+	successCount := 0
+	for _, msg := range m.buffer {
+		err := ch.PublishWithContext(ctx, exchangeName, msg.RoutingKey, false, false, amqp091.Publishing{
+			ContentType:  msg.ContentType,
+			Body:         msg.Body,
+			DeliveryMode: amqp091.Persistent,
+		})
+		if err != nil {
+			break
+		}
+		successCount++
+	}
+
+	if successCount > 0 {
+		m.buffer = m.buffer[successCount:]
+		m.log.Info().Str("event", "RMQ_GHOST_FLUSH").Int("count", successCount).Msg("Ghost Buffer'daki mesajlar başarıyla RabbitMQ'ya aktarıldı.")
+	}
+}
+
+func (m *RabbitMQ) Start(ctx context.Context, handlerFunc func([]byte), wg *sync.WaitGroup) {
+	for {
 		select {
 		case <-ctx.Done():
-			return nil, nil, ctx.Err()
+			return
 		default:
 		}
 
-		conn, err = amqp091.DialConfig(url, config)
-		if err == nil {
-			log.Info().Str("event", "RMQ_CONNECTED").Msg("RabbitMQ bağlantısı başarılı.")
-			closeChan := make(chan *amqp091.Error)
-			conn.NotifyClose(closeChan)
-			return conn, closeChan, nil
+		conn, err := amqp091.Dial(m.url)
+		if err != nil {
+			m.log.Warn().Str("event", "RMQ_RECONNECT_WAIT").Err(err).Msg("RabbitMQ bağlantısı koptu veya yok, 5 saniye sonra tekrar denenecek...")
+			time.Sleep(5 * time.Second)
+			continue
 		}
-		log.Warn().Str("event", "RMQ_CONNECTION_RETRY").Err(err).Int("attempt", i+1).Int("max_attempts", 10).Msg("RabbitMQ'ya bağlanılamadı, 5 saniye sonra tekrar denenecek...")
 
-		select {
-		case <-time.After(5 * time.Second):
-		case <-ctx.Done():
-			return nil, nil, ctx.Err()
+		ch, err := conn.Channel()
+		if err != nil {
+			conn.Close()
+			time.Sleep(5 * time.Second)
+			continue
 		}
+
+		m.mu.Lock()
+		m.conn = conn
+		m.ch = ch
+		m.mu.Unlock()
+
+		m.log.Info().Str("event", "RMQ_CONNECTED").Msg("✅ RabbitMQ bağlantısı sağlandı.")
+
+		if err := m.setupTopology(ch); err != nil {
+			m.log.Error().Str("event", "RMQ_TOPOLOGY_FAIL").Err(err).Msg("Topoloji kurulamadı")
+			conn.Close()
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		m.flushBuffer(ctx)
+		m.consume(ctx, ch, handlerFunc, wg)
+
+		m.mu.Lock()
+		m.conn = nil
+		m.ch = nil
+		m.mu.Unlock()
 	}
-	return nil, nil, fmt.Errorf("maksimum deneme (%d) sonrası RabbitMQ'ya bağlanılamadı: %w", 10, err)
 }
 
-func StartConsumer(ctx context.Context, conn *amqp091.Connection, handlerFunc func([]byte), log zerolog.Logger, wg *sync.WaitGroup) {
-	ch, err := conn.Channel()
-	if err != nil {
-		log.Fatal().Str("event", "RMQ_CONS_CH_FAIL").Err(err).Msg("RabbitMQ tüketici kanalı oluşturulamadı")
-	}
-
-	err = ch.ExchangeDeclare(
-		exchangeName,
-		"topic",
-		true,
-		false,
-		false,
-		false,
-		nil,
-	)
-	if err != nil {
-		log.Fatal().Str("event", "RMQ_EXCHANGE_FAIL").Err(err).Str("exchange", exchangeName).Msg("Exchange deklare edilemedi")
-	}
-
+func (m *RabbitMQ) setupTopology(ch *amqp091.Channel) error {
+	_ = ch.ExchangeDeclare(exchangeName, "topic", true, false, false, false, nil)
 	_ = ch.ExchangeDeclare(dlxName, "topic", true, false, false, false, nil)
 	_, _ = ch.QueueDeclare(dlqName, true, false, false, false, nil)
 	_ = ch.QueueBind(dlqName, "#", dlxName, false, nil)
 
-	args := amqp091.Table{
-		"x-dead-letter-exchange": dlxName,
-	}
-
-	q, err := ch.QueueDeclare(
-		agentQueueName,
-		true,
-		false,
-		false,
-		false,
-		args,
-	)
+	args := amqp091.Table{"x-dead-letter-exchange": dlxName}
+	q, err := ch.QueueDeclare(agentQueueName, true, false, false, false, args)
 	if err != nil {
-		log.Fatal().Str("event", "RMQ_QUEUE_FAIL").Err(err).Msg("Kalıcı agent kuyruğu oluşturulamadı")
+		return err
 	}
+	return ch.QueueBind(q.Name, "#", exchangeName, false, nil)
+}
 
-	err = ch.QueueBind(
-		q.Name,
-		"#",
-		exchangeName,
-		false,
-		nil,
-	)
+func (m *RabbitMQ) consume(ctx context.Context, ch *amqp091.Channel, handlerFunc func([]byte), wg *sync.WaitGroup) {
+	_ = ch.Qos(10, 0, false)
+	msgs, err := ch.Consume(agentQueueName, "", false, false, false, false, nil)
 	if err != nil {
-		log.Fatal().Str("event", "RMQ_BIND_FAIL").Err(err).Str("queue", q.Name).Msg("Kuyruk exchange'e bağlanamadı")
+		m.log.Error().Str("event", "RMQ_CONSUME_FAIL").Err(err).Msg("Consume başlatılamadı")
+		return
 	}
 
-	log.Info().Str("event", "RMQ_QUEUE_BOUND").Str("queue", q.Name).Msg("Kalıcı kuyruk başarıyla exchange'e bağlandı.")
-
-	err = ch.Qos(10, 0, false)
-	if err != nil {
-		log.Fatal().Str("event", "RMQ_QOS_FAIL").Err(err).Msg("QoS ayarı yapılamadı.")
-	}
-
-	msgs, err := ch.Consume(
-		q.Name,
-		"",
-		false,
-		false,
-		false,
-		false,
-		nil,
-	)
-	if err != nil {
-		log.Fatal().Str("event", "RMQ_CONSUME_FAIL").Err(err).Msg("Mesajlar tüketilemedi")
-	}
-
-	log.Info().Str("event", "RMQ_CONSUMING").Str("queue", q.Name).Msg("Kuyruk dinleniyor, mesajlar bekleniyor...")
+	m.log.Info().Str("event", "RMQ_CONSUMING").Str("queue", agentQueueName).Msg("Kuyruk dinleniyor, mesajlar bekleniyor...")
 
 	for {
 		select {
 		case <-ctx.Done():
-			log.Info().Str("event", "RMQ_CONSUMER_STOP").Msg("Tüketici döngüsü durduruluyor, yeni mesajlar alınmayacak.")
+			m.log.Info().Str("event", "RMQ_CONSUMER_STOP").Msg("Tüketici döngüsü durduruluyor.")
 			return
 		case d, ok := <-msgs:
 			if !ok {
-				log.Info().Str("event", "RMQ_CHANNEL_CLOSED").Msg("RabbitMQ mesaj kanalı kapandı.")
+				m.log.Info().Str("event", "RMQ_CHANNEL_CLOSED").Msg("RabbitMQ mesaj kanalı kapandı, yeniden bağlanılacak.")
 				return
 			}
 			wg.Add(1)
 			go func(msg amqp091.Delivery) {
 				defer wg.Done()
-
 				defer func() {
 					if r := recover(); r != nil {
-						log.Error().Str("event", "RMQ_PANIC_RECOVERY").Interface("panic_info", r).Msg("CRITICAL: Message handler panikledi! Zehirli mesaj Nack ediliyor.")
-						if err := msg.Nack(false, false); err != nil {
-							log.Error().Str("event", "RMQ_NACK_FAIL").Err(err).Msg("Zehirli mesaj Nack edilemedi.")
-						}
+						m.log.Error().Str("event", "RMQ_PANIC_RECOVERY").Interface("panic", r).Msg("CRITICAL: Message handler panikledi! Mesaj Nack ediliyor.")
+						_ = msg.Nack(false, false)
 					}
 				}()
 
 				handlerFunc(msg.Body)
-
-				if err := msg.Ack(false); err != nil {
-					log.Error().Str("event", "RMQ_ACK_FAIL").Err(err).Msg("Mesaj Ack edilemedi.")
-				}
+				_ = msg.Ack(false)
 			}(d)
 		}
 	}
