@@ -166,6 +166,14 @@ func (h *CallHandler) runTASPipeline(grpcCtx context.Context, s *state.CallState
 		pipelineCtx = metadata.AppendToOutgoingContext(pipelineCtx, "x-trace-id", s.TraceID)
 	}
 
+	// --- EKLENEN KRİTİK DÜZELTME ---
+	// [ARCH-COMPLIANCE] Strict Tenant Isolation kuralı gereği STT/TTS gateway'lerine
+	// giden isteklerde tenant_id bulunmak ZORUNDADIR.
+	if s.TenantID != "" {
+		pipelineCtx = metadata.AppendToOutgoingContext(pipelineCtx, "x-tenant-id", s.TenantID)
+	}
+	// -------------------------------
+
 	stream, err := h.clients.TelephonyAction.RunPipeline(pipelineCtx, req)
 	if err != nil {
 		cancel()
