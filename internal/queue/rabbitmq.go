@@ -79,6 +79,38 @@ func (m *RabbitMQ) PublishJSON(ctx context.Context, routingKey string, body inte
 	return nil
 }
 
+// [ARCH-COMPLIANCE] Protobuf mesaj gönderimi için eklendi
+func (m *RabbitMQ) PublishProtobuf(ctx context.Context, routingKey string, body []byte) error {
+	m.mu.RLock()
+	ch := m.ch
+	m.mu.RUnlock()
+
+	if ch != nil && !ch.IsClosed() {
+		err := ch.PublishWithContext(ctx, exchangeName, routingKey, false, false, amqp091.Publishing{
+			ContentType:  "application/protobuf",
+			Body:         body,
+			DeliveryMode: amqp091.Persistent,
+		})
+		if err == nil {
+			return nil
+		}
+	}
+
+	m.log.Warn().Str("event", "RMQ_GHOST_MODE").Str("routing_key", routingKey).Msg("RabbitMQ offline. Mesaj Ghost Buffer'a alınıyor.")
+
+	m.bufMu.Lock()
+	defer m.bufMu.Unlock()
+	if len(m.buffer) >= ghostBufSize {
+		m.buffer = m.buffer[1:] // FIFO Drop
+	}
+	m.buffer = append(m.buffer, GhostMessage{
+		RoutingKey:  routingKey,
+		ContentType: "application/protobuf",
+		Body:        body,
+	})
+	return nil
+}
+
 func (m *RabbitMQ) flushBuffer(ctx context.Context) {
 	m.bufMu.Lock()
 	defer m.bufMu.Unlock()

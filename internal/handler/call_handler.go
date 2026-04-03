@@ -9,18 +9,19 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"github.com/sentiric/sentiric-agent-service/internal/client"
+	"github.com/sentiric/sentiric-agent-service/internal/constants"
+	"github.com/sentiric/sentiric-agent-service/internal/database"
+	"github.com/sentiric/sentiric-agent-service/internal/queue"
+	"github.com/sentiric/sentiric-agent-service/internal/state"
 	agentv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/agent/v1"
 	dialplanv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/dialplan/v1"
 	eventv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/event/v1"
 	telephonyv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/telephony/v1"
 	userv1 "github.com/sentiric/sentiric-contracts/gen/go/sentiric/user/v1"
 	"google.golang.org/grpc/metadata"
-
-	"github.com/sentiric/sentiric-agent-service/internal/client"
-	"github.com/sentiric/sentiric-agent-service/internal/constants"
-	"github.com/sentiric/sentiric-agent-service/internal/database"
-	"github.com/sentiric/sentiric-agent-service/internal/queue"
-	"github.com/sentiric/sentiric-agent-service/internal/state"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type CallHandler struct {
@@ -215,13 +216,24 @@ func (h *CallHandler) compensate(ctx context.Context, callID, reason string) {
 	l := h.log.With().Str("call_id", callID).Str("reason", reason).Logger()
 	l.Warn().Str("event", "SAGA_COMPENSATION").Msg("🔄 SAGA Compensation: Publishing call.terminate.request.")
 
-	err := h.publisher.PublishJSON(ctx, "call.terminate.request", map[string]interface{}{
-		"callId":    callID,
-		"reason":    reason,
-		"timestamp": time.Now().Format(time.RFC3339),
-		"code":      "SAGA_FAILURE_COMPENSATION",
-	})
+	// [ARCH-COMPLIANCE] Eski JSON yapısı yerine Protobuf GenericEvent kullanıldı
+	payloadJSON := fmt.Sprintf(`{"callId":"%s","reason":"%s"}`, callID, reason)
+	pbEvent := &eventv1.GenericEvent{
+		EventType:   "call.terminate.request",
+		TraceId:     callID,
+		Timestamp:   timestamppb.Now(),
+		TenantId:    "system",
+		PayloadJson: payloadJSON,
+	}
 
+	body, err := proto.Marshal(pbEvent)
+	if err != nil {
+		l.Error().Str("event", "PROTO_MARSHAL_FAIL").Err(err).Msg("❌ CRITICAL: Failed to marshal compensation event.")
+		_ = h.stateManager.Delete(ctx, callID)
+		return
+	}
+
+	err = h.publisher.PublishProtobuf(ctx, "call.terminate.request", body)
 	if err != nil {
 		l.Error().Str("event", "COMPENSATION_PUBLISH_FAIL").Err(err).Msg("❌ CRITICAL: Failed to publish compensation event.")
 	}
