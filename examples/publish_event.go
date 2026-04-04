@@ -53,7 +53,6 @@ func main() {
 		ContentType: "application/json",
 		Body:        body,
 	})
-
 	if err != nil {
 		log.Fatalf("Yayın hatası: %v", err)
 	}

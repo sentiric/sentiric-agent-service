@@ -77,7 +77,6 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 	// [ARCH-COMPLIANCE] ARCH-007
 	h.log.Debug().Str("event", "EVENT_UNRECOGNIZED").Msg("Unrecognized event structure received in Agent.")
 	h.eventsFailed.WithLabelValues("unknown", "unmarshal_error").Inc()
-
 }
 
 func (h *EventHandler) processCallStarted(event *eventv1.CallStartedEvent) {

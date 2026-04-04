@@ -32,7 +32,7 @@ type Config struct {
 }
 
 func Load() (*Config, error) {
-	godotenv.Load()
+	_ = godotenv.Load() // Başına alt tire ekle
 
 	maxFailuresStr := getEnvWithDefault("AGENT_MAX_CONSECUTIVE_FAILURES", "3")
 	maxFailures, _ := strconv.Atoi(maxFailuresStr)

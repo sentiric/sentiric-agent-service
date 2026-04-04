@@ -27,7 +27,6 @@ func CallWithTimeout[T any](
 	defer cancel()
 
 	result, err := fn(ctx)
-
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			// [ARCH-COMPLIANCE] ARCH-007
