@@ -5,20 +5,22 @@ Bu belge, Sentiric platformunun en kritik özelliği olan "İnsana Devir" (Agent
 ## 1. Unified Agent Bridge (Birleşik Köprü)
 Sentiric'te ajanlar her zaman **Web-Native**'dir. İster telefon (SIP), ister web sitesi üzerinden bir çağrı gelsin, ajan her zaman `stream-sdk` (WebSocket) üzerinden konuşur.
 
-### Köprüleme Akışı
+### Köprüleme Akışı (Diyagram)
 ```mermaid
 sequenceDiagram
+    autonumber
     participant User as 👤 Kullanıcı (SIP veya Web)
     participant Gateway as 🌊 Stream Gateway
     participant AgentSvc as 🏢 Agent Service
     participant AgentUI as 🖥️ Web Agent
 
-    Note over AgentSvc: Ajan 'Online' durumuna geçer.
+    Note over AgentSvc: Ajan 'ONLINE' durumuna geçer.
     Gateway->>AgentSvc: RMQ: call.handover.requested
     AgentSvc->>AgentSvc: Boşta olan Ajanı bul (Matchmaking)
     AgentSvc->>AgentUI: WebSocket: "Çağrı Talebi"
     AgentUI-->>AgentSvc: "Kabul Edildi"
     AgentSvc->>Gateway: gRPC: SetHandoverTarget(agent_session_id)
+    
     Note over Gateway: AI Pipeline durdurulur.
     Note over Gateway: Paketler (Mirroring) Ajana yönlendirilir.
 ```
