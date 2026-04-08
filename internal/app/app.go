@@ -6,6 +6,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
@@ -90,11 +91,35 @@ type AgentServer struct {
 	handler *handler.CallHandler
 }
 
+// [ARCH-COMPLIANCE FIX]: Eventual Consistency Guard (TASK-03)
 func (s *AgentServer) ProcessCallStart(ctx context.Context, req *agentv1.ProcessCallStartRequest) (*agentv1.ProcessCallStartResponse, error) {
 	stateMgr := s.handler.GetStateManager()
-	callState, err := stateMgr.Get(ctx, req.CallId)
+	var callState *state.CallState
+	var err error
+
+	// RMQ Olayının Redis'e yansımasını beklemek için Latch (Max 500ms bekleme)
+	for i := 0; i < 5; i++ {
+		callState, err = stateMgr.Get(ctx, req.CallId)
+		if err == nil && callState != nil {
+			break
+		}
+		// Context iptal edilmişse hemen dön
+		select {
+		case <-ctx.Done():
+			return nil, status.Errorf(codes.Canceled, "Context cancelled during SAGA sync")
+		case <-time.After(100 * time.Millisecond):
+			// Bekle ve tekrar dene
+		}
+	}
+
 	if err != nil || callState == nil {
-		return nil, status.Errorf(codes.NotFound, "Call state not found in Redis.")
+		// [KRİTİK FIX]: Logger önce değişkene atanarak pointer (işaretçi) hatası engellenir
+		loggerObj := s.handler.GetLogger()
+		loggerObj.Warn().
+			Str("event", "SAGA_RACE_CONDITION_FAIL").
+			Str("call_id", req.CallId).
+			Msg("SAGA senkronizasyonu zaman aşımına uğradı, Call state Redis'te bulunamadı.")
+		return nil, status.Errorf(codes.NotFound, "Call state not found in Redis after synchronization backoff.")
 	}
 
 	s.handler.RunTASPipelineWithPlan(ctx, callState, map[string]string{

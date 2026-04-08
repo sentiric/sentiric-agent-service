@@ -27,7 +27,7 @@ import (
 type CallHandler struct {
 	clients      *client.Clients
 	stateManager *state.Manager
-	publisher    *queue.RabbitMQ // BURASI DEĞİŞTİ
+	publisher    *queue.RabbitMQ
 	db           *sql.DB
 	log          zerolog.Logger
 }
@@ -44,6 +44,11 @@ func NewCallHandler(clients *client.Clients, sm *state.Manager, pub *queue.Rabbi
 
 func (h *CallHandler) GetStateManager() *state.Manager {
 	return h.stateManager
+}
+
+// [ARCH-COMPLIANCE FIX]: GetLogger metodu eklendi
+func (h *CallHandler) GetLogger() zerolog.Logger {
+	return h.log
 }
 
 func (h *CallHandler) RunTASPipelineWithPlan(ctx context.Context, s *state.CallState, actionData map[string]string) {
@@ -167,13 +172,9 @@ func (h *CallHandler) runTASPipeline(grpcCtx context.Context, s *state.CallState
 		pipelineCtx = metadata.AppendToOutgoingContext(pipelineCtx, "x-trace-id", s.TraceID)
 	}
 
-	// --- EKLENEN KRİTİK DÜZELTME ---
-	// [ARCH-COMPLIANCE] Strict Tenant Isolation kuralı gereği STT/TTS gateway'lerine
-	// giden isteklerde tenant_id bulunmak ZORUNDADIR.
 	if s.TenantID != "" {
 		pipelineCtx = metadata.AppendToOutgoingContext(pipelineCtx, "x-tenant-id", s.TenantID)
 	}
-	// -------------------------------
 
 	stream, err := h.clients.TelephonyAction.RunPipeline(pipelineCtx, req)
 	if err != nil {
@@ -216,7 +217,6 @@ func (h *CallHandler) compensate(ctx context.Context, callID, reason string) {
 	l := h.log.With().Str("call_id", callID).Str("reason", reason).Logger()
 	l.Warn().Str("event", "SAGA_COMPENSATION").Msg("🔄 SAGA Compensation: Publishing call.terminate.request.")
 
-	// [ARCH-COMPLIANCE] Eski JSON yapısı yerine Protobuf GenericEvent kullanıldı
 	payloadJSON := fmt.Sprintf(`{"callId":"%s","reason":"%s"}`, callID, reason)
 	pbEvent := &eventv1.GenericEvent{
 		EventType:   "call.terminate.request",

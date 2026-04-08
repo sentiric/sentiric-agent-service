@@ -2,7 +2,7 @@
 package main
 
 import (
-	"io/ioutil"
+	"io"
 	"os"
 
 	"github.com/sentiric/sentiric-agent-service/internal/app"
@@ -21,7 +21,8 @@ const serviceName = "agent-service"
 
 func initGrpcLogger(logLevel string) {
 	if logLevel != "debug" {
-		grpclog.SetLoggerV2(grpclog.NewLoggerV2(ioutil.Discard, ioutil.Discard, ioutil.Discard))
+		// [ARCH-COMPLIANCE FIX]: ioutil.Discard yerine io.Discard kullanıldı (Go 1.16+)
+		grpclog.SetLoggerV2(grpclog.NewLoggerV2(io.Discard, io.Discard, io.Discard))
 	}
 }
 
