@@ -58,6 +58,14 @@ func (h *CallHandler) RunTASPipelineWithPlan(ctx context.Context, s *state.CallS
 func (h *CallHandler) HandleCallStarted(ctx context.Context, event *eventv1.CallStartedEvent) {
 	l := h.log.With().Str("call_id", event.CallId).Logger()
 
+	// [ARCH-COMPLIANCE FIX]: Web/SDK Gürültü Filtresi
+	// Eğer MediaInfo 'websocket' olarak işaretlenmişse, bu bir telefon araması değildir.
+	// Dialplan aramaya gerek yok, sessizce (DEBUG) geç.
+	if event.MediaInfo != nil && event.MediaInfo.CallerRtpAddr == "websocket" {
+		l.Debug().Str("event", "SDK_SESSION_IGNORED").Msg("Web SDK session detected. Skipping dialplan requirement.")
+		return
+	}
+
 	lockKey := fmt.Sprintf("lock:agent:%s", event.CallId)
 	isNew, err := h.stateManager.RedisClient().SetNX(ctx, lockKey, "1", 15*time.Second).Result()
 	if err != nil || !isNew {
