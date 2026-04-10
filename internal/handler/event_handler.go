@@ -81,11 +81,28 @@ func (h *EventHandler) HandleRabbitMQMessage(body []byte) {
 
 func (h *EventHandler) processCallStarted(event *eventv1.CallStartedEvent) {
 	h.eventsProcessed.WithLabelValues(event.EventType).Inc()
-	ctx := ctxlogger.ToContext(context.Background(), h.log)
+
+	// [ARCH-COMPLIANCE FIX]: Trace ID Otoritesini Koruma
+	// RabbitMQ'dan gelen orijinal TraceId'yi logger'a sabitliyoruz.
+	l := h.log.With().
+		Str("trace_id", event.TraceId).
+		Str("call_id", event.CallId).
+		Logger()
+
+	// Bu logger'ı context'e gömüyoruz ki tüm alt fonksiyonlar aynı trace_id'yi kullansın.
+	ctx := ctxlogger.ToContext(context.Background(), l)
 	h.callHandler.HandleCallStarted(ctx, event)
 }
 
 func (h *EventHandler) processCallEnded(event *eventv1.CallEndedEvent) {
 	h.eventsProcessed.WithLabelValues(event.EventType).Inc()
-	h.callHandler.HandleCallEnded(context.Background(), event.CallId)
+
+	// [ARCH-COMPLIANCE FIX]: Trace ID Otoritesini Koruma
+	l := h.log.With().
+		Str("trace_id", event.TraceId).
+		Str("call_id", event.CallId).
+		Logger()
+
+	ctx := ctxlogger.ToContext(context.Background(), l)
+	h.callHandler.HandleCallEnded(ctx, event.CallId)
 }

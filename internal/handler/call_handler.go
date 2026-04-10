@@ -11,6 +11,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/sentiric/sentiric-agent-service/internal/client"
 	"github.com/sentiric/sentiric-agent-service/internal/constants"
+	"github.com/sentiric/sentiric-agent-service/internal/ctxlogger"
 	"github.com/sentiric/sentiric-agent-service/internal/database"
 	"github.com/sentiric/sentiric-agent-service/internal/queue"
 	"github.com/sentiric/sentiric-agent-service/internal/state"
@@ -56,20 +57,19 @@ func (h *CallHandler) RunTASPipelineWithPlan(ctx context.Context, s *state.CallS
 }
 
 func (h *CallHandler) HandleCallStarted(ctx context.Context, event *eventv1.CallStartedEvent) {
-	l := h.log.With().Str("call_id", event.CallId).Logger()
-
-	// [ARCH-COMPLIANCE FIX]: Web/SDK Gürültü Filtresi
-	// Eğer MediaInfo 'websocket' olarak işaretlenmişse, bu bir telefon araması değildir.
-	// Dialplan aramaya gerek yok, sessizce (DEBUG) geç.
-	if event.MediaInfo != nil && event.MediaInfo.CallerRtpAddr == "websocket" {
-		l.Debug().Str("event", "SDK_SESSION_IGNORED").Msg("Web SDK session detected. Skipping dialplan requirement.")
-		return
-	}
+	// [ARCH-COMPLIANCE FIX]: Context'ten gelen (temizlenmiş) logger'ı kullan.
+	l := ctxlogger.FromContext(ctx)
 
 	lockKey := fmt.Sprintf("lock:agent:%s", event.CallId)
 	isNew, err := h.stateManager.RedisClient().SetNX(ctx, lockKey, "1", 15*time.Second).Result()
 	if err != nil || !isNew {
 		l.Debug().Str("event", "DUPLICATE_EVENT_IGNORED").Msg("Duplicate event ignored.")
+		return
+	}
+
+	// Web SDK Gürültü Filtresi
+	if event.MediaInfo != nil && event.MediaInfo.CallerRtpAddr == "websocket" {
+		l.Debug().Str("event", "SDK_SESSION_IGNORED").Msg("Web SDK session detected. Trace context preserved.")
 		return
 	}
 
