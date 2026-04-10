@@ -97,9 +97,9 @@ func (h *EventHandler) processCallStarted(event *eventv1.CallStartedEvent) {
 func (h *EventHandler) processCallEnded(event *eventv1.CallEndedEvent) {
 	h.eventsProcessed.WithLabelValues(event.EventType).Inc()
 
-	// [ARCH-COMPLIANCE FIX]: Trace ID Otoritesini Koruma
+	// [ARCH-COMPLIANCE FIX]: Trace ID Hijacking engellendi
 	l := h.log.With().
-		Str("trace_id", event.TraceId).
+		Str("trace_id", event.TraceId). // event.CallId değil, event.TraceId!
 		Str("call_id", event.CallId).
 		Logger()
 
