@@ -1,4 +1,4 @@
-// [ARCH-COMPLIANCE] Context timeout wrapper implemented on runTASPipeline
+// [ARCH-COMPLIANCE FIX] Context Propagation in HandleCallEnded
 package handler
 
 import (
@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"os"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -47,7 +48,6 @@ func (h *CallHandler) GetStateManager() *state.Manager {
 	return h.stateManager
 }
 
-// [ARCH-COMPLIANCE FIX]: GetLogger metodu eklendi
 func (h *CallHandler) GetLogger() zerolog.Logger {
 	return h.log
 }
@@ -57,7 +57,6 @@ func (h *CallHandler) RunTASPipelineWithPlan(ctx context.Context, s *state.CallS
 }
 
 func (h *CallHandler) HandleCallStarted(ctx context.Context, event *eventv1.CallStartedEvent) {
-	// [ARCH-COMPLIANCE FIX]: Context'ten gelen (temizlenmiş) logger'ı kullan.
 	l := ctxlogger.FromContext(ctx)
 
 	lockKey := fmt.Sprintf("lock:agent:%s", event.CallId)
@@ -67,7 +66,6 @@ func (h *CallHandler) HandleCallStarted(ctx context.Context, event *eventv1.Call
 		return
 	}
 
-	// Web SDK Gürültü Filtresi
 	if event.MediaInfo != nil && event.MediaInfo.CallerRtpAddr == "websocket" {
 		l.Debug().Str("event", "SDK_SESSION_IGNORED").Msg("Web SDK session detected. Trace context preserved.")
 		return
@@ -80,7 +78,7 @@ func (h *CallHandler) HandleCallStarted(ctx context.Context, event *eventv1.Call
 	}
 
 	if err := database.CreateConversation(h.db, event.CallId, res.TenantId, "voice"); err != nil {
-		l.Warn().Str("event", "DB_CONVERSATION_CREATE_FAILED").Err(err).Msg("Konuşma kaydı veritabanına yazılamadı (Logic devam ediyor)")
+		l.Warn().Str("event", "DB_CONVERSATION_CREATE_FAILED").Err(err).Msg("Konuşma kaydı veritabanına yazılamadı")
 	}
 
 	actionType := res.Action.Type
@@ -112,16 +110,16 @@ func (h *CallHandler) HandleCallStarted(ctx context.Context, event *eventv1.Call
 	case dialplanv1.ActionType_ACTION_TYPE_START_AI_CONVERSATION:
 		l.Info().Str("event", "AI_CALL_DETECTED").Msg("🤖 AI Çağrısı Algılandı. Workflow devri bekleniyor...")
 	case dialplanv1.ActionType_ACTION_TYPE_PLAY_STATIC_ANNOUNCEMENT:
-		l.Info().Str("event", "ACTION_PLAY_STATIC").Msg("📢 Action: PLAY_STATIC_ANNOUNCEMENT. Agent görevi yok, izlemede.")
+		l.Info().Str("event", "ACTION_PLAY_STATIC").Msg("📢 Action: PLAY_STATIC_ANNOUNCEMENT.")
 		return
 	case dialplanv1.ActionType_ACTION_TYPE_BRIDGE_CALL:
-		l.Info().Str("event", "ACTION_BRIDGE_CALL").Msg("📞 Action: BRIDGE_CALL. Handed over to SIP Signaling.")
+		l.Info().Str("event", "ACTION_BRIDGE_CALL").Msg("📞 Action: BRIDGE_CALL.")
 		s.CurrentState = "BRIDGED"
 		_ = h.stateManager.Set(ctx, s)
 	case dialplanv1.ActionType_ACTION_TYPE_ECHO_TEST:
-		l.Info().Str("event", "ACTION_ECHO_TEST").Msg("🔊 Action: ECHO_TEST. Agent in standby mode.")
+		l.Info().Str("event", "ACTION_ECHO_TEST").Msg("🔊 Action: ECHO_TEST.")
 	case dialplanv1.ActionType_ACTION_TYPE_ENQUEUE_CALL:
-		l.Info().Str("event", "ACTION_ENQUEUE_CALL").Msg("👥 Action: ENQUEUE_CALL. Checking agent availability...")
+		l.Info().Str("event", "ACTION_ENQUEUE_CALL").Msg("👥 Action: ENQUEUE_CALL.")
 		h.handleEnqueueCall(ctx, s, res.Action.ActionData)
 	default:
 		l.Warn().Str("event", "UNHANDLED_ACTION").Interface("type", actionType).Msg("⚠️ Unhandled action type received.")
@@ -151,8 +149,13 @@ func (h *CallHandler) handleEnqueueCall(ctx context.Context, s *state.CallState,
 func (h *CallHandler) runTASPipeline(grpcCtx context.Context, s *state.CallState, actionData map[string]string) {
 	l := h.log.With().Str("call_id", s.CallID).Logger()
 
-	voiceID := "coqui:default"
-	if v, ok := actionData["voice_id"]; ok {
+	// HARDCODE KALDIRILDI
+	voiceID := os.Getenv("TTS_DEFAULT_VOICE_ID")
+	if voiceID == "" {
+		voiceID = "omnivoice:female, clear, professional, warm, corporate, Turkish"
+	}
+
+	if v, ok := actionData["voice_id"]; ok && v != "" {
 		voiceID = v
 	}
 
@@ -248,10 +251,15 @@ func (h *CallHandler) compensate(ctx context.Context, callID, reason string) {
 	_ = h.stateManager.Delete(ctx, callID)
 }
 
+// [ARCH-COMPLIANCE FIX]
 func (h *CallHandler) HandleCallEnded(ctx context.Context, callID string) {
-	h.log.Info().Str("event", "CALL_ENDED").Str("call_id", callID).Msg("🧹 Call ended. Session cleanup.")
+	// Doğrudan context içine gömülü logger'ı kullanarak trace_id kopukluğunu engelliyoruz.
+	l := ctxlogger.FromContext(ctx)
+
+	l.Info().Str("event", "CALL_ENDED").Str("call_id", callID).Msg("🧹 Call ended. Session cleanup.")
+
 	if err := database.UpdateConversationStatus(h.db, callID, "COMPLETED"); err != nil {
-		h.log.Warn().Str("event", "DB_UPDATE_FAIL").Err(err).Msg("Konuşma durumu güncellenemedi")
+		l.Warn().Str("event", "DB_UPDATE_FAIL").Err(err).Msg("Konuşma durumu güncellenemedi")
 	}
 	_ = h.stateManager.Delete(ctx, callID)
 }
